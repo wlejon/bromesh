@@ -17,6 +17,9 @@
 #include "bromesh/optimization/analyze.h"
 #include "bromesh/optimization/spatial.h"
 #include "bromesh/manipulation/merge.h"
+#include "bromesh/manipulation/repair.h"
+#include "bromesh/optimization/encode.h"
+#include "bromesh/optimization/strips.h"
 #include "bromesh/primitives/par_primitives.h"
 #include "bromesh/io/obj.h"
 #include "bromesh/io/vox.h"
@@ -1769,6 +1772,175 @@ TEST(par_klein_bottle) {
 }
 
 #endif // BROMESH_HAS_PAR_SHAPES
+
+// ============================================================================
+// Mesh encoding/compression tests
+// ============================================================================
+
+#if BROMESH_HAS_MESHOPTIMIZER
+
+TEST(encode_decode_mesh_roundtrip) {
+    auto mesh = bromesh::sphere(2.0f, 16, 12);
+    bromesh::computeNormals(mesh);
+    bromesh::projectUVs(mesh, bromesh::ProjectionType::Spherical, 1.0f);
+
+    auto encoded = bromesh::encodeMesh(mesh);
+    ASSERT(!encoded.vertexData.empty(), "encode: vertex data should be non-empty");
+    ASSERT(!encoded.indexData.empty(), "encode: index data should be non-empty");
+    ASSERT(encoded.vertexCount == mesh.vertexCount(), "encode: vertex count preserved");
+    ASSERT(encoded.indexCount == mesh.indices.size(), "encode: index count preserved");
+
+    // Compressed should be smaller than raw
+    size_t rawVertSize = mesh.vertexCount() * encoded.vertexSize;
+    ASSERT(encoded.vertexData.size() < rawVertSize, "encode: vertex data should be compressed");
+
+    auto decoded = bromesh::decodeMesh(encoded, true, true, false);
+    ASSERT(decoded.vertexCount() == mesh.vertexCount(), "decode: vertex count matches");
+    ASSERT(decoded.triangleCount() == mesh.triangleCount(), "decode: triangle count matches");
+    ASSERT(decoded.hasNormals(), "decode: normals preserved");
+    ASSERT(decoded.hasUVs(), "decode: UVs preserved");
+
+    // Verify positions match
+    bool posMatch = true;
+    for (size_t i = 0; i < mesh.positions.size(); ++i) {
+        if (std::fabs(mesh.positions[i] - decoded.positions[i]) > 1e-5f) {
+            posMatch = false; break;
+        }
+    }
+    ASSERT(posMatch, "decode: positions match original");
+}
+
+TEST(encode_decode_index_buffer) {
+    auto mesh = bromesh::box(1, 1, 1);
+    auto encoded = bromesh::encodeIndexBuffer(mesh.indices, mesh.vertexCount());
+    ASSERT(!encoded.empty(), "encode_ib: should produce data");
+    ASSERT(encoded.size() < mesh.indices.size() * sizeof(uint32_t), "encode_ib: should compress");
+
+    auto decoded = bromesh::decodeIndexBuffer(encoded, mesh.indices.size());
+    ASSERT(decoded.size() == mesh.indices.size(), "decode_ib: size matches");
+    ASSERT(decoded == mesh.indices, "decode_ib: indices match original");
+}
+
+#endif // BROMESH_HAS_MESHOPTIMIZER
+
+// ============================================================================
+// Triangle strip tests
+// ============================================================================
+
+#if BROMESH_HAS_MESHOPTIMIZER
+
+TEST(stripify_unstripify_roundtrip) {
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+    bromesh::optimizeVertexCache(mesh);
+
+    auto strip = bromesh::stripify(mesh.indices, mesh.vertexCount());
+    ASSERT(!strip.empty(), "stripify: should produce strip");
+
+    auto restored = bromesh::unstripify(strip);
+    ASSERT(!restored.empty(), "unstripify: should produce triangle list");
+    // Restored triangle count should match original
+    ASSERT(restored.size() / 3 == mesh.indices.size() / 3,
+           "strip_roundtrip: triangle count preserved");
+}
+
+TEST(stripify_box) {
+    auto mesh = bromesh::box(1, 1, 1);
+    auto strip = bromesh::stripify(mesh.indices, mesh.vertexCount());
+    ASSERT(!strip.empty(), "stripify_box: should produce strip");
+    // Strip should be reasonably compact
+    ASSERT(strip.size() <= mesh.indices.size() * 2,
+           "stripify_box: strip shouldn't be much larger than triangle list");
+}
+
+#endif // BROMESH_HAS_MESHOPTIMIZER
+
+// ============================================================================
+// Mesh repair tests
+// ============================================================================
+
+TEST(remove_degenerate_triangles) {
+    // Create a mesh with one good triangle and one degenerate (zero-area)
+    bromesh::MeshData mesh;
+    mesh.positions = {
+        0,0,0, 1,0,0, 0,1,0,  // good triangle
+        2,0,0, 2,0,0, 3,0,0   // degenerate: two identical vertices
+    };
+    mesh.indices = {0,1,2, 3,4,5};
+
+    auto repaired = bromesh::removeDegenerateTriangles(mesh);
+    ASSERT(repaired.triangleCount() == 1, "remove_degen: should keep 1 triangle");
+    ASSERT(repaired.indices[0] == 0 && repaired.indices[1] == 1 && repaired.indices[2] == 2,
+           "remove_degen: should keep the good triangle");
+}
+
+TEST(remove_degenerate_collinear) {
+    // Collinear triangle (zero area)
+    bromesh::MeshData mesh;
+    mesh.positions = {
+        0,0,0, 1,0,0, 0,1,0,  // good
+        0,0,0, 1,0,0, 2,0,0   // collinear
+    };
+    mesh.indices = {0,1,2, 3,4,5};
+
+    auto repaired = bromesh::removeDegenerateTriangles(mesh);
+    ASSERT(repaired.triangleCount() == 1, "remove_collinear: should remove collinear triangle");
+}
+
+TEST(remove_duplicate_triangles) {
+    auto mesh = bromesh::box(1, 1, 1);
+    size_t origTris = mesh.triangleCount();
+
+    // Duplicate all triangles
+    size_t origIdxCount = mesh.indices.size();
+    for (size_t i = 0; i < origIdxCount; ++i) {
+        mesh.indices.push_back(mesh.indices[i]);
+    }
+    ASSERT(mesh.triangleCount() == origTris * 2, "dup_setup: doubled");
+
+    auto repaired = bromesh::removeDuplicateTriangles(mesh);
+    ASSERT(repaired.triangleCount() == origTris, "remove_dup: should remove duplicates");
+}
+
+TEST(fill_holes_simple) {
+    // Create an open box (5 faces, missing the top)
+    // Using a simple example: a plane with a triangular hole
+    bromesh::MeshData mesh;
+    // Square with 4 triangles leaving a hole in the middle
+    //  3---2
+    //  |\ /|
+    //  | 4 |   (vertex 4 at center, but no bottom-center triangle)
+    //  |/ \|
+    //  0---1
+    mesh.positions = {
+        0,0,0, 1,0,0, 1,1,0, 0,1,0, 0.5f,0.5f,0
+    };
+    // Only 3 triangles, leaving a gap
+    mesh.indices = {
+        0,1,4,  // bottom
+        1,2,4,  // right
+        2,3,4   // top
+        // missing: 3,0,4 (left)
+    };
+
+    auto filled = bromesh::fillHoles(mesh);
+    // Should add the missing triangle
+    ASSERT(filled.triangleCount() >= mesh.triangleCount(),
+           "fill_holes: should have at least as many triangles");
+    ASSERT(filled.triangleCount() > mesh.triangleCount(),
+           "fill_holes: should have added triangles to fill hole");
+}
+
+TEST(repair_preserves_clean_mesh) {
+    // A clean mesh should pass through unchanged
+    auto mesh = bromesh::box(1, 1, 1);
+    auto degenFixed = bromesh::removeDegenerateTriangles(mesh);
+    ASSERT(degenFixed.triangleCount() == mesh.triangleCount(),
+           "repair_clean: degenerate removal should not change clean mesh");
+
+    auto dupFixed = bromesh::removeDuplicateTriangles(mesh);
+    ASSERT(dupFixed.triangleCount() == mesh.triangleCount(),
+           "repair_clean: duplicate removal should not change clean mesh");
+}
 
 int main() {
     std::printf("bromesh tests: %d/%d passed\n", tests_passed, tests_run);

@@ -101,6 +101,7 @@ add_library(bromesh STATIC
     src/manipulation/split_components.cpp
     src/manipulation/weld.cpp
     src/manipulation/merge.cpp
+    src/manipulation/repair.cpp
 
     # Analysis
     src/analysis/bbox.cpp
@@ -118,6 +119,8 @@ add_library(bromesh STATIC
     src/optimization/meshlets.cpp
     src/optimization/analyze.cpp
     src/optimization/spatial.cpp
+    src/optimization/encode.cpp
+    src/optimization/strips.cpp
 
     # I/O
     src/io/obj.cpp
