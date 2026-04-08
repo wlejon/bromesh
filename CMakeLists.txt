@@ -44,7 +44,7 @@ endif()
 
 # tinygltf — glTF/GLB loading (header-only, we compile it)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf/tiny_gltf.h")
-    add_library(tinygltf STATIC third_party/tinygltf/tinygltf_impl.cpp)
+    add_library(tinygltf STATIC third_party/impl/tinygltf_impl.cpp)
     target_include_directories(tinygltf PUBLIC third_party/tinygltf)
     target_compile_definitions(tinygltf PUBLIC
         TINYGLTF_NO_INCLUDE_STB_IMAGE
@@ -62,6 +62,21 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf/tiny_gltf.h")
 else()
     message(STATUS "bromesh: tinygltf not found, glTF I/O disabled")
     set(BROMESH_HAS_GLTF OFF)
+endif()
+
+# V-HACD — convex decomposition (header-only, we compile it)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/v-hacd/include/VHACD.h")
+    add_library(vhacd STATIC third_party/impl/vhacd_impl.cpp)
+    target_include_directories(vhacd PUBLIC third_party/v-hacd/include)
+    if(MSVC)
+        target_compile_options(vhacd PRIVATE /W0)
+    else()
+        target_compile_options(vhacd PRIVATE -w)
+    endif()
+    set(BROMESH_HAS_VHACD ON)
+else()
+    message(STATUS "bromesh: V-HACD not found, convex decomposition disabled")
+    set(BROMESH_HAS_VHACD OFF)
 endif()
 
 # --- bromesh library ---
@@ -127,6 +142,11 @@ if(BROMESH_HAS_GLTF)
     target_link_libraries(bromesh PRIVATE tinygltf)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_GLTF=1)
     target_sources(bromesh PRIVATE src/io/gltf.cpp)
+endif()
+
+if(BROMESH_HAS_VHACD)
+    target_link_libraries(bromesh PRIVATE vhacd)
+    target_compile_definitions(bromesh PUBLIC BROMESH_HAS_VHACD=1)
 endif()
 
 # Tests
