@@ -174,6 +174,7 @@ add_library(bromesh STATIC
     src/manipulation/subdivide.cpp
     src/manipulation/smooth.cpp
     src/manipulation/remesh.cpp
+    src/manipulation/skin.cpp
 
     # Analysis
     src/analysis/bbox.cpp
@@ -207,6 +208,9 @@ add_library(bromesh STATIC
 
     # UV unwrapping
     src/uv/unwrap.cpp
+
+    # UV metrics
+    src/uv/uv_metrics.cpp
 
     # Boolean/CSG
     src/csg/boolean.cpp

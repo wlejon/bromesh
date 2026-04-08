@@ -34,6 +34,8 @@
 #include "bromesh/manipulation/remesh.h"
 #include "bromesh/reconstruction/reconstruct.h"
 #include "bromesh/analysis/bake.h"
+#include "bromesh/manipulation/skin.h"
+#include "bromesh/uv/uv_metrics.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -2384,6 +2386,208 @@ TEST(fbx_api_smoke) {
     ASSERT(meshes.empty(), "fbx_smoke: non-existent file should return empty");
 }
 #endif
+
+// ====================== Skinning Utilities ======================
+
+TEST(normalize_weights_basic) {
+    tests_run++;
+    bromesh::SkinData skin;
+    // 1 vertex, 4 weights that don't sum to 1
+    skin.boneWeights = {0.5f, 0.3f, 0.1f, 0.05f};
+    skin.boneIndices = {0, 1, 2, 3};
+    skin.inverseBindMatrices.resize(4 * 16, 0.0f);
+    skin.boneCount = 4;
+
+    bromesh::normalizeWeights(skin);
+
+    float sum = skin.boneWeights[0] + skin.boneWeights[1] +
+                skin.boneWeights[2] + skin.boneWeights[3];
+    ASSERT(std::fabs(sum - 1.0f) < 0.001f, "normalize: weights should sum to 1");
+    // Weights should be sorted descending
+    ASSERT(skin.boneWeights[0] >= skin.boneWeights[1], "normalize: sorted descending");
+    tests_passed++;
+}
+
+TEST(normalize_weights_zeros) {
+    tests_run++;
+    bromesh::SkinData skin;
+    skin.boneWeights = {0.0f, 0.0f, 0.0f, 0.0f};
+    skin.boneIndices = {0, 1, 2, 3};
+    skin.boneCount = 4;
+
+    bromesh::normalizeWeights(skin);
+
+    // Should default to bone 0 with weight 1
+    ASSERT(std::fabs(skin.boneWeights[0] - 1.0f) < 0.001f,
+           "normalize_zeros: first weight should be 1");
+    ASSERT(skin.boneIndices[0] == 0, "normalize_zeros: first index should be 0");
+    tests_passed++;
+}
+
+TEST(apply_skinning_identity) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(mesh);
+
+    size_t vCount = mesh.vertexCount();
+
+    bromesh::SkinData skin;
+    skin.boneCount = 1;
+    // Identity inverse bind matrix
+    skin.inverseBindMatrices = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    skin.boneWeights.resize(vCount * 4, 0.0f);
+    skin.boneIndices.resize(vCount * 4, 0);
+    for (size_t v = 0; v < vCount; ++v) {
+        skin.boneWeights[v * 4] = 1.0f;
+    }
+
+    // Save original positions
+    auto origPos = mesh.positions;
+
+    // Identity pose matrix
+    float pose[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    bromesh::applySkinning(mesh, skin, pose);
+
+    // Positions should be unchanged
+    bool same = true;
+    for (size_t i = 0; i < origPos.size(); ++i) {
+        if (std::fabs(mesh.positions[i] - origPos[i]) > 0.001f) {
+            same = false; break;
+        }
+    }
+    ASSERT(same, "skin_identity: positions unchanged with identity transform");
+    tests_passed++;
+}
+
+TEST(apply_skinning_translation) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    size_t vCount = mesh.vertexCount();
+
+    bromesh::SkinData skin;
+    skin.boneCount = 1;
+    skin.inverseBindMatrices = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    skin.boneWeights.resize(vCount * 4, 0.0f);
+    skin.boneIndices.resize(vCount * 4, 0);
+    for (size_t v = 0; v < vCount; ++v)
+        skin.boneWeights[v * 4] = 1.0f;
+
+    auto origPos = mesh.positions;
+
+    // Translate by (5, 0, 0) via pose matrix (column-major)
+    float pose[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 5,0,0,1};
+    bromesh::applySkinning(mesh, skin, pose);
+
+    bool shifted = true;
+    for (size_t v = 0; v < vCount; ++v) {
+        if (std::fabs(mesh.positions[v*3+0] - (origPos[v*3+0] + 5.0f)) > 0.001f) {
+            shifted = false; break;
+        }
+    }
+    ASSERT(shifted, "skin_translate: positions shifted by +5 on X");
+    tests_passed++;
+}
+
+TEST(apply_morph_target) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto origPos = mesh.positions;
+    size_t vCount = mesh.vertexCount();
+
+    bromesh::MorphTarget morph;
+    morph.name = "expand";
+    morph.deltaPositions.resize(vCount * 3, 0.0f);
+    // Move every vertex +1 on X
+    for (size_t v = 0; v < vCount; ++v)
+        morph.deltaPositions[v * 3 + 0] = 1.0f;
+
+    bromesh::applyMorphTarget(mesh, morph, 0.5f);
+
+    bool correct = true;
+    for (size_t v = 0; v < vCount; ++v) {
+        if (std::fabs(mesh.positions[v*3+0] - (origPos[v*3+0] + 0.5f)) > 0.001f) {
+            correct = false; break;
+        }
+    }
+    ASSERT(correct, "morph: positions shifted +0.5 on X at weight 0.5");
+    tests_passed++;
+}
+
+TEST(apply_morph_zero_weight) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto origPos = mesh.positions;
+
+    bromesh::MorphTarget morph;
+    morph.deltaPositions.resize(mesh.vertexCount() * 3, 100.0f);
+
+    bromesh::applyMorphTarget(mesh, morph, 0.0f);
+
+    ASSERT(mesh.positions == origPos, "morph_zero: no change at weight 0");
+    tests_passed++;
+}
+
+// ====================== UV Quality Metrics ======================
+
+TEST(uv_metrics_box_projection) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::projectUVs(mesh, bromesh::ProjectionType::Box, 1.0f);
+
+    auto metrics = bromesh::measureUVQuality(mesh);
+    ASSERT(metrics.triangleCount == mesh.triangleCount(),
+           "uv_metrics: triangle count matches");
+    ASSERT(metrics.avgStretch > 0.0f, "uv_metrics: avg stretch > 0");
+    ASSERT(metrics.uvSpaceUsage > 0.0f, "uv_metrics: UV usage > 0");
+    tests_passed++;
+}
+
+TEST(uv_distortion_per_triangle) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::projectUVs(mesh, bromesh::ProjectionType::Box, 1.0f);
+
+    auto distortions = bromesh::computeUVDistortion(mesh);
+    ASSERT(distortions.size() == mesh.triangleCount(),
+           "uv_distortion: one entry per triangle");
+
+    // All stretch values should be positive
+    bool allPositive = true;
+    for (auto& d : distortions) {
+        if (d.stretch <= 0.0f) { allPositive = false; break; }
+    }
+    ASSERT(allPositive, "uv_distortion: all stretch values positive");
+    tests_passed++;
+}
+
+TEST(uv_metrics_no_uvs) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    mesh.uvs.clear(); // remove UVs
+
+    auto metrics = bromesh::measureUVQuality(mesh);
+    ASSERT(metrics.triangleCount == 0, "uv_metrics_no_uvs: no triangles when no UVs");
+
+    auto distortions = bromesh::computeUVDistortion(mesh);
+    ASSERT(distortions.empty(), "uv_distortion_no_uvs: empty when no UVs");
+    tests_passed++;
+}
+
+TEST(uv_metrics_planar_plane) {
+    tests_run++;
+    // A flat plane with planar XZ projection should have low angle distortion
+    auto mesh = bromesh::plane(2.0f, 2.0f, 4, 4);
+    bromesh::projectUVs(mesh, bromesh::ProjectionType::PlanarXZ, 1.0f);
+
+    auto metrics = bromesh::measureUVQuality(mesh);
+    ASSERT(metrics.avgAngleDistortion < 0.1f,
+           "uv_planar: flat plane should have low angle distortion");
+    tests_passed++;
+}
 
 int main() {
     std::printf("bromesh tests: %d/%d passed\n", tests_passed, tests_run);
