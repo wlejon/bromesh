@@ -10,13 +10,14 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 | **Voxel** | Greedy meshing with palette colors |
 | **Primitives** | Box, sphere, cylinder, capsule, plane, torus, heightmap grid; parametric: geodesic sphere, Platonic solids, cone, disc, rock, trefoil knot, Klein bottle |
 | **Subdivision** | Loop, Catmull-Clark, midpoint (iterative, arbitrary depth) |
-| **Manipulation** | Smooth/flat normals, tangents, simplify (quadric error + attribute-aware), target triangle count decimation, LOD chain, weld, split components, merge, repair (degenerate/duplicate removal, hole filling) |
+| **Manipulation** | Smooth/flat normals, tangents, simplify (quadric error + attribute-aware), target triangle count decimation, LOD chain, weld, split components, merge, repair (degenerate/duplicate removal, hole filling), translate/rotate/scale/mirror/center/transform |
+| **Skinning** | Apply bone transforms (4 weights/vertex), morph target blending, weight normalization |
 | **Smoothing** | Laplacian, Taubin (shrinkage-free) |
 | **Remeshing** | Isotropic remeshing (edge split/collapse/flip + tangential relaxation) |
 | **Reconstruction** | Point cloud to mesh via implicit surface estimation + marching cubes |
-| **Analysis** | Bounding box, manifold check, volume, convex decomposition (V-HACD), convex hull |
-| **Baking** | Ambient occlusion, mean curvature, thickness — all to vertex colors |
-| **UV** | Box, planar (XY/XZ/YZ), cylindrical, spherical projection; automatic unwrapping and atlas packing (xatlas) |
+| **Analysis** | Bounding box, manifold check, volume, surface area, triangle areas, convex decomposition (V-HACD), convex hull, surface sampling |
+| **Baking** | Ambient occlusion, mean curvature, thickness — to vertex colors or UV-space textures; world-space normal maps, position maps |
+| **UV** | Box, planar (XY/XZ/YZ), cylindrical, spherical projection; automatic unwrapping and atlas packing (xatlas); quality metrics (L2 stretch, area/angle distortion, packing efficiency) |
 | **Optimization** | Vertex cache, vertex fetch, overdraw, meshlet generation, spatial sorting, shadow index buffer, mesh encoding/compression, triangle strips |
 | **Boolean/CSG** | Union, difference, intersection, plane splitting (manifold) |
 | **I/O** | OBJ read/write, STL read/write, PLY read/write, glTF/GLB read/write, FBX read, MagicaVoxel VOX read |
@@ -26,7 +27,7 @@ All algorithms produce `bromesh::MeshData` -- a flat struct with separate positi
 ## Building
 
 ```bash
-git clone --recurse-submodules https://github.com/user/bromesh.git
+git clone --recurse-submodules https://github.com/wlejon/bromesh.git
 cd bromesh
 cmake -B build
 cmake --build build --config Release
@@ -123,6 +124,32 @@ params.gridResolution = 64;
 auto mesh = bromesh::reconstructFromPointCloud(positions, normals, pointCount, params);
 ```
 
+### Transforms
+
+```cpp
+#include "bromesh/manipulation/transform.h"
+
+bromesh::translateMesh(mesh, 0, 5, 0);          // Move up
+bromesh::scaleMesh(mesh, 2.0f);                  // Uniform scale
+bromesh::scaleMesh(mesh, 1, 2, 1);               // Non-uniform scale (normals auto-corrected)
+bromesh::rotateMesh(mesh, 0, 1, 0, 3.14159f/4);  // 45° around Y axis
+bromesh::mirrorMesh(mesh, 0);                     // Mirror across YZ plane (winding corrected)
+bromesh::centerMesh(mesh);                        // Center at origin
+
+float mat[16] = { /* column-major 4x4 */ };
+bromesh::transformMesh(mesh, mat);                // Arbitrary affine transform
+```
+
+### Skinning and morph targets
+
+```cpp
+#include "bromesh/manipulation/skin.h"
+
+bromesh::normalizeWeights(skin);                          // Clean up weights
+bromesh::applySkinning(mesh, skin, poseMatrices);         // Skeletal animation
+bromesh::applyMorphTarget(mesh, morphTarget, 0.5f);      // 50% blend shape
+```
+
 ### Vertex color baking
 
 ```cpp
@@ -131,6 +158,38 @@ auto mesh = bromesh::reconstructFromPointCloud(positions, normals, pointCount, p
 bromesh::bakeAmbientOcclusion(mesh, 64);   // AO into vertex colors
 bromesh::bakeCurvature(mesh, 1.0f);        // Mean curvature visualization
 bromesh::bakeThickness(mesh, 32);          // Thickness for SSS approximation
+```
+
+### Texture-space baking
+
+```cpp
+#include "bromesh/analysis/bake_texture.h"
+
+auto aoMap  = bromesh::bakeAmbientOcclusionToTexture(mesh, 512, 512);
+auto curvMap = bromesh::bakeCurvatureToTexture(mesh, 512, 512);
+auto nrmMap  = bromesh::bakeNormalsToTexture(mesh, 1024, 1024);
+auto posMap  = bromesh::bakePositionToTexture(mesh, 1024, 1024);
+// Access pixels: aoMap.at(x, y) returns float*, aoMap.pixels for raw data
+```
+
+### UV quality metrics
+
+```cpp
+#include "bromesh/uv/uv_metrics.h"
+
+auto metrics = bromesh::measureUVQuality(mesh);
+// metrics.avgStretch, metrics.maxStretch, metrics.avgAngleDistortion, metrics.uvSpaceUsage
+
+auto perTri = bromesh::computeUVDistortion(mesh);  // Per-triangle stretch/area/angle
+```
+
+### Surface sampling
+
+```cpp
+#include "bromesh/analysis/sample.h"
+
+auto points = bromesh::sampleSurface(mesh, 10000, 42);  // 10k uniform random points
+float area = bromesh::computeSurfaceArea(mesh);
 ```
 
 ### Boolean/CSG operations
