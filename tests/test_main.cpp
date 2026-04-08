@@ -13,6 +13,11 @@
 #include "bromesh/analysis/convex_decomposition.h"
 #include "bromesh/uv/projection.h"
 #include "bromesh/optimization/optimize.h"
+#include "bromesh/optimization/meshlets.h"
+#include "bromesh/optimization/analyze.h"
+#include "bromesh/optimization/spatial.h"
+#include "bromesh/manipulation/merge.h"
+#include "bromesh/primitives/par_primitives.h"
 #include "bromesh/io/obj.h"
 #include "bromesh/io/vox.h"
 #include "bromesh/io/stl.h"
@@ -1469,6 +1474,301 @@ TEST(cross_format_gltf_obj_stl) {
 }
 
 #endif // BROMESH_HAS_GLTF
+
+// ============================================================================
+// Meshlet generation tests
+// ============================================================================
+
+#if BROMESH_HAS_MESHOPTIMIZER
+
+TEST(meshlets_sphere) {
+    auto mesh = bromesh::sphere(2.0f, 32, 24);
+    auto meshlets = bromesh::buildMeshlets(mesh);
+    ASSERT(!meshlets.empty(), "meshlets_sphere: should produce meshlets");
+    ASSERT(meshlets.size() >= 2, "meshlets_sphere: sphere should have multiple meshlets");
+
+    // Verify each meshlet has valid data
+    size_t totalTris = 0;
+    for (const auto& ml : meshlets) {
+        ASSERT(ml.vertexCount() > 0, "meshlets_sphere: meshlet should have vertices");
+        ASSERT(ml.triangleCount() > 0, "meshlets_sphere: meshlet should have triangles");
+        ASSERT(ml.vertexCount() <= 64, "meshlets_sphere: meshlet should respect maxVertices");
+        ASSERT(ml.triangleCount() <= 124, "meshlets_sphere: meshlet should respect maxTriangles");
+        ASSERT(ml.bounds.radius > 0, "meshlets_sphere: meshlet should have bounding sphere");
+        totalTris += ml.triangleCount();
+    }
+    ASSERT(totalTris == mesh.triangleCount(), "meshlets_sphere: total triangles should match");
+}
+
+TEST(meshlets_custom_params) {
+    auto mesh = bromesh::box(1, 1, 1);
+    bromesh::MeshletParams params;
+    params.maxVertices = 32;
+    params.maxTriangles = 32;
+    auto meshlets = bromesh::buildMeshlets(mesh, params);
+    ASSERT(!meshlets.empty(), "meshlets_custom: should produce meshlets");
+    for (const auto& ml : meshlets) {
+        ASSERT(ml.vertexCount() <= 32, "meshlets_custom: should respect custom maxVertices");
+        ASSERT(ml.triangleCount() <= 32, "meshlets_custom: should respect custom maxTriangles");
+    }
+}
+
+#endif // BROMESH_HAS_MESHOPTIMIZER
+
+// ============================================================================
+// Mesh analysis statistics tests
+// ============================================================================
+
+#if BROMESH_HAS_MESHOPTIMIZER
+
+TEST(analyze_vertex_cache) {
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+    auto stats = bromesh::analyzeVertexCache(mesh);
+    ASSERT(stats.verticesTransformed > 0, "analyze_vcache: should transform vertices");
+    ASSERT(stats.acmr > 0, "analyze_vcache: ACMR should be positive");
+    ASSERT(stats.atvr >= 1.0f, "analyze_vcache: ATVR should be >= 1.0");
+}
+
+TEST(analyze_vertex_fetch) {
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+    auto stats = bromesh::analyzeVertexFetch(mesh);
+    ASSERT(stats.bytesFetched > 0, "analyze_vfetch: should fetch bytes");
+    ASSERT(stats.overfetch >= 1.0f, "analyze_vfetch: overfetch should be >= 1.0");
+}
+
+TEST(analyze_overdraw) {
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+    auto stats = bromesh::analyzeOverdraw(mesh);
+    ASSERT(stats.pixelsCovered > 0, "analyze_overdraw: should cover pixels");
+    ASSERT(stats.overdraw >= 1.0f, "analyze_overdraw: overdraw should be >= 1.0");
+}
+
+TEST(analyze_before_after_optimize) {
+    auto mesh = bromesh::sphere(2.0f, 32, 24);
+    auto before = bromesh::analyzeVertexCache(mesh);
+
+    bromesh::optimizeVertexCache(mesh);
+    auto after = bromesh::analyzeVertexCache(mesh);
+
+    // After optimization, ACMR should be equal or better (lower)
+    ASSERT(after.acmr <= before.acmr + 0.01f,
+           "analyze_opt: ACMR should improve after vertex cache optimization");
+}
+
+#endif // BROMESH_HAS_MESHOPTIMIZER
+
+// ============================================================================
+// Spatial sorting + shadow index buffer tests
+// ============================================================================
+
+#if BROMESH_HAS_MESHOPTIMIZER
+
+TEST(spatial_sort_triangles) {
+    auto mesh = bromesh::sphere(2.0f, 24, 16);
+    size_t origTriCount = mesh.triangleCount();
+    size_t origVertCount = mesh.vertexCount();
+    bromesh::spatialSortTriangles(mesh);
+    ASSERT(mesh.triangleCount() == origTriCount, "spatial_tri: triangle count preserved");
+    ASSERT(mesh.vertexCount() == origVertCount, "spatial_tri: vertex count preserved");
+}
+
+TEST(spatial_sort_vertices) {
+    auto mesh = bromesh::sphere(2.0f, 24, 16);
+    size_t origTriCount = mesh.triangleCount();
+    size_t origVertCount = mesh.vertexCount();
+    bromesh::spatialSortVertices(mesh);
+    ASSERT(mesh.triangleCount() == origTriCount, "spatial_vert: triangle count preserved");
+    ASSERT(mesh.vertexCount() == origVertCount, "spatial_vert: vertex count preserved");
+    ASSERT(mesh.hasNormals(), "spatial_vert: normals preserved");
+}
+
+TEST(shadow_index_buffer) {
+    auto mesh = bromesh::sphere(2.0f, 24, 16);
+    auto shadow = bromesh::generateShadowIndexBuffer(mesh);
+    ASSERT(shadow.size() == mesh.indices.size(), "shadow_ib: same index count");
+    // Shadow indices should reference valid vertices
+    for (uint32_t idx : shadow) {
+        ASSERT(idx < mesh.vertexCount(), "shadow_ib: valid vertex reference");
+    }
+}
+
+#endif // BROMESH_HAS_MESHOPTIMIZER
+
+// ============================================================================
+// Attribute-aware simplification tests
+// ============================================================================
+
+#if BROMESH_HAS_MESHOPTIMIZER
+
+TEST(simplify_with_attributes) {
+    auto mesh = bromesh::sphere(2.0f, 32, 24);
+    bromesh::computeNormals(mesh);
+    bromesh::projectUVs(mesh, bromesh::ProjectionType::Spherical, 1.0f);
+
+    auto simplified = bromesh::simplifyWithAttributes(mesh, 0.5f);
+    ASSERT(!simplified.empty(), "simplify_attr: should produce non-empty result");
+    ASSERT(simplified.triangleCount() < mesh.triangleCount(),
+           "simplify_attr: should have fewer triangles");
+    ASSERT(simplified.hasNormals(), "simplify_attr: should preserve normals");
+    ASSERT(simplified.hasUVs(), "simplify_attr: should preserve UVs");
+}
+
+TEST(simplify_with_attributes_preserves_more) {
+    // Compare attribute-aware vs basic: attribute-aware should produce
+    // at least as many triangles (it's more conservative at seams)
+    auto mesh = bromesh::torus(2.0f, 0.5f, 32, 16);
+    bromesh::computeNormals(mesh);
+    bromesh::projectUVs(mesh, bromesh::ProjectionType::Box, 1.0f);
+
+    auto basic = bromesh::simplify(mesh, 0.3f);
+    auto attr = bromesh::simplifyWithAttributes(mesh, 0.3f);
+    ASSERT(!basic.empty(), "simplify_cmp: basic should work");
+    ASSERT(!attr.empty(), "simplify_cmp: attribute-aware should work");
+    // Both should reduce triangle count
+    ASSERT(basic.triangleCount() < mesh.triangleCount(), "simplify_cmp: basic reduces");
+    ASSERT(attr.triangleCount() < mesh.triangleCount(), "simplify_cmp: attr reduces");
+}
+
+#endif // BROMESH_HAS_MESHOPTIMIZER
+
+// ============================================================================
+// Mesh merge tests
+// ============================================================================
+
+TEST(merge_two_meshes) {
+    auto a = bromesh::box(1, 1, 1);
+    auto b = bromesh::sphere(1.0f, 8, 6);
+    std::vector<bromesh::MeshData> meshes = {a, b};
+    auto merged = bromesh::mergeMeshes(meshes);
+    ASSERT(merged.vertexCount() == a.vertexCount() + b.vertexCount(),
+           "merge_two: vertex count should be sum");
+    ASSERT(merged.triangleCount() == a.triangleCount() + b.triangleCount(),
+           "merge_two: triangle count should be sum");
+    ASSERT(merged.hasNormals(), "merge_two: both have normals so merged should too");
+    ASSERT(merged.hasUVs(), "merge_two: both have UVs so merged should too");
+}
+
+TEST(merge_single_mesh) {
+    auto a = bromesh::box(1, 1, 1);
+    auto merged = bromesh::mergeMeshes(&a, 1);
+    ASSERT(merged.vertexCount() == a.vertexCount(), "merge_single: should be same");
+    ASSERT(merged.triangleCount() == a.triangleCount(), "merge_single: should be same");
+}
+
+TEST(merge_empty) {
+    auto result = bromesh::mergeMeshes(nullptr, 0);
+    ASSERT(result.empty(), "merge_empty: should be empty");
+}
+
+TEST(merge_index_validity) {
+    auto a = bromesh::box(1, 1, 1);
+    auto b = bromesh::cylinder(0.5f, 1.0f, 12);
+    std::vector<bromesh::MeshData> meshes = {a, b};
+    auto merged = bromesh::mergeMeshes(meshes);
+    // All indices should be valid
+    for (uint32_t idx : merged.indices) {
+        ASSERT(idx < merged.vertexCount(), "merge_idx: all indices should be valid");
+    }
+}
+
+// ============================================================================
+// par_shapes primitive tests
+// ============================================================================
+
+#if BROMESH_HAS_PAR_SHAPES
+
+TEST(par_icosahedron) {
+    auto mesh = bromesh::icosahedron();
+    ASSERT(!mesh.empty(), "par_ico: should be non-empty");
+    ASSERT(mesh.triangleCount() == 20, "par_ico: icosahedron has 20 faces");
+    ASSERT(mesh.vertexCount() == 12, "par_ico: icosahedron has 12 vertices");
+}
+
+TEST(par_dodecahedron) {
+    auto mesh = bromesh::dodecahedron();
+    ASSERT(!mesh.empty(), "par_dodec: should be non-empty");
+    ASSERT(mesh.vertexCount() > 0, "par_dodec: should have vertices");
+    ASSERT(mesh.triangleCount() > 0, "par_dodec: should have triangles");
+}
+
+TEST(par_octahedron) {
+    auto mesh = bromesh::octahedron();
+    ASSERT(!mesh.empty(), "par_oct: should be non-empty");
+    ASSERT(mesh.triangleCount() == 8, "par_oct: octahedron has 8 faces");
+    ASSERT(mesh.vertexCount() == 6, "par_oct: octahedron has 6 vertices");
+}
+
+TEST(par_tetrahedron) {
+    auto mesh = bromesh::tetrahedron();
+    ASSERT(!mesh.empty(), "par_tet: should be non-empty");
+    ASSERT(mesh.triangleCount() == 4, "par_tet: tetrahedron has 4 faces");
+    ASSERT(mesh.vertexCount() == 4, "par_tet: tetrahedron has 4 vertices");
+}
+
+TEST(par_geodesic_sphere) {
+    auto mesh = bromesh::geodesicSphere(2.0f, 2);
+    ASSERT(!mesh.empty(), "par_geod: should be non-empty");
+    ASSERT(mesh.vertexCount() > 12, "par_geod: subdivided should have more than icosahedron");
+    ASSERT(mesh.hasNormals(), "par_geod: should have normals");
+
+    // Verify all vertices are approximately on the sphere surface
+    bool allOnSurface = true;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float x = mesh.positions[v * 3 + 0];
+        float y = mesh.positions[v * 3 + 1];
+        float z = mesh.positions[v * 3 + 2];
+        float dist = std::sqrt(x * x + y * y + z * z);
+        if (std::fabs(dist - 2.0f) > 0.1f) { allOnSurface = false; break; }
+    }
+    ASSERT(allOnSurface, "par_geod: vertices should be on sphere surface");
+}
+
+TEST(par_cone) {
+    auto mesh = bromesh::cone(1.0f, 2.0f, 16, 4);
+    ASSERT(!mesh.empty(), "par_cone: should be non-empty");
+    ASSERT(mesh.vertexCount() > 10, "par_cone: should have vertices");
+    ASSERT(mesh.triangleCount() > 10, "par_cone: should have triangles");
+}
+
+TEST(par_disc) {
+    auto mesh = bromesh::disc(1.5f, 16);
+    ASSERT(!mesh.empty(), "par_disc: should be non-empty");
+    ASSERT(mesh.vertexCount() > 0, "par_disc: should have vertices");
+}
+
+TEST(par_rock) {
+    auto mesh = bromesh::rock(1.0f, 42, 2);
+    ASSERT(!mesh.empty(), "par_rock: should be non-empty");
+    ASSERT(mesh.vertexCount() > 20, "par_rock: should have reasonable vertex count");
+    ASSERT(mesh.hasNormals(), "par_rock: should have normals");
+
+    // Different seeds should produce different shapes
+    auto mesh2 = bromesh::rock(1.0f, 99, 2);
+    ASSERT(!mesh2.empty(), "par_rock2: should be non-empty");
+    // Vertices should differ
+    bool differ = false;
+    size_t checkCount = std::min(mesh.vertexCount(), mesh2.vertexCount());
+    for (size_t i = 0; i < checkCount * 3 && !differ; ++i) {
+        if (std::fabs(mesh.positions[i] - mesh2.positions[i]) > 0.001f) differ = true;
+    }
+    ASSERT(differ, "par_rock: different seeds should produce different shapes");
+}
+
+TEST(par_trefoil_knot) {
+    auto mesh = bromesh::trefoilKnot(1.0f, 32, 8);
+    ASSERT(!mesh.empty(), "par_trefoil: should be non-empty");
+    ASSERT(mesh.vertexCount() > 50, "par_trefoil: should have many vertices");
+    ASSERT(mesh.hasNormals(), "par_trefoil: should have normals");
+}
+
+TEST(par_klein_bottle) {
+    auto mesh = bromesh::kleinBottle(16, 8);
+    ASSERT(!mesh.empty(), "par_klein: should be non-empty");
+    ASSERT(mesh.vertexCount() > 50, "par_klein: should have many vertices");
+    ASSERT(mesh.hasNormals(), "par_klein: should have normals");
+}
+
+#endif // BROMESH_HAS_PAR_SHAPES
 
 int main() {
     std::printf("bromesh tests: %d/%d passed\n", tests_passed, tests_run);

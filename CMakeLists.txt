@@ -97,8 +97,10 @@ add_library(bromesh STATIC
     # Manipulation
     src/manipulation/normals.cpp
     src/manipulation/simplify.cpp
+    src/manipulation/simplify_attributes.cpp
     src/manipulation/split_components.cpp
     src/manipulation/weld.cpp
+    src/manipulation/merge.cpp
 
     # Analysis
     src/analysis/bbox.cpp
@@ -108,8 +110,14 @@ add_library(bromesh STATIC
     # UV
     src/uv/projection.cpp
 
+    # Primitives (par_shapes)
+    src/primitives/par_primitives.cpp
+
     # Optimization
     src/optimization/optimize.cpp
+    src/optimization/meshlets.cpp
+    src/optimization/analyze.cpp
+    src/optimization/spatial.cpp
 
     # I/O
     src/io/obj.cpp
