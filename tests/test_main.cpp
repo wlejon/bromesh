@@ -37,6 +37,8 @@
 #include "bromesh/manipulation/skin.h"
 #include "bromesh/uv/uv_metrics.h"
 #include "bromesh/analysis/bake_texture.h"
+#include "bromesh/manipulation/transform.h"
+#include "bromesh/analysis/sample.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -2712,6 +2714,210 @@ TEST(bake_texture_at_method) {
     ASSERT(tex.at(0, 0) != nullptr, "tex.at: valid pixel returns non-null");
     ASSERT(tex.at(-1, 0) == nullptr, "tex.at: out-of-bounds returns null");
     ASSERT(tex.at(0, 8) == nullptr, "tex.at: out-of-bounds returns null");
+    tests_passed++;
+}
+
+// ====================== Transform Utilities ======================
+
+TEST(transform_translate) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto origPos = mesh.positions;
+
+    bromesh::translateMesh(mesh, 5.0f, 0.0f, 0.0f);
+
+    bool correct = true;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        if (std::fabs(mesh.positions[v*3+0] - (origPos[v*3+0] + 5.0f)) > 0.001f) {
+            correct = false; break;
+        }
+    }
+    ASSERT(correct, "translate: +5 on X");
+    tests_passed++;
+}
+
+TEST(transform_scale_uniform) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto origPos = mesh.positions;
+
+    bromesh::scaleMesh(mesh, 2.0f);
+
+    bool correct = true;
+    for (size_t i = 0; i < origPos.size(); ++i) {
+        if (std::fabs(mesh.positions[i] - origPos[i] * 2.0f) > 0.001f) {
+            correct = false; break;
+        }
+    }
+    ASSERT(correct, "scale_uniform: all positions doubled");
+    tests_passed++;
+}
+
+TEST(transform_scale_nonuniform) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(mesh);
+
+    bromesh::scaleMesh(mesh, 2.0f, 1.0f, 1.0f);
+
+    // Normals should still be unit length
+    bool unitNormals = true;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float* n = &mesh.normals[v*3];
+        float len = std::sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+        if (std::fabs(len - 1.0f) > 0.01f) { unitNormals = false; break; }
+    }
+    ASSERT(unitNormals, "scale_nonuniform: normals remain unit length");
+    tests_passed++;
+}
+
+TEST(transform_rotate_90_y) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+
+    // Record a vertex on the +X face
+    float origX = mesh.positions[0];
+    float origZ = mesh.positions[2];
+
+    float pi = 3.14159265f;
+    bromesh::rotateMesh(mesh, 0.0f, 1.0f, 0.0f, pi / 2.0f);
+
+    // After 90° about Y: X -> Z, Z -> -X
+    // Just check the mesh isn't unchanged
+    bool changed = false;
+    if (std::fabs(mesh.positions[0] - origX) > 0.01f ||
+        std::fabs(mesh.positions[2] - origZ) > 0.01f) {
+        changed = true;
+    }
+    ASSERT(changed, "rotate_90_y: positions should change");
+    tests_passed++;
+}
+
+TEST(transform_mirror_x) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(mesh);
+    auto origPos = mesh.positions;
+
+    bromesh::mirrorMesh(mesh, 0); // mirror across YZ plane
+
+    bool mirrored = true;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        if (std::fabs(mesh.positions[v*3+0] - (-origPos[v*3+0])) > 0.001f) {
+            mirrored = false; break;
+        }
+    }
+    ASSERT(mirrored, "mirror_x: X coordinates negated");
+    tests_passed++;
+}
+
+TEST(transform_center) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::translateMesh(mesh, 10.0f, 20.0f, 30.0f);
+
+    float center[3];
+    bromesh::centerMesh(mesh, center);
+
+    ASSERT(std::fabs(center[0] - 10.0f) < 0.01f, "center: original center X=10");
+    ASSERT(std::fabs(center[1] - 20.0f) < 0.01f, "center: original center Y=20");
+
+    // After centering, bbox center should be at origin
+    auto bbox = bromesh::computeBBox(mesh);
+    ASSERT(std::fabs(bbox.centerX()) < 0.01f, "center: bbox center X ~= 0");
+    ASSERT(std::fabs(bbox.centerY()) < 0.01f, "center: bbox center Y ~= 0");
+    ASSERT(std::fabs(bbox.centerZ()) < 0.01f, "center: bbox center Z ~= 0");
+    tests_passed++;
+}
+
+TEST(transform_matrix_identity) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto origPos = mesh.positions;
+
+    float identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    bromesh::transformMesh(mesh, identity);
+
+    ASSERT(mesh.positions == origPos, "transform_identity: no change");
+    tests_passed++;
+}
+
+// ====================== Surface Sampling ======================
+
+TEST(surface_sample_basic) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+    bromesh::computeNormals(mesh);
+
+    auto samples = bromesh::sampleSurface(mesh, 100, 42);
+    ASSERT(samples.vertexCount() == 100, "sample: 100 points");
+    ASSERT(samples.hasNormals(), "sample: has normals");
+    ASSERT(samples.indices.empty(), "sample: no indices (point cloud)");
+    tests_passed++;
+}
+
+TEST(surface_sample_on_sphere) {
+    tests_run++;
+    auto mesh = bromesh::sphere(2.0f, 32, 24);
+    bromesh::computeNormals(mesh);
+
+    auto samples = bromesh::sampleSurface(mesh, 200, 42);
+
+    // All points should be approximately on the sphere surface (radius ~= 2)
+    bool onSurface = true;
+    for (size_t v = 0; v < samples.vertexCount(); ++v) {
+        float x = samples.positions[v*3+0];
+        float y = samples.positions[v*3+1];
+        float z = samples.positions[v*3+2];
+        float r = std::sqrt(x*x + y*y + z*z);
+        if (std::fabs(r - 2.0f) > 0.15f) { onSurface = false; break; }
+    }
+    ASSERT(onSurface, "sample_sphere: all points near radius 2");
+    tests_passed++;
+}
+
+TEST(surface_sample_with_uvs) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    // box already has UVs
+
+    auto samples = bromesh::sampleSurface(mesh, 50, 42);
+    ASSERT(samples.hasUVs(), "sample_uvs: should have UVs when source does");
+    tests_passed++;
+}
+
+TEST(surface_sample_deterministic) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.0f, 8, 6);
+
+    auto s1 = bromesh::sampleSurface(mesh, 50, 123);
+    auto s2 = bromesh::sampleSurface(mesh, 50, 123);
+
+    ASSERT(s1.positions == s2.positions, "sample_deterministic: same seed = same result");
+    tests_passed++;
+}
+
+TEST(surface_area_box) {
+    tests_run++;
+    // Box with half-extents 1 -> side length 2 -> 6 faces * 4 = 24
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    float area = bromesh::computeSurfaceArea(mesh);
+    ASSERT(std::fabs(area - 24.0f) < 0.1f, "surface_area: unit box ~= 24");
+    tests_passed++;
+}
+
+TEST(triangle_areas_count) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto areas = bromesh::computeTriangleAreas(mesh);
+    ASSERT(areas.size() == mesh.triangleCount(), "tri_areas: one per triangle");
+
+    // All areas should be positive
+    bool allPositive = true;
+    for (float a : areas) {
+        if (a <= 0.0f) { allPositive = false; break; }
+    }
+    ASSERT(allPositive, "tri_areas: all positive");
     tests_passed++;
 }
 
