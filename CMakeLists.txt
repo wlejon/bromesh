@@ -200,6 +200,7 @@ add_library(bromesh STATIC
     src/optimization/spatial.cpp
     src/optimization/encode.cpp
     src/optimization/strips.cpp
+    src/optimization/progressive.cpp
 
     # I/O
     src/io/obj.cpp

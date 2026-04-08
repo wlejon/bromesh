@@ -19,7 +19,7 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 | **Queries** | Raycast (closest/all/test), closest point on surface, mesh-mesh intersection test |
 | **Baking** | Ambient occlusion, mean curvature, thickness — to vertex colors or UV-space textures; world-space normal maps, position maps |
 | **UV** | Box, planar (XY/XZ/YZ), cylindrical, spherical projection; automatic unwrapping and atlas packing (xatlas); quality metrics (L2 stretch, area/angle distortion, packing efficiency) |
-| **Optimization** | Vertex cache, vertex fetch, overdraw, meshlet generation, spatial sorting, shadow index buffer, mesh encoding/compression, triangle strips |
+| **Optimization** | Vertex cache, vertex fetch, overdraw, meshlet generation, spatial sorting, shadow index buffer, mesh encoding/compression, triangle strips, progressive mesh (continuous LOD with serialization) |
 | **Boolean/CSG** | Union, difference, intersection, plane splitting (manifold) |
 | **I/O** | OBJ read/write, STL read/write, PLY read/write, glTF/GLB read/write, FBX read, MagicaVoxel VOX read |
 
@@ -191,6 +191,20 @@ auto perTri = bromesh::computeUVDistortion(mesh);  // Per-triangle stretch/area/
 
 auto points = bromesh::sampleSurface(mesh, 10000, 42);  // 10k uniform random points
 float area = bromesh::computeSurfaceArea(mesh);
+```
+
+### Progressive mesh (continuous LOD)
+
+```cpp
+#include "bromesh/optimization/progressive.h"
+
+auto pm = bromesh::buildProgressiveMesh(mesh);             // Build once
+auto lod = bromesh::progressiveMeshAtRatio(pm, 0.5f);     // Extract at 50%
+auto lod2 = bromesh::progressiveMeshAtTriangleCount(pm, 1000); // Or by triangle count
+
+// Serialize for streaming (send coarse first, then refine)
+auto data = bromesh::serializeProgressiveMesh(pm);
+auto pm2 = bromesh::deserializeProgressiveMesh(data.data(), data.size());
 ```
 
 ### Raycasting and queries

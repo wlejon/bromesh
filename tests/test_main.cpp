@@ -41,6 +41,7 @@
 #include "bromesh/analysis/sample.h"
 #include "bromesh/analysis/raycast.h"
 #include "bromesh/analysis/intersect.h"
+#include "bromesh/optimization/progressive.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -3084,6 +3085,130 @@ TEST(meshes_intersect_separated) {
     bromesh::translateMesh(box2, 10.0f, 0.0f, 0.0f);
 
     ASSERT(!bromesh::meshesIntersect(box1, box2), "separated: boxes should not intersect");
+    tests_passed++;
+}
+
+// ====================== Progressive Mesh ======================
+
+TEST(progressive_mesh_build) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+    bromesh::computeNormals(mesh);
+
+    auto pm = bromesh::buildProgressiveMesh(mesh);
+    ASSERT(!pm.collapses.empty(), "pm_build: should have collapse records");
+    ASSERT(pm.maxTriangles() == mesh.triangleCount(), "pm_build: max tris matches original");
+    ASSERT(pm.minTriangles() < pm.maxTriangles(), "pm_build: can simplify below max");
+    tests_passed++;
+}
+
+TEST(progressive_mesh_full_resolution) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+
+    auto pm = bromesh::buildProgressiveMesh(mesh);
+    auto full = bromesh::progressiveMeshAtTriangleCount(pm, pm.maxTriangles());
+
+    ASSERT(full.triangleCount() == mesh.triangleCount(),
+           "pm_full: full resolution matches original triangle count");
+    tests_passed++;
+}
+
+TEST(progressive_mesh_half_resolution) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+
+    auto pm = bromesh::buildProgressiveMesh(mesh);
+    size_t halfTri = mesh.triangleCount() / 2;
+    auto half = bromesh::progressiveMeshAtTriangleCount(pm, halfTri);
+
+    // Should be approximately half (may not be exact due to collapse granularity)
+    ASSERT(half.triangleCount() <= halfTri + 10, "pm_half: roughly half triangles");
+    ASSERT(half.triangleCount() > 0, "pm_half: not empty");
+    ASSERT(!half.positions.empty(), "pm_half: has positions");
+    tests_passed++;
+}
+
+TEST(progressive_mesh_ratio) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+
+    auto pm = bromesh::buildProgressiveMesh(mesh);
+    auto lod0 = bromesh::progressiveMeshAtRatio(pm, 1.0f);
+    auto lod50 = bromesh::progressiveMeshAtRatio(pm, 0.5f);
+    auto lodMin = bromesh::progressiveMeshAtRatio(pm, 0.0f);
+
+    ASSERT(lod0.triangleCount() >= lod50.triangleCount(),
+           "pm_ratio: 100% >= 50%");
+    ASSERT(lod50.triangleCount() >= lodMin.triangleCount(),
+           "pm_ratio: 50% >= 0%");
+    tests_passed++;
+}
+
+TEST(progressive_mesh_monotonic_decrease) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+
+    auto pm = bromesh::buildProgressiveMesh(mesh);
+
+    // Extract at several levels and verify monotonically decreasing triangle counts
+    size_t prev = pm.maxTriangles();
+    bool monotonic = true;
+    for (float r = 0.9f; r >= 0.1f; r -= 0.1f) {
+        auto lod = bromesh::progressiveMeshAtRatio(pm, r);
+        if (lod.triangleCount() > prev) {
+            monotonic = false; break;
+        }
+        prev = lod.triangleCount();
+    }
+    ASSERT(monotonic, "pm_monotonic: triangle count decreases with ratio");
+    tests_passed++;
+}
+
+TEST(progressive_mesh_serialize_roundtrip) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.0f, 8, 6);
+
+    auto pm = bromesh::buildProgressiveMesh(mesh);
+    auto data = bromesh::serializeProgressiveMesh(pm);
+    ASSERT(!data.empty(), "pm_serialize: data not empty");
+
+    auto pm2 = bromesh::deserializeProgressiveMesh(data.data(), data.size());
+    ASSERT(pm2.maxTriangles() == pm.maxTriangles(), "pm_roundtrip: same max triangles");
+    ASSERT(pm2.collapses.size() == pm.collapses.size(), "pm_roundtrip: same collapse count");
+
+    // Extract at half resolution from both and compare triangle counts
+    size_t halfTri = pm.maxTriangles() / 2;
+    auto lodA = bromesh::progressiveMeshAtTriangleCount(pm, halfTri);
+    auto lodB = bromesh::progressiveMeshAtTriangleCount(pm2, halfTri);
+    ASSERT(lodA.triangleCount() == lodB.triangleCount(),
+           "pm_roundtrip: same LOD output");
+    tests_passed++;
+}
+
+TEST(progressive_mesh_bad_deserialize) {
+    tests_run++;
+    // Should not crash on garbage data
+    uint8_t garbage[32] = {};
+    auto pm = bromesh::deserializeProgressiveMesh(garbage, sizeof(garbage));
+    ASSERT(pm.baseMesh.empty(), "pm_bad_data: returns empty on garbage");
+
+    auto pm2 = bromesh::deserializeProgressiveMesh(nullptr, 0);
+    ASSERT(pm2.baseMesh.empty(), "pm_null: returns empty on null");
+    tests_passed++;
+}
+
+TEST(progressive_mesh_preserves_attributes) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.0f, 8, 6);
+    bromesh::computeNormals(mesh);
+    bromesh::projectUVs(mesh, bromesh::ProjectionType::Spherical, 1.0f);
+
+    auto pm = bromesh::buildProgressiveMesh(mesh);
+    auto half = bromesh::progressiveMeshAtRatio(pm, 0.5f);
+
+    ASSERT(half.hasNormals(), "pm_attrs: preserves normals");
+    ASSERT(half.hasUVs(), "pm_attrs: preserves UVs");
     tests_passed++;
 }
 
