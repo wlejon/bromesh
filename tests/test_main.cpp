@@ -39,6 +39,8 @@
 #include "bromesh/analysis/bake_texture.h"
 #include "bromesh/manipulation/transform.h"
 #include "bromesh/analysis/sample.h"
+#include "bromesh/analysis/raycast.h"
+#include "bromesh/analysis/intersect.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -2918,6 +2920,170 @@ TEST(triangle_areas_count) {
         if (a <= 0.0f) { allPositive = false; break; }
     }
     ASSERT(allPositive, "tri_areas: all positive");
+    tests_passed++;
+}
+
+// ====================== Raycast ======================
+
+TEST(raycast_sphere_center) {
+    tests_run++;
+    auto mesh = bromesh::sphere(2.0f, 16, 12);
+    bromesh::computeNormals(mesh);
+
+    // Shoot ray from outside along -Z toward center
+    float origin[3] = {0, 0, 5};
+    float dir[3] = {0, 0, -1};
+    auto hit = bromesh::raycast(mesh, origin, dir);
+
+    ASSERT(hit.hit, "raycast_sphere: should hit");
+    ASSERT(std::fabs(hit.position[2] - 2.0f) < 0.3f, "raycast_sphere: hit near +Z pole");
+    ASSERT(hit.distance > 0, "raycast_sphere: positive distance");
+    // Normal should be roughly aligned with +Z or -Z (face normal may point inward depending on winding)
+    ASSERT(std::fabs(hit.normal[2]) > 0.5f, "raycast_sphere: normal has strong Z component");
+    tests_passed++;
+}
+
+TEST(raycast_miss) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+
+    // Shoot ray that misses entirely
+    float origin[3] = {10, 10, 10};
+    float dir[3] = {1, 0, 0}; // pointing away
+    auto hit = bromesh::raycast(mesh, origin, dir);
+
+    ASSERT(!hit.hit, "raycast_miss: should not hit");
+    tests_passed++;
+}
+
+TEST(raycast_max_distance) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+
+    float origin[3] = {0, 0, 10};
+    float dir[3] = {0, 0, -1};
+
+    // Max distance too short
+    auto hit = bromesh::raycast(mesh, origin, dir, 5.0f);
+    ASSERT(!hit.hit, "raycast_maxdist: too far, should miss");
+
+    // Max distance sufficient
+    auto hit2 = bromesh::raycast(mesh, origin, dir, 20.0f);
+    ASSERT(hit2.hit, "raycast_maxdist: close enough, should hit");
+    tests_passed++;
+}
+
+TEST(raycast_all_through_box) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+
+    // Ray through center of box should hit 2 faces (entry + exit)
+    float origin[3] = {0, 0, 5};
+    float dir[3] = {0, 0, -1};
+    auto hits = bromesh::raycastAll(mesh, origin, dir);
+
+    ASSERT(hits.size() >= 2, "raycast_all: at least 2 hits through box");
+    // Should be sorted by distance
+    if (hits.size() >= 2) {
+        ASSERT(hits[0].distance <= hits[1].distance, "raycast_all: sorted by distance");
+    }
+    tests_passed++;
+}
+
+TEST(raycast_test_fast) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+
+    float origin[3] = {0, 0, 5};
+    float dir[3] = {0, 0, -1};
+    ASSERT(bromesh::raycastTest(mesh, origin, dir), "raycast_test: should hit box");
+
+    float dir2[3] = {0, 0, 1}; // away
+    ASSERT(!bromesh::raycastTest(mesh, origin, dir2), "raycast_test: should miss");
+    tests_passed++;
+}
+
+TEST(closest_point_on_box) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(mesh);
+
+    // Point above the box
+    float point[3] = {0, 5, 0};
+    auto cp = bromesh::closestPoint(mesh, point);
+
+    ASSERT(cp.hit, "closest_point: should find a point");
+    ASSERT(std::fabs(cp.position[1] - 1.0f) < 0.01f, "closest_point: on top face Y=1");
+    ASSERT(cp.distance > 3.5f && cp.distance < 4.5f, "closest_point: distance ~4");
+    tests_passed++;
+}
+
+TEST(closest_point_inside) {
+    tests_run++;
+    auto mesh = bromesh::sphere(2.0f, 16, 12);
+
+    // Point at center
+    float point[3] = {0, 0, 0};
+    auto cp = bromesh::closestPoint(mesh, point);
+
+    ASSERT(cp.hit, "closest_inside: should find a point");
+    // Distance should be approximately the radius
+    ASSERT(std::fabs(cp.distance - 2.0f) < 0.3f, "closest_inside: distance ~= radius");
+    tests_passed++;
+}
+
+// ====================== Self-Intersection Detection ======================
+
+TEST(self_intersect_clean_box) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+
+    ASSERT(!bromesh::hasSelfIntersections(mesh), "clean_box: no self-intersections");
+    auto pairs = bromesh::findSelfIntersections(mesh);
+    ASSERT(pairs.empty(), "clean_box: no intersection pairs");
+    tests_passed++;
+}
+
+TEST(self_intersect_clean_sphere) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+    ASSERT(!bromesh::hasSelfIntersections(mesh), "clean_sphere: no self-intersections");
+    tests_passed++;
+}
+
+TEST(self_intersect_created) {
+    tests_run++;
+    // Create a self-intersecting mesh by merging two overlapping boxes
+    auto box1 = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto box2 = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::translateMesh(box2, 0.5f, 0.5f, 0.5f);
+
+    auto merged = bromesh::mergeMeshes({box1, box2});
+    ASSERT(bromesh::hasSelfIntersections(merged),
+           "overlapping_boxes: should have self-intersections");
+
+    auto pairs = bromesh::findSelfIntersections(merged);
+    ASSERT(!pairs.empty(), "overlapping_boxes: should find intersection pairs");
+    tests_passed++;
+}
+
+TEST(meshes_intersect_overlapping) {
+    tests_run++;
+    auto box1 = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto box2 = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::translateMesh(box2, 0.5f, 0.5f, 0.5f);
+
+    ASSERT(bromesh::meshesIntersect(box1, box2), "overlap: boxes should intersect");
+    tests_passed++;
+}
+
+TEST(meshes_intersect_separated) {
+    tests_run++;
+    auto box1 = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto box2 = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::translateMesh(box2, 10.0f, 0.0f, 0.0f);
+
+    ASSERT(!bromesh::meshesIntersect(box1, box2), "separated: boxes should not intersect");
     tests_passed++;
 }
 

@@ -15,7 +15,8 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 | **Smoothing** | Laplacian, Taubin (shrinkage-free) |
 | **Remeshing** | Isotropic remeshing (edge split/collapse/flip + tangential relaxation) |
 | **Reconstruction** | Point cloud to mesh via implicit surface estimation + marching cubes |
-| **Analysis** | Bounding box, manifold check, volume, surface area, triangle areas, convex decomposition (V-HACD), convex hull, surface sampling |
+| **Analysis** | Bounding box, manifold check, volume, surface area, triangle areas, convex decomposition (V-HACD), convex hull, surface sampling, self-intersection detection |
+| **Queries** | Raycast (closest/all/test), closest point on surface, mesh-mesh intersection test |
 | **Baking** | Ambient occlusion, mean curvature, thickness — to vertex colors or UV-space textures; world-space normal maps, position maps |
 | **UV** | Box, planar (XY/XZ/YZ), cylindrical, spherical projection; automatic unwrapping and atlas packing (xatlas); quality metrics (L2 stretch, area/angle distortion, packing efficiency) |
 | **Optimization** | Vertex cache, vertex fetch, overdraw, meshlet generation, spatial sorting, shadow index buffer, mesh encoding/compression, triangle strips |
@@ -190,6 +191,33 @@ auto perTri = bromesh::computeUVDistortion(mesh);  // Per-triangle stretch/area/
 
 auto points = bromesh::sampleSurface(mesh, 10000, 42);  // 10k uniform random points
 float area = bromesh::computeSurfaceArea(mesh);
+```
+
+### Raycasting and queries
+
+```cpp
+#include "bromesh/analysis/raycast.h"
+
+float origin[3] = {0, 5, 0};
+float dir[3] = {0, -1, 0};
+auto hit = bromesh::raycast(mesh, origin, dir);          // Closest hit
+if (hit.hit) { /* hit.position, hit.normal, hit.distance, hit.triangleIndex */ }
+
+auto all = bromesh::raycastAll(mesh, origin, dir);       // All hits, sorted by distance
+bool any  = bromesh::raycastTest(mesh, origin, dir);     // Fast boolean test
+
+float point[3] = {2, 3, 1};
+auto cp = bromesh::closestPoint(mesh, point);            // Nearest surface point
+```
+
+### Self-intersection and mesh-mesh intersection
+
+```cpp
+#include "bromesh/analysis/intersect.h"
+
+bool bad = bromesh::hasSelfIntersections(mesh);           // Fast boolean check
+auto pairs = bromesh::findSelfIntersections(mesh);        // All intersecting triangle pairs
+bool overlap = bromesh::meshesIntersect(meshA, meshB);    // Cross-mesh test
 ```
 
 ### Boolean/CSG operations
