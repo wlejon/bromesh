@@ -181,6 +181,7 @@ add_library(bromesh STATIC
     src/analysis/manifold_check.cpp
     src/analysis/convex_decomposition.cpp
     src/analysis/bake.cpp
+    src/analysis/bake_texture.cpp
 
     # UV
     src/uv/projection.cpp
