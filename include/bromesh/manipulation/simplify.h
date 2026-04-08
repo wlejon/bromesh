@@ -20,6 +20,13 @@ MeshData simplifyWithAttributes(const MeshData& mesh, float targetRatio,
                                 float uvWeight = 1.0f,
                                 float normalWeight = 0.5f);
 
+/// Simplify a mesh to a target triangle count (absolute, not ratio).
+/// Internally computes the ratio from the mesh's current triangle count.
+/// targetTriangles: desired number of triangles (clamped to [1, current]).
+/// targetError: maximum allowed error (0 = no limit).
+MeshData simplifyToTriangleCount(const MeshData& mesh, size_t targetTriangles,
+                                 float targetError = 0.01f);
+
 /// Generate an LOD chain: multiple simplification levels.
 /// ratios: array of target ratios (e.g. {0.5, 0.25, 0.125}).
 /// Returns one MeshData per ratio.

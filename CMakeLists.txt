@@ -130,6 +130,24 @@ else()
     set(BROMESH_HAS_MANIFOLD OFF)
 endif()
 
+# OpenFBX — FBX file loading (we compile it from source)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/OpenFBX/src/ofbx.h")
+    add_library(openfbx STATIC
+        third_party/OpenFBX/src/ofbx.cpp
+        third_party/OpenFBX/src/libdeflate.c
+    )
+    target_include_directories(openfbx PUBLIC third_party/OpenFBX/src)
+    if(MSVC)
+        target_compile_options(openfbx PRIVATE /W0)
+    else()
+        target_compile_options(openfbx PRIVATE -w)
+    endif()
+    set(BROMESH_HAS_OPENFBX ON)
+else()
+    message(STATUS "bromesh: OpenFBX not found, FBX loading disabled")
+    set(BROMESH_HAS_OPENFBX OFF)
+endif()
+
 # --- bromesh library ---
 
 add_library(bromesh STATIC
@@ -153,11 +171,15 @@ add_library(bromesh STATIC
     src/manipulation/weld.cpp
     src/manipulation/merge.cpp
     src/manipulation/repair.cpp
+    src/manipulation/subdivide.cpp
+    src/manipulation/smooth.cpp
+    src/manipulation/remesh.cpp
 
     # Analysis
     src/analysis/bbox.cpp
     src/analysis/manifold_check.cpp
     src/analysis/convex_decomposition.cpp
+    src/analysis/bake.cpp
 
     # UV
     src/uv/projection.cpp
@@ -177,6 +199,11 @@ add_library(bromesh STATIC
     src/io/obj.cpp
     src/io/vox.cpp
     src/io/stl.cpp
+    src/io/ply.cpp
+    src/io/fbx.cpp
+
+    # Reconstruction
+    src/reconstruction/reconstruct.cpp
 
     # UV unwrapping
     src/uv/unwrap.cpp
@@ -225,6 +252,11 @@ endif()
 if(BROMESH_HAS_MANIFOLD)
     target_link_libraries(bromesh PRIVATE manifold_lib)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_MANIFOLD=1)
+endif()
+
+if(BROMESH_HAS_OPENFBX)
+    target_link_libraries(bromesh PRIVATE openfbx)
+    target_compile_definitions(bromesh PUBLIC BROMESH_HAS_OPENFBX=1)
 endif()
 
 # Tests

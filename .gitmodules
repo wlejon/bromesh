@@ -13,3 +13,6 @@
 [submodule "third_party/manifold"]
 	path = third_party/manifold
 	url = https://github.com/elalish/manifold.git
+[submodule "third_party/OpenFBX"]
+	path = third_party/OpenFBX
+	url = https://github.com/nem0/OpenFBX.git

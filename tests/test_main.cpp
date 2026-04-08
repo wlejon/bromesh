@@ -27,6 +27,13 @@
 #include "bromesh/io/vox.h"
 #include "bromesh/io/stl.h"
 #include "bromesh/io/gltf.h"
+#include "bromesh/io/ply.h"
+#include "bromesh/io/fbx.h"
+#include "bromesh/manipulation/subdivide.h"
+#include "bromesh/manipulation/smooth.h"
+#include "bromesh/manipulation/remesh.h"
+#include "bromesh/reconstruction/reconstruct.h"
+#include "bromesh/analysis/bake.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -2132,6 +2139,251 @@ TEST(boolean_box_minus_sphere) {
 }
 
 #endif // BROMESH_HAS_MANIFOLD
+
+// ====================== SUBDIVISION ======================
+
+TEST(subdivide_midpoint_box) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto result = bromesh::subdivideMidpoint(mesh, 1);
+    // Each triangle splits into 4, box has 12 triangles -> 48
+    ASSERT(result.triangleCount() == mesh.triangleCount() * 4,
+           "midpoint_box: should have 4x triangles");
+    ASSERT(result.vertexCount() > mesh.vertexCount(),
+           "midpoint_box: should have more vertices");
+}
+
+TEST(subdivide_midpoint_two_iterations) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto result = bromesh::subdivideMidpoint(mesh, 2);
+    // 12 * 4 * 4 = 192
+    ASSERT(result.triangleCount() == mesh.triangleCount() * 16,
+           "midpoint_2x: should have 16x triangles");
+}
+
+TEST(subdivide_loop_sphere) {
+    auto mesh = bromesh::sphere(1.0f, 8, 6);
+    auto result = bromesh::subdivideLoop(mesh, 1);
+    ASSERT(result.triangleCount() == mesh.triangleCount() * 4,
+           "loop_sphere: should have 4x triangles");
+    ASSERT(result.hasNormals(), "loop_sphere: should have normals");
+}
+
+TEST(subdivide_catmull_clark_box) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto result = bromesh::subdivideCatmullClark(mesh, 1);
+    // CC on triangles: each tri -> 3 quads -> 6 triangles
+    ASSERT(result.triangleCount() == mesh.triangleCount() * 6,
+           "cc_box: should have 6x triangles");
+    ASSERT(result.hasNormals(), "cc_box: should have normals");
+}
+
+TEST(subdivide_zero_iterations) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto result = bromesh::subdivideLoop(mesh, 0);
+    ASSERT(result.triangleCount() == mesh.triangleCount(),
+           "subdiv_zero: 0 iterations should return same mesh");
+}
+
+// ====================== PLY I/O ======================
+
+TEST(ply_roundtrip_box) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(mesh);
+
+    bool ok = bromesh::savePLY(mesh, "test_box.ply");
+    ASSERT(ok, "ply_roundtrip: save should succeed");
+
+    auto loaded = bromesh::loadPLY("test_box.ply");
+    ASSERT(!loaded.empty(), "ply_roundtrip: load should succeed");
+    ASSERT(loaded.vertexCount() == mesh.vertexCount(),
+           "ply_roundtrip: vertex count should match");
+    ASSERT(loaded.triangleCount() == mesh.triangleCount(),
+           "ply_roundtrip: triangle count should match");
+    ASSERT(loaded.hasNormals(), "ply_roundtrip: should have normals");
+
+    std::remove("test_box.ply");
+}
+
+TEST(ply_roundtrip_with_colors) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    // Add vertex colors
+    mesh.colors.resize(mesh.vertexCount() * 4);
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        mesh.colors[v*4+0] = 1.0f;
+        mesh.colors[v*4+1] = 0.0f;
+        mesh.colors[v*4+2] = 0.0f;
+        mesh.colors[v*4+3] = 1.0f;
+    }
+
+    bromesh::savePLY(mesh, "test_box_col.ply");
+    auto loaded = bromesh::loadPLY("test_box_col.ply");
+    ASSERT(loaded.hasColors(), "ply_colors: should have colors");
+    ASSERT(std::fabs(loaded.colors[0] - 1.0f) < 0.01f,
+           "ply_colors: red channel should be ~1.0");
+
+    std::remove("test_box_col.ply");
+}
+
+TEST(ply_cross_format_obj_to_ply) {
+    auto mesh = bromesh::sphere(1.0f, 12, 8);
+    bromesh::computeNormals(mesh);
+
+    bromesh::saveOBJ(mesh, "test_sphere.obj");
+    auto obj = bromesh::loadOBJ("test_sphere.obj");
+
+    bromesh::savePLY(obj, "test_sphere.ply");
+    auto ply = bromesh::loadPLY("test_sphere.ply");
+
+    ASSERT(!ply.empty(), "ply_cross: loaded PLY should not be empty");
+    ASSERT(ply.triangleCount() == obj.triangleCount(),
+           "ply_cross: triangle count should match OBJ");
+
+    std::remove("test_sphere.obj");
+    std::remove("test_sphere.ply");
+}
+
+// ====================== SMOOTHING ======================
+
+TEST(smooth_laplacian_sphere) {
+    auto mesh = bromesh::sphere(1.0f, 8, 6);
+    bromesh::computeNormals(mesh);
+    auto origPositions = mesh.positions;
+
+    bromesh::smoothLaplacian(mesh, 0.5f, 3);
+
+    ASSERT(mesh.vertexCount() * 3 == origPositions.size(),
+           "laplacian: vertex count should not change");
+    // After smoothing, positions should be different
+    bool changed = false;
+    for (size_t i = 0; i < origPositions.size(); ++i) {
+        if (std::fabs(mesh.positions[i] - origPositions[i]) > 1e-6f) {
+            changed = true;
+            break;
+        }
+    }
+    ASSERT(changed, "laplacian: positions should change after smoothing");
+}
+
+TEST(smooth_taubin_box) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(mesh);
+
+    // Measure initial bounding box
+    auto bbox1 = bromesh::computeBBox(mesh);
+    float vol1 = (bbox1.max[0]-bbox1.min[0]) * (bbox1.max[1]-bbox1.min[1]) * (bbox1.max[2]-bbox1.min[2]);
+
+    bromesh::smoothTaubin(mesh, 0.5f, -0.53f, 5);
+
+    auto bbox2 = bromesh::computeBBox(mesh);
+    float vol2 = (bbox2.max[0]-bbox2.min[0]) * (bbox2.max[1]-bbox2.min[1]) * (bbox2.max[2]-bbox2.min[2]);
+
+    // Taubin should not shrink significantly (unlike pure Laplacian)
+    ASSERT(vol2 > vol1 * 0.5f, "taubin: should not shrink excessively");
+}
+
+// ====================== REMESHING ======================
+
+TEST(remesh_isotropic_sphere) {
+    auto mesh = bromesh::sphere(1.0f, 8, 6);
+    bromesh::computeNormals(mesh);
+
+    auto result = bromesh::remeshIsotropic(mesh, 0.0f, 3);
+    ASSERT(!result.empty(), "remesh: result should not be empty");
+    ASSERT(result.hasNormals(), "remesh: should have normals");
+    ASSERT(result.triangleCount() > 0, "remesh: should have triangles");
+}
+
+// ====================== RECONSTRUCTION ======================
+
+TEST(reconstruct_from_sphere_pointcloud) {
+    // Create a point cloud from a sphere
+    auto sphere = bromesh::sphere(1.0f, 16, 12);
+    bromesh::computeNormals(sphere);
+
+    bromesh::ReconstructParams params;
+    params.gridResolution = 32;
+
+    auto result = bromesh::reconstructFromPointCloud(sphere, params);
+    ASSERT(!result.empty(), "reconstruct: should produce mesh");
+    ASSERT(result.triangleCount() > 10, "reconstruct: should have reasonable triangle count");
+}
+
+// ====================== TARGET TRIANGLE COUNT DECIMATION ======================
+
+TEST(simplify_target_count) {
+    auto mesh = bromesh::sphere(1.0f, 16, 12);
+    size_t origTris = mesh.triangleCount();
+
+    size_t target = origTris / 4;
+    auto result = bromesh::simplifyToTriangleCount(mesh, target);
+
+    // Should have fewer triangles than original (meshopt may not hit exact target)
+    ASSERT(result.triangleCount() < origTris,
+           "target_count: should have fewer triangles");
+    ASSERT(result.triangleCount() > 0, "target_count: should have triangles");
+}
+
+TEST(simplify_target_count_identity) {
+    auto mesh = bromesh::sphere(1.0f, 8, 6);
+    size_t origTris = mesh.triangleCount();
+
+    // Requesting more than current should return same mesh
+    auto result = bromesh::simplifyToTriangleCount(mesh, origTris * 2);
+    ASSERT(result.triangleCount() == origTris,
+           "target_count_identity: should return unchanged when target >= current");
+}
+
+// ====================== VERTEX COLOR BAKING ======================
+
+TEST(bake_curvature_box) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(mesh);
+
+    bromesh::bakeCurvature(mesh, 1.0f);
+    ASSERT(mesh.hasColors(), "bake_curv: should have colors");
+    // All colors should be in [0,1]
+    bool valid = true;
+    for (size_t i = 0; i < mesh.colors.size(); ++i) {
+        if (mesh.colors[i] < -0.01f || mesh.colors[i] > 1.01f) {
+            valid = false;
+            break;
+        }
+    }
+    ASSERT(valid, "bake_curv: colors should be in [0,1]");
+}
+
+TEST(bake_ao_small_sphere) {
+    auto mesh = bromesh::sphere(1.0f, 6, 4);
+    bromesh::computeNormals(mesh);
+
+    bromesh::bakeAmbientOcclusion(mesh, 8, 0.0f);
+    ASSERT(mesh.hasColors(), "bake_ao: should have colors");
+    // AO values should be in [0,1]
+    bool valid = true;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float ao = mesh.colors[v*4+0];
+        if (ao < -0.01f || ao > 1.01f) { valid = false; break; }
+    }
+    ASSERT(valid, "bake_ao: AO values should be in [0,1]");
+}
+
+TEST(bake_thickness_box) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(mesh);
+
+    bromesh::bakeThickness(mesh, 8, 0.0f);
+    ASSERT(mesh.hasColors(), "bake_thick: should have colors");
+}
+
+// ====================== FBX I/O ======================
+
+#ifdef BROMESH_HAS_OPENFBX
+TEST(fbx_api_smoke) {
+    // Just verify the API compiles and doesn't crash on non-existent file
+    auto meshes = bromesh::loadFBX("nonexistent.fbx");
+    ASSERT(meshes.empty(), "fbx_smoke: non-existent file should return empty");
+}
+#endif
 
 int main() {
     std::printf("bromesh tests: %d/%d passed\n", tests_passed, tests_run);

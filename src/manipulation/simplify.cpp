@@ -91,6 +91,18 @@ MeshData simplify(const MeshData& mesh, float targetRatio, float targetError) {
 #endif
 }
 
+MeshData simplifyToTriangleCount(const MeshData& mesh, size_t targetTriangles,
+                                 float targetError) {
+    if (mesh.empty() || mesh.indices.empty()) return {};
+
+    size_t currentTriangles = mesh.triangleCount();
+    if (targetTriangles >= currentTriangles) return mesh;
+    if (targetTriangles < 1) targetTriangles = 1;
+
+    float ratio = static_cast<float>(targetTriangles) / static_cast<float>(currentTriangles);
+    return simplify(mesh, ratio, targetError);
+}
+
 std::vector<MeshData> generateLODChain(const MeshData& mesh,
                                        const float* ratios, int count) {
 #ifdef BROMESH_HAS_MESHOPTIMIZER
