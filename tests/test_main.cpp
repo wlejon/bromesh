@@ -21,6 +21,8 @@
 #include "bromesh/optimization/encode.h"
 #include "bromesh/optimization/strips.h"
 #include "bromesh/primitives/par_primitives.h"
+#include "bromesh/uv/unwrap.h"
+#include "bromesh/csg/boolean.h"
 #include "bromesh/io/obj.h"
 #include "bromesh/io/vox.h"
 #include "bromesh/io/stl.h"
@@ -1941,6 +1943,195 @@ TEST(repair_preserves_clean_mesh) {
     ASSERT(dupFixed.triangleCount() == mesh.triangleCount(),
            "repair_clean: duplicate removal should not change clean mesh");
 }
+
+// ============================================================================
+// UV Unwrapping tests (xatlas)
+// ============================================================================
+
+#if BROMESH_HAS_XATLAS
+
+TEST(unwrap_sphere) {
+    auto mesh = bromesh::sphere(2.0f, 16, 12);
+    bromesh::computeNormals(mesh);
+    size_t origTriCount = mesh.triangleCount();
+
+    auto result = bromesh::unwrapUVs(mesh);
+    ASSERT(result.success, "unwrap_sphere: should succeed");
+    ASSERT(result.chartCount > 0, "unwrap_sphere: should have charts");
+    ASSERT(result.atlasWidth > 0, "unwrap_sphere: atlas width > 0");
+    ASSERT(result.atlasHeight > 0, "unwrap_sphere: atlas height > 0");
+    ASSERT(mesh.hasUVs(), "unwrap_sphere: should have UVs after unwrap");
+    ASSERT(mesh.triangleCount() == origTriCount, "unwrap_sphere: triangle count preserved");
+
+    // UVs should be in [0,1] range
+    bool uvsInRange = true;
+    for (size_t i = 0; i < mesh.uvs.size(); ++i) {
+        if (mesh.uvs[i] < -0.01f || mesh.uvs[i] > 1.01f) {
+            uvsInRange = false; break;
+        }
+    }
+    ASSERT(uvsInRange, "unwrap_sphere: UVs should be in [0,1] range");
+}
+
+TEST(unwrap_box) {
+    auto mesh = bromesh::box(1, 1, 1);
+    bromesh::computeNormals(mesh);
+
+    auto result = bromesh::unwrapUVs(mesh);
+    ASSERT(result.success, "unwrap_box: should succeed");
+    ASSERT(mesh.hasUVs(), "unwrap_box: should have UVs");
+    ASSERT(mesh.hasNormals(), "unwrap_box: should preserve normals");
+}
+
+TEST(unwrap_torus) {
+    auto mesh = bromesh::torus(2.0f, 0.5f, 24, 12);
+    bromesh::computeNormals(mesh);
+
+    auto result = bromesh::unwrapUVs(mesh);
+    ASSERT(result.success, "unwrap_torus: should succeed");
+    ASSERT(result.chartCount > 1, "unwrap_torus: torus should have multiple charts");
+    ASSERT(mesh.hasUVs(), "unwrap_torus: should have UVs");
+}
+
+TEST(unwrap_custom_params) {
+    auto mesh = bromesh::cylinder(1.0f, 2.0f, 16);
+    bromesh::computeNormals(mesh);
+
+    bromesh::UnwrapParams cp;
+    cp.maxStretch = 0.1f;
+    bromesh::PackParams pp;
+    pp.padding = 2;
+
+    auto result = bromesh::unwrapUVs(mesh, cp, pp);
+    ASSERT(result.success, "unwrap_custom: should succeed");
+    ASSERT(mesh.hasUVs(), "unwrap_custom: should have UVs");
+}
+
+#endif // BROMESH_HAS_XATLAS
+
+// ============================================================================
+// Boolean/CSG tests (manifold)
+// ============================================================================
+
+#if BROMESH_HAS_MANIFOLD
+
+// Helper: compute volume even on meshes with split vertices (like our primitives).
+// Uses the divergence theorem directly without the manifold check.
+static float rawVolume(const bromesh::MeshData& mesh) {
+    double sum = 0.0;
+    for (size_t t = 0; t < mesh.triangleCount(); ++t) {
+        uint32_t i0 = mesh.indices[t * 3 + 0];
+        uint32_t i1 = mesh.indices[t * 3 + 1];
+        uint32_t i2 = mesh.indices[t * 3 + 2];
+        double ax = mesh.positions[i0*3], ay = mesh.positions[i0*3+1], az = mesh.positions[i0*3+2];
+        double bx = mesh.positions[i1*3], by = mesh.positions[i1*3+1], bz = mesh.positions[i1*3+2];
+        double cx = mesh.positions[i2*3], cy = mesh.positions[i2*3+1], cz = mesh.positions[i2*3+2];
+        sum += ax*(by*cz-bz*cy) + ay*(bz*cx-bx*cz) + az*(bx*cy-by*cx);
+    }
+    return static_cast<float>(std::fabs(sum) / 6.0);
+}
+
+TEST(boolean_union) {
+    // Two overlapping spheres
+    auto a = bromesh::sphere(1.0f, 16, 12);
+    auto b = bromesh::sphere(1.0f, 16, 12);
+    for (size_t v = 0; v < b.vertexCount(); ++v) {
+        b.positions[v * 3 + 0] += 1.0f;
+    }
+
+    auto result = bromesh::booleanUnion(a, b);
+    ASSERT(!result.empty(), "bool_union: should produce non-empty result");
+    ASSERT(result.triangleCount() > 0, "bool_union: should have triangles");
+    float volA = rawVolume(a);
+    float volResult = rawVolume(result);
+    ASSERT(volResult > volA * 0.9f, "bool_union: result volume should exceed single sphere");
+}
+
+TEST(boolean_difference) {
+    auto a = bromesh::sphere(2.0f, 16, 12);
+    auto b = bromesh::sphere(1.0f, 16, 12);
+    for (size_t v = 0; v < b.vertexCount(); ++v) {
+        b.positions[v * 3 + 0] += 1.5f;
+    }
+
+    auto result = bromesh::booleanDifference(a, b);
+    ASSERT(!result.empty(), "bool_diff: should produce non-empty result");
+    ASSERT(result.triangleCount() > 0, "bool_diff: should have triangles");
+    // Result should have fewer vertices than the sum of both inputs
+    ASSERT(result.vertexCount() < a.vertexCount() + b.vertexCount(),
+           "bool_diff: should not just concatenate meshes");
+    // BBox should fit within A's bbox
+    auto bboxA = bromesh::computeBBox(a);
+    auto bboxR = bromesh::computeBBox(result);
+    ASSERT(bboxR.min[0] >= bboxA.min[0] - 0.01f && bboxR.max[0] <= bboxA.max[0] + 0.01f,
+           "bool_diff: result should fit within A's bbox on X");
+}
+
+TEST(boolean_intersection) {
+    auto a = bromesh::sphere(1.0f, 16, 12);
+    auto b = bromesh::sphere(1.0f, 16, 12);
+    for (size_t v = 0; v < b.vertexCount(); ++v) {
+        b.positions[v * 3 + 0] += 0.5f;
+    }
+
+    auto result = bromesh::booleanIntersection(a, b);
+    ASSERT(!result.empty(), "bool_isect: should produce non-empty result");
+    float volA = rawVolume(a);
+    float volResult = rawVolume(result);
+    ASSERT(volResult < volA * 1.01f, "bool_isect: intersection volume should be less than full sphere");
+    ASSERT(volResult > 0.01f, "bool_isect: intersection should have meaningful volume");
+}
+
+TEST(boolean_no_overlap) {
+    auto a = bromesh::sphere(1.0f, 16, 12);
+    auto b = bromesh::sphere(1.0f, 16, 12);
+    for (size_t v = 0; v < b.vertexCount(); ++v) {
+        b.positions[v * 3 + 0] += 5.0f;
+    }
+
+    auto result = bromesh::booleanUnion(a, b);
+    ASSERT(!result.empty(), "bool_nooverlap: should produce result");
+    float volA = rawVolume(a);
+    float volB = rawVolume(b);
+    float volResult = rawVolume(result);
+    float expected = volA + volB;
+    ASSERT(std::fabs(volResult - expected) < expected * 0.15f,
+           "bool_nooverlap: union volume should be sum of parts");
+}
+
+TEST(split_by_plane) {
+    auto mesh = bromesh::sphere(2.0f, 24, 16);
+
+    auto [top, bottom] = bromesh::splitByPlane(mesh, 0, 1, 0, 0);
+    ASSERT(!top.empty(), "split_plane: top half should be non-empty");
+    ASSERT(!bottom.empty(), "split_plane: bottom half should be non-empty");
+
+    float topVol = rawVolume(top);
+    float bottomVol = rawVolume(bottom);
+
+    // Both halves should be roughly equal for a centered sphere split at Y=0
+    ASSERT(std::fabs(topVol - bottomVol) < (topVol + bottomVol) * 0.2f,
+           "split_plane: halves should be roughly equal");
+}
+
+TEST(boolean_box_minus_sphere) {
+    auto cube = bromesh::box(1.5f, 1.5f, 1.5f);
+    auto ball = bromesh::sphere(1.0f, 16, 12);
+
+    auto result = bromesh::booleanDifference(cube, ball);
+    ASSERT(!result.empty(), "bool_box_sphere: should produce result");
+    ASSERT(result.triangleCount() > 0, "bool_box_sphere: should have triangles");
+    // Result should be more complex than the original cube (added sphere boundary)
+    ASSERT(result.triangleCount() > cube.triangleCount(),
+           "bool_box_sphere: result should have more triangles than original cube");
+    // BBox should fit within cube's bbox
+    auto bboxC = bromesh::computeBBox(cube);
+    auto bboxR = bromesh::computeBBox(result);
+    ASSERT(bboxR.min[0] >= bboxC.min[0] - 0.01f && bboxR.max[0] <= bboxC.max[0] + 0.01f,
+           "bool_box_sphere: result should fit within cube bbox");
+}
+
+#endif // BROMESH_HAS_MANIFOLD
 
 int main() {
     std::printf("bromesh tests: %d/%d passed\n", tests_passed, tests_run);

@@ -7,3 +7,9 @@
 [submodule "third_party/tinygltf"]
 	path = third_party/tinygltf
 	url = https://github.com/syoyo/tinygltf.git
+[submodule "third_party/xatlas"]
+	path = third_party/xatlas
+	url = https://github.com/jpcy/xatlas.git
+[submodule "third_party/manifold"]
+	path = third_party/manifold
+	url = https://github.com/elalish/manifold.git

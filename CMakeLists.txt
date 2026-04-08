@@ -79,6 +79,57 @@ else()
     set(BROMESH_HAS_VHACD OFF)
 endif()
 
+# xatlas — automatic UV unwrapping and atlas generation
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas/source/xatlas/xatlas.h")
+    add_library(xatlas STATIC third_party/xatlas/source/xatlas/xatlas.cpp)
+    target_include_directories(xatlas PUBLIC third_party/xatlas/source/xatlas)
+    if(MSVC)
+        target_compile_options(xatlas PRIVATE /W0)
+    else()
+        target_compile_options(xatlas PRIVATE -w)
+    endif()
+    set(BROMESH_HAS_XATLAS ON)
+else()
+    message(STATUS "bromesh: xatlas not found, UV unwrapping disabled")
+    set(BROMESH_HAS_XATLAS OFF)
+endif()
+
+# manifold — Boolean/CSG operations (built from source, no optional deps)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/manifold/src/manifold.cpp")
+    add_library(manifold_lib STATIC
+        third_party/manifold/src/boolean3.cpp
+        third_party/manifold/src/boolean_result.cpp
+        third_party/manifold/src/constructors.cpp
+        third_party/manifold/src/csg_tree.cpp
+        third_party/manifold/src/edge_op.cpp
+        third_party/manifold/src/face_op.cpp
+        third_party/manifold/src/impl.cpp
+        third_party/manifold/src/manifold.cpp
+        third_party/manifold/src/minkowski.cpp
+        third_party/manifold/src/polygon.cpp
+        third_party/manifold/src/properties.cpp
+        third_party/manifold/src/quickhull.cpp
+        third_party/manifold/src/sdf.cpp
+        third_party/manifold/src/smoothing.cpp
+        third_party/manifold/src/sort.cpp
+        third_party/manifold/src/subdivision.cpp
+        third_party/manifold/src/tree2d.cpp
+    )
+    target_include_directories(manifold_lib PUBLIC third_party/manifold/include)
+    target_include_directories(manifold_lib PRIVATE third_party/manifold/src)
+    target_compile_features(manifold_lib PUBLIC cxx_std_17)
+    target_compile_definitions(manifold_lib PUBLIC MANIFOLD_PAR=-1)
+    if(MSVC)
+        target_compile_options(manifold_lib PRIVATE /W0 /DNOMINMAX /bigobj /fp:precise)
+    else()
+        target_compile_options(manifold_lib PRIVATE -w)
+    endif()
+    set(BROMESH_HAS_MANIFOLD ON)
+else()
+    message(STATUS "bromesh: manifold not found, Boolean/CSG disabled")
+    set(BROMESH_HAS_MANIFOLD OFF)
+endif()
+
 # --- bromesh library ---
 
 add_library(bromesh STATIC
@@ -126,6 +177,12 @@ add_library(bromesh STATIC
     src/io/obj.cpp
     src/io/vox.cpp
     src/io/stl.cpp
+
+    # UV unwrapping
+    src/uv/unwrap.cpp
+
+    # Boolean/CSG
+    src/csg/boolean.cpp
 )
 
 target_include_directories(bromesh PUBLIC include)
@@ -158,6 +215,16 @@ endif()
 if(BROMESH_HAS_VHACD)
     target_link_libraries(bromesh PRIVATE vhacd)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_VHACD=1)
+endif()
+
+if(BROMESH_HAS_XATLAS)
+    target_link_libraries(bromesh PRIVATE xatlas)
+    target_compile_definitions(bromesh PUBLIC BROMESH_HAS_XATLAS=1)
+endif()
+
+if(BROMESH_HAS_MANIFOLD)
+    target_link_libraries(bromesh PRIVATE manifold_lib)
+    target_compile_definitions(bromesh PUBLIC BROMESH_HAS_MANIFOLD=1)
 endif()
 
 # Tests
