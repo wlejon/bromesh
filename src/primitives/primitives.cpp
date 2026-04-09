@@ -114,8 +114,8 @@ MeshData sphere(float radius, int segments, int rings) {
             uint32_t c = a + 1;
             uint32_t d = b + 1;
 
-            pushTri(m, a, b, c);
-            pushTri(m, c, b, d);
+            pushTri(m, a, c, b);
+            pushTri(m, c, d, b);
         }
     }
 
@@ -171,7 +171,7 @@ MeshData cylinder(float radius, float halfHeight, int segments) {
                      0.5f + cx * 0.5f, 0.5f + cz * 0.5f);
         }
         for (int s = 0; s < segments; s++) {
-            pushTri(m, centerIdx, centerIdx + 1 + s, centerIdx + 2 + s);
+            pushTri(m, centerIdx, centerIdx + 2 + s, centerIdx + 1 + s);
         }
     }
 
@@ -188,7 +188,7 @@ MeshData cylinder(float radius, float halfHeight, int segments) {
                      0.5f + cx * 0.5f, 0.5f + cz * 0.5f);
         }
         for (int s = 0; s < segments; s++) {
-            pushTri(m, centerIdx, centerIdx + 2 + s, centerIdx + 1 + s);
+            pushTri(m, centerIdx, centerIdx + 1 + s, centerIdx + 2 + s);
         }
     }
 
@@ -274,8 +274,8 @@ MeshData capsule(float radius, float halfHeight, int segments, int rings) {
             uint32_t b = a + (segments + 1);
             uint32_t c = a + 1;
             uint32_t d = b + 1;
-            pushTri(m, a, b, c);
-            pushTri(m, c, b, d);
+            pushTri(m, a, c, b);
+            pushTri(m, c, d, b);
         }
     }
 
@@ -352,8 +352,8 @@ MeshData torus(float majorRadius, float minorRadius, int majorSegments, int mino
             uint32_t b = a + (minorSegments + 1);
             uint32_t c = a + 1;
             uint32_t d = b + 1;
-            pushTri(m, a, b, c);
-            pushTri(m, c, b, d);
+            pushTri(m, a, c, b);
+            pushTri(m, c, d, b);
         }
     }
 
