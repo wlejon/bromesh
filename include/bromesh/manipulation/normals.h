@@ -12,6 +12,11 @@ void computeNormals(MeshData& mesh);
 /// This duplicates vertices so each triangle has its own set.
 MeshData computeFlatNormals(const MeshData& mesh);
 
+/// Compute smooth normals with crease splitting. Adjacent faces whose normals
+/// differ by more than angleThresholdDeg get separate vertex normals.
+/// This produces smooth shading on curved surfaces and sharp edges at creases.
+MeshData computeCreaseNormals(const MeshData& mesh, float angleThresholdDeg = 30.0f);
+
 /// Compute tangent vectors (for normal mapping). Requires UVs.
 /// Returns tangents as a separate array: 4 floats per vertex (xyz + handedness w).
 std::vector<float> computeTangents(const MeshData& mesh);

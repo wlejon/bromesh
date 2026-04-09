@@ -1,6 +1,11 @@
 #include "bromesh/manipulation/normals.h"
 #include <cmath>
 #include <cstring>
+#include <vector>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 namespace bromesh {
 
@@ -57,6 +62,92 @@ void computeNormals(MeshData& mesh) {
             mesh.normals[v * 3 + 2] *= inv;
         }
     }
+}
+
+MeshData computeCreaseNormals(const MeshData& mesh, float angleThresholdDeg) {
+    if (mesh.positions.empty() || mesh.indices.empty()) return {};
+
+    const float cosThreshold = std::cos(angleThresholdDeg * (float)M_PI / 180.0f);
+    size_t triCount = mesh.triangleCount();
+    size_t vertCount = mesh.vertexCount();
+
+    // Step 1: compute face normals
+    struct FN { float x, y, z; };
+    std::vector<FN> fn(triCount);
+    for (size_t t = 0; t < triCount; ++t) {
+        uint32_t i0 = mesh.indices[t*3], i1 = mesh.indices[t*3+1], i2 = mesh.indices[t*3+2];
+        float e1x = mesh.positions[i1*3] - mesh.positions[i0*3];
+        float e1y = mesh.positions[i1*3+1] - mesh.positions[i0*3+1];
+        float e1z = mesh.positions[i1*3+2] - mesh.positions[i0*3+2];
+        float e2x = mesh.positions[i2*3] - mesh.positions[i0*3];
+        float e2y = mesh.positions[i2*3+1] - mesh.positions[i0*3+1];
+        float e2z = mesh.positions[i2*3+2] - mesh.positions[i0*3+2];
+        float nx = e1y*e2z - e1z*e2y, ny = e1z*e2x - e1x*e2z, nz = e1x*e2y - e1y*e2x;
+        float len = std::sqrt(nx*nx + ny*ny + nz*nz);
+        if (len > 1e-8f) { nx /= len; ny /= len; nz /= len; }
+        fn[t] = {nx, ny, nz};
+    }
+
+    // Step 2: per-vertex face adjacency
+    std::vector<std::vector<uint32_t>> vf(vertCount);
+    for (size_t t = 0; t < triCount; ++t)
+        for (int k = 0; k < 3; ++k)
+            vf[mesh.indices[t*3+k]].push_back((uint32_t)t);
+
+    // Step 3: group adjacent faces per vertex by normal similarity, emit split vertices
+    MeshData result;
+    bool hasUV = mesh.hasUVs(), hasC = mesh.hasColors();
+    std::vector<std::vector<int32_t>> vfGroup(vertCount);
+    for (size_t v = 0; v < vertCount; ++v)
+        vfGroup[v].assign(vf[v].size(), -1);
+    uint32_t newCount = 0;
+
+    for (size_t v = 0; v < vertCount; ++v) {
+        auto& faces = vf[v];
+        auto& groups = vfGroup[v];
+        for (size_t fi = 0; fi < faces.size(); ++fi) {
+            if (groups[fi] >= 0) continue;
+            uint32_t gid = newCount++;
+            groups[fi] = (int32_t)gid;
+            auto& seed = fn[faces[fi]];
+            float ax = seed.x, ay = seed.y, az = seed.z;
+            for (size_t fj = fi + 1; fj < faces.size(); ++fj) {
+                if (groups[fj] >= 0) continue;
+                auto& f2 = fn[faces[fj]];
+                if (seed.x*f2.x + seed.y*f2.y + seed.z*f2.z >= cosThreshold) {
+                    groups[fj] = (int32_t)gid;
+                    ax += f2.x; ay += f2.y; az += f2.z;
+                }
+            }
+            float len = std::sqrt(ax*ax + ay*ay + az*az);
+            if (len > 1e-8f) { ax /= len; ay /= len; az /= len; }
+            result.positions.push_back(mesh.positions[v*3]);
+            result.positions.push_back(mesh.positions[v*3+1]);
+            result.positions.push_back(mesh.positions[v*3+2]);
+            result.normals.push_back(ax);
+            result.normals.push_back(ay);
+            result.normals.push_back(az);
+            if (hasUV) { result.uvs.push_back(mesh.uvs[v*2]); result.uvs.push_back(mesh.uvs[v*2+1]); }
+            if (hasC) { for (int c = 0; c < 4; ++c) result.colors.push_back(mesh.colors[v*4+c]); }
+        }
+    }
+
+    // Step 4: remap indices
+    result.indices.resize(triCount * 3);
+    for (size_t t = 0; t < triCount; ++t) {
+        for (int k = 0; k < 3; ++k) {
+            uint32_t ov = mesh.indices[t*3+k];
+            auto& faces = vf[ov];
+            auto& groups = vfGroup[ov];
+            for (size_t fi = 0; fi < faces.size(); ++fi) {
+                if (faces[fi] == (uint32_t)t) {
+                    result.indices[t*3+k] = (uint32_t)groups[fi];
+                    break;
+                }
+            }
+        }
+    }
+    return result;
 }
 
 MeshData computeFlatNormals(const MeshData& mesh) {
