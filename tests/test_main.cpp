@@ -3212,6 +3212,128 @@ TEST(progressive_mesh_preserves_attributes) {
     tests_passed++;
 }
 
+// --- Winding order tests: verify all primitives have outward-facing normals ---
+// For each triangle, compute the geometric face normal via cross product, then
+// check it points outward. For convex meshes centered at origin, "outward" means
+// dot(faceNormal, centroid - meshCenter) >= 0. For a torus, we project onto
+// the ring to find the tube center.
+
+// Check outward winding for convex primitives centered at (cx,cy,cz).
+// Uses a small negative tolerance for degenerate pole triangles.
+static bool checkOutwardWinding(const bromesh::MeshData& m, float cx, float cy, float cz) {
+    size_t triCount = m.triangleCount();
+    for (size_t t = 0; t < triCount; t++) {
+        uint32_t i0 = m.indices[t * 3 + 0];
+        uint32_t i1 = m.indices[t * 3 + 1];
+        uint32_t i2 = m.indices[t * 3 + 2];
+
+        float ax = m.positions[i0 * 3 + 0], ay = m.positions[i0 * 3 + 1], az = m.positions[i0 * 3 + 2];
+        float bx = m.positions[i1 * 3 + 0], by = m.positions[i1 * 3 + 1], bz = m.positions[i1 * 3 + 2];
+        float ex = m.positions[i2 * 3 + 0], ey = m.positions[i2 * 3 + 1], ez = m.positions[i2 * 3 + 2];
+
+        float e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+        float e2x = ex - ax, e2y = ey - ay, e2z = ez - az;
+
+        float nx = e1y * e2z - e1z * e2y;
+        float ny = e1z * e2x - e1x * e2z;
+        float nz = e1x * e2y - e1y * e2x;
+
+        float dx = (ax + bx + ex) / 3.0f - cx;
+        float dy = (ay + by + ey) / 3.0f - cy;
+        float dz = (az + bz + ez) / 3.0f - cz;
+
+        float dot = nx * dx + ny * dy + nz * dz;
+        // Allow tiny negatives from degenerate pole triangles (fp precision)
+        if (dot < -1e-5f) return false;
+    }
+    return true;
+}
+
+// Check outward winding for a torus by projecting each face centroid onto the
+// major ring to find the tube center, then checking face normal vs that direction.
+static bool checkTorusWinding(const bromesh::MeshData& m, float majorRadius) {
+    size_t triCount = m.triangleCount();
+    for (size_t t = 0; t < triCount; t++) {
+        uint32_t i0 = m.indices[t * 3 + 0];
+        uint32_t i1 = m.indices[t * 3 + 1];
+        uint32_t i2 = m.indices[t * 3 + 2];
+
+        float ax = m.positions[i0 * 3 + 0], ay = m.positions[i0 * 3 + 1], az = m.positions[i0 * 3 + 2];
+        float bx = m.positions[i1 * 3 + 0], by = m.positions[i1 * 3 + 1], bz = m.positions[i1 * 3 + 2];
+        float ex = m.positions[i2 * 3 + 0], ey = m.positions[i2 * 3 + 1], ez = m.positions[i2 * 3 + 2];
+
+        float e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+        float e2x = ex - ax, e2y = ey - ay, e2z = ez - az;
+
+        float fnx = e1y * e2z - e1z * e2y;
+        float fny = e1z * e2x - e1x * e2z;
+        float fnz = e1x * e2y - e1y * e2x;
+
+        float cx = (ax + bx + ex) / 3.0f;
+        float cy = (ay + by + ey) / 3.0f;
+        float cz = (az + bz + ez) / 3.0f;
+
+        // Project centroid onto the XZ ring to get tube center
+        float len = std::sqrt(cx * cx + cz * cz);
+        float tcx = (cx / len) * majorRadius;
+        float tcz = (cz / len) * majorRadius;
+
+        float dx = cx - tcx, dy = cy, dz = cz - tcz;
+        float dot = fnx * dx + fny * dy + fnz * dz;
+        if (dot < -1e-5f) return false;
+    }
+    return true;
+}
+
+TEST(winding_order_box) {
+    tests_run++;
+    auto m = bromesh::box(2, 3, 4);
+    ASSERT(checkOutwardWinding(m, 0, 0, 0), "box: all face normals should point outward");
+    tests_passed++;
+}
+
+TEST(winding_order_sphere) {
+    tests_run++;
+    auto m = bromesh::sphere(2.0f, 16, 12);
+    ASSERT(checkOutwardWinding(m, 0, 0, 0), "sphere: all face normals should point outward");
+    tests_passed++;
+}
+
+TEST(winding_order_cylinder) {
+    tests_run++;
+    auto m = bromesh::cylinder(1.5f, 2.0f, 24);
+    ASSERT(checkOutwardWinding(m, 0, 0, 0), "cylinder: all face normals should point outward");
+    tests_passed++;
+}
+
+TEST(winding_order_capsule) {
+    tests_run++;
+    auto m = bromesh::capsule(1.0f, 1.5f, 16, 8);
+    ASSERT(checkOutwardWinding(m, 0, 0, 0), "capsule: all face normals should point outward");
+    tests_passed++;
+}
+
+TEST(winding_order_torus) {
+    tests_run++;
+    auto m = bromesh::torus(3.0f, 0.5f, 24, 12);
+    ASSERT(checkTorusWinding(m, 3.0f), "torus: all face normals should point outward from tube");
+    tests_passed++;
+}
+
+TEST(winding_order_sphere_high_res) {
+    tests_run++;
+    auto m = bromesh::sphere(5.0f, 64, 48);
+    ASSERT(checkOutwardWinding(m, 0, 0, 0), "sphere_high_res: all face normals should point outward");
+    tests_passed++;
+}
+
+TEST(winding_order_capsule_tall) {
+    tests_run++;
+    auto m = bromesh::capsule(0.5f, 4.0f, 32, 16);
+    ASSERT(checkOutwardWinding(m, 0, 0, 0), "capsule_tall: all face normals should point outward");
+    tests_passed++;
+}
+
 int main() {
     std::printf("bromesh tests: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
