@@ -185,6 +185,7 @@ add_library(bromesh STATIC
     src/analysis/bake_texture.cpp
     src/analysis/sample.cpp
     src/analysis/raycast.cpp
+    src/analysis/bvh.cpp
     src/analysis/intersect.cpp
 
     # UV

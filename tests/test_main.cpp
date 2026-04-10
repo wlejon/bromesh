@@ -40,6 +40,7 @@
 #include "bromesh/manipulation/transform.h"
 #include "bromesh/analysis/sample.h"
 #include "bromesh/analysis/raycast.h"
+#include "bromesh/analysis/bvh.h"
 #include "bromesh/analysis/intersect.h"
 #include "bromesh/optimization/progressive.h"
 
@@ -3001,6 +3002,143 @@ TEST(raycast_test_fast) {
 
     float dir2[3] = {0, 0, 1}; // away
     ASSERT(!bromesh::raycastTest(mesh, origin, dir2), "raycast_test: should miss");
+    tests_passed++;
+}
+
+// ============================================================================
+// BVH
+// ============================================================================
+
+TEST(bvh_build_empty) {
+    tests_run++;
+    bromesh::MeshData empty;
+    auto bvh = bromesh::MeshBVH::build(empty);
+    ASSERT(bvh.empty(), "bvh_empty: empty mesh → empty BVH");
+    ASSERT(bvh.nodeCount() == 0, "bvh_empty: 0 nodes");
+    tests_passed++;
+}
+
+TEST(bvh_build_box) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 2.0f, 3.0f);
+    auto bvh = bromesh::MeshBVH::build(mesh);
+    ASSERT(!bvh.empty(), "bvh_box: non-empty");
+    ASSERT(bvh.triangleCount() == mesh.triangleCount(), "bvh_box: indexes every tri");
+    auto bb = bvh.bounds();
+    ASSERT(std::fabs(bb.min[0] - -1.0f) < 1e-4f, "bvh_box: bounds minX");
+    ASSERT(std::fabs(bb.max[1] -  2.0f) < 1e-4f, "bvh_box: bounds maxY");
+    ASSERT(std::fabs(bb.max[2] -  3.0f) < 1e-4f, "bvh_box: bounds maxZ");
+    tests_passed++;
+}
+
+TEST(bvh_raycast_matches_brute_force) {
+    tests_run++;
+    // Use a dense sphere so the BVH actually has multiple levels.
+    auto mesh = bromesh::sphere(2.0f, 32, 24);
+    bromesh::computeNormals(mesh);
+    auto bvh = bromesh::MeshBVH::build(mesh);
+
+    // Shoot a handful of rays and cross-check with the brute-force raycast.
+    struct Ray { float o[3], d[3]; };
+    Ray rays[] = {
+        {{0, 0,  5}, { 0,  0, -1}},
+        {{5, 0,  0}, {-1,  0,  0}},
+        {{0, 5,  0}, { 0, -1,  0}},
+        {{3, 3,  3}, {-1, -1, -1}},
+        {{0, 0, 10}, { 0,  0, -1}},
+    };
+    for (const auto& r : rays) {
+        auto a = bromesh::raycast(mesh, r.o, r.d);
+        auto b = bvh.raycast(mesh, r.o, r.d);
+        ASSERT(a.hit == b.hit, "bvh_raycast_match: hit flag agrees");
+        if (a.hit && b.hit) {
+            ASSERT(std::fabs(a.distance - b.distance) < 1e-3f,
+                   "bvh_raycast_match: distance agrees");
+            ASSERT(a.triangleIndex == b.triangleIndex ||
+                   std::fabs(a.distance - b.distance) < 1e-3f,
+                   "bvh_raycast_match: same or equidistant triangle");
+        }
+    }
+    tests_passed++;
+}
+
+TEST(bvh_raycast_miss) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto bvh = bromesh::MeshBVH::build(mesh);
+
+    float origin[3] = {10, 10, 10};
+    float dir[3]    = {1, 0, 0};
+    auto hit = bvh.raycast(mesh, origin, dir);
+    ASSERT(!hit.hit, "bvh_miss: ray pointing away");
+    tests_passed++;
+}
+
+TEST(bvh_raycast_max_distance) {
+    tests_run++;
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto bvh = bromesh::MeshBVH::build(mesh);
+
+    float origin[3] = {0, 0, 10};
+    float dir[3]    = {0, 0, -1};
+    auto tooShort = bvh.raycast(mesh, origin, dir, 5.0f);
+    ASSERT(!tooShort.hit, "bvh_maxdist: short ray misses");
+    auto ok = bvh.raycast(mesh, origin, dir, 20.0f);
+    ASSERT(ok.hit, "bvh_maxdist: long ray hits");
+    tests_passed++;
+}
+
+TEST(bvh_raycast_axis_aligned_ray) {
+    tests_run++;
+    // Pure axis-aligned rays stress the slab test (one or more invDir entries
+    // would be infinite). Make sure it handles them.
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto bvh = bromesh::MeshBVH::build(mesh);
+
+    float origin[3] = {0, 0, 5};
+    float dir[3]    = {0, 0, -1};
+    auto hit = bvh.raycast(mesh, origin, dir);
+    ASSERT(hit.hit, "bvh_axis: axis-aligned ray hits box");
+    ASSERT(std::fabs(hit.position[2] - 1.0f) < 1e-3f, "bvh_axis: hits front face Z=1");
+    tests_passed++;
+}
+
+TEST(bvh_raycast_test_fast) {
+    tests_run++;
+    auto mesh = bromesh::sphere(1.5f, 24, 16);
+    auto bvh = bromesh::MeshBVH::build(mesh);
+
+    float origin[3] = {0, 0, 5};
+    float dir[3]    = {0, 0, -1};
+    ASSERT(bvh.raycastTest(mesh, origin, dir), "bvh_test: should hit");
+    float dir2[3]   = {0, 0, 1};
+    ASSERT(!bvh.raycastTest(mesh, origin, dir2), "bvh_test: should miss");
+    tests_passed++;
+}
+
+TEST(bvh_handles_degenerate_triangles) {
+    tests_run++;
+    // Three collinear vertices → degenerate triangle. BVH should still build
+    // without infinite recursion and raycast should not hit.
+    bromesh::MeshData m;
+    m.positions = {
+        0, 0, 0,
+        1, 0, 0,
+        2, 0, 0,
+        // A real triangle to make raycast meaningful.
+        0, 0, -1,
+        1, 0, -1,
+        0, 1, -1,
+    };
+    m.indices = { 0, 1, 2,  3, 4, 5 };
+    auto bvh = bromesh::MeshBVH::build(m);
+    ASSERT(!bvh.empty(), "bvh_degen: still builds");
+
+    float o[3] = {0.2f, 0.2f, 5};
+    float d[3] = {0, 0, -1};
+    auto hit = bvh.raycast(m, o, d);
+    ASSERT(hit.hit, "bvh_degen: hits the real triangle");
+    ASSERT(hit.triangleIndex == 1, "bvh_degen: hits triangle 1, not the degenerate one");
     tests_passed++;
 }
 
