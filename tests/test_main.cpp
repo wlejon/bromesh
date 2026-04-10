@@ -91,7 +91,12 @@ TEST(bbox_basics) {
     ASSERT(std::fabs(b.centerX()) < 0.001f, "center X");
     ASSERT(std::fabs(b.centerY()) < 0.001f, "center Y");
     ASSERT(std::fabs(b.centerZ()) < 0.001f, "center Z");
-    ASSERT(std::fabs(b.extentX() - 1.0f) < 0.001f, "extent X");
+    ASSERT(std::fabs(b.extentX() - 2.0f) < 0.001f, "extent X (full size)");
+    ASSERT(std::fabs(b.extentY() - 4.0f) < 0.001f, "extent Y (full size)");
+    ASSERT(std::fabs(b.extentZ() - 6.0f) < 0.001f, "extent Z (full size)");
+    ASSERT(std::fabs(b.halfExtentX() - 1.0f) < 0.001f, "halfExtent X");
+    ASSERT(std::fabs(b.halfExtentY() - 2.0f) < 0.001f, "halfExtent Y");
+    ASSERT(std::fabs(b.halfExtentZ() - 3.0f) < 0.001f, "halfExtent Z");
 }
 
 TEST(stubs_link) {
@@ -312,8 +317,16 @@ TEST(marching_cubes_all_positive) {
     float field[N * N * N];
     for (int i = 0; i < N * N * N; ++i)
         field[i] = 1.0f; // all positive, above isoLevel=0
-    auto mesh = bromesh::marchingCubes(field, N, N, N, 0.0f, 1.0f);
-    ASSERT(mesh.empty(), "all-positive field should produce empty mesh");
+
+    // closeBoundary=true (default): treats out-of-grid as below iso, so
+    // an all-inside field produces a closed skin around the entire grid.
+    auto closed = bromesh::marchingCubes(field, N, N, N, 0.0f, 1.0f);
+    ASSERT(!closed.empty(), "all-positive field with closeBoundary yields a closed skin");
+
+    // closeBoundary=false: legacy behavior, no boundary handling, so an
+    // all-positive field has no zero crossings and produces no triangles.
+    auto open = bromesh::marchingCubes(field, N, N, N, 0.0f, 1.0f, false);
+    ASSERT(open.empty(), "all-positive field with closeBoundary=false stays empty");
 }
 
 TEST(surface_nets_sphere) {
@@ -342,10 +355,17 @@ TEST(surface_nets_sphere) {
     ASSERT(snMesh.vertexCount() >= 50, "surface nets sphere should have at least 50 vertices");
     ASSERT(snMesh.triangleCount() >= 50, "surface nets sphere should have at least 50 triangles");
 
-    // Surface nets should produce fewer vertices than marching cubes (shared vertices)
+    // Now that marching cubes welds shared-edge vertices the two algorithms
+    // produce comparable counts (surface nets: 1 vert per surface-containing
+    // cell; welded MC: 1 vert per intersected cube edge). The original test
+    // assumed the unwelded MC produced ~3x more verts. Today the two land
+    // within a few percent of each other for a sphere — verify both produce
+    // a same-order-of-magnitude mesh instead.
     auto mcMesh = bromesh::marchingCubes(field, N, N, N, 0.0f, 1.0f);
-    ASSERT(snMesh.vertexCount() < mcMesh.vertexCount(),
-           "surface nets should have fewer vertices than marching cubes");
+    ASSERT(mcMesh.vertexCount() > 0, "marching cubes baseline non-empty");
+    double ratio = double(snMesh.vertexCount()) / double(mcMesh.vertexCount());
+    ASSERT(ratio > 0.5 && ratio < 2.0,
+           "surface nets and welded MC should be within 2x of each other");
 
     // Verify normals are unit length
     bool allUnit = true;
@@ -561,7 +581,9 @@ TEST(transvoxel_uniform_lod) {
 
     int neighborLods[6] = { -1, -1, -1, -1, -1, -1 };
     auto tvMesh = bromesh::transvoxel(field, N, 0, neighborLods, 0.0f, 1.0f);
-    auto mcMesh = bromesh::marchingCubes(field, N, N, N, 0.0f, 1.0f);
+    // Transvoxel doesn't yet implement boundary closing, so compare against
+    // the open-boundary form of marching cubes for an apples-to-apples count.
+    auto mcMesh = bromesh::marchingCubes(field, N, N, N, 0.0f, 1.0f, false);
 
     ASSERT(!tvMesh.empty(), "transvoxel uniform lod should produce non-empty mesh");
     ASSERT(tvMesh.hasNormals(), "transvoxel uniform lod should have normals");

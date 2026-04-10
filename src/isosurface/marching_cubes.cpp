@@ -2,6 +2,8 @@
 #include "bromesh/manipulation/normals.h"
 
 #include <cmath>
+#include <cstdint>
+#include <unordered_map>
 
 namespace bromesh {
 
@@ -318,7 +320,24 @@ static const int cornerOffsets[8][3] = {
     {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}
 };
 
+// Canonicalized linear interpolation along a cube edge.
+//
+// Marching cubes interpolates the surface intersection along an edge between
+// two corners (v1, p1) and (v2, p2). Adjacent cells share that edge but
+// traverse it from opposite ends, so a naive `p1 + t*(p2-p1)` produces
+// floating-point results that differ in the last bit between neighbors and
+// breaks vertex welding (and therefore manifold-ness of the output).
+//
+// Fix: sort the two endpoints by value before interpolating so the same edge
+// always evaluates the same expression regardless of which cell is calling.
+// This makes the output bit-exact across neighboring cells.
 static float vertexInterp(float isoLevel, float v1, float v2, float p1, float p2) {
+    // Canonical order: lower value first. Tie-break by position so a perfectly
+    // flat edge (v1==v2) is also deterministic.
+    if (v2 < v1 || (v2 == v1 && p2 < p1)) {
+        float tv = v1; v1 = v2; v2 = tv;
+        float tp = p1; p1 = p2; p2 = tp;
+    }
     if (std::fabs(isoLevel - v1) < 1.0e-5f) return p1;
     if (std::fabs(isoLevel - v2) < 1.0e-5f) return p2;
     if (std::fabs(v1 - v2) < 1.0e-5f) return p1;
@@ -327,26 +346,100 @@ static float vertexInterp(float isoLevel, float v1, float v2, float p1, float p2
 }
 
 MeshData marchingCubes(const float* field, int gridX, int gridY, int gridZ,
-                       float isoLevel, float cellSize) {
+                       float isoLevel, float cellSize, bool closeBoundary) {
     MeshData mesh;
 
     if (!field || gridX < 2 || gridY < 2 || gridZ < 2)
         return mesh;
 
+    // When closeBoundary is true, walk a virtual one-cell-wider grid whose
+    // padding cells contain a sentinel value strictly below isoLevel. This
+    // forces the iso-surface to close along any face where it would have
+    // otherwise exited the original grid (sphere clipped at the chunk edge,
+    // terrain noise meeting the boundary, etc.) — the resulting mesh is
+    // watertight and downstream code (volume, BVH raycast, GPU backface
+    // culling) sees a manifold surface.
+    //
+    // We don't allocate a padded copy of the field; we just remap the cell
+    // loop bounds and read the sentinel for any out-of-range corner. The
+    // emitted positions stay in the original cell-coordinate frame because
+    // the sentinel cells are translated by -1 cell when computing positions.
+    const int xLo = closeBoundary ? -1 : 0;
+    const int yLo = closeBoundary ? -1 : 0;
+    const int zLo = closeBoundary ? -1 : 0;
+    const int xHi = closeBoundary ? gridX : gridX - 1;
+    const int yHi = closeBoundary ? gridY : gridY - 1;
+    const int zHi = closeBoundary ? gridZ : gridZ - 1;
+    // Sentinel must be strictly below isoLevel so the padding cells classify
+    // as "outside" — but not so far below that interpolation snaps to the
+    // padding corner. One unit of cellSize works for any reasonable iso.
+    const float sentinel = isoLevel - 1.0f;
+    auto sampleField = [&](int sx, int sy, int sz) -> float {
+        if (sx < 0 || sy < 0 || sz < 0 ||
+            sx >= gridX || sy >= gridY || sz >= gridZ) {
+            return sentinel;
+        }
+        return field[sz * gridY * gridX + sy * gridX + sx];
+    };
+
     // Estimate: reserve some space to reduce reallocations
     mesh.positions.reserve(1024 * 3);
     mesh.indices.reserve(1024 * 3);
 
-    for (int z = 0; z < gridZ - 1; ++z) {
-        for (int y = 0; y < gridY - 1; ++y) {
-            for (int x = 0; x < gridX - 1; ++x) {
-                // Sample 8 corners
+    // Vertex welding cache. The canonical vertexInterp guarantees that two
+    // neighboring cells produce bit-exact positions on a shared edge, so a
+    // hash on quantized integer coordinates safely deduplicates them. The
+    // result is a fully indexed manifold mesh suitable for downstream
+    // analysis (volume, raycast, BVH, etc.).
+    struct Key { int32_t x, y, z; };
+    struct KeyHash {
+        size_t operator()(const Key& k) const noexcept {
+            // FNV-1a-ish mix; good enough for marching cubes vertex counts.
+            uint64_t h = 0xcbf29ce484222325ull;
+            auto mix = [&](int32_t v) {
+                h ^= static_cast<uint32_t>(v);
+                h *= 0x100000001b3ull;
+            };
+            mix(k.x); mix(k.y); mix(k.z);
+            return static_cast<size_t>(h);
+        }
+    };
+    struct KeyEq {
+        bool operator()(const Key& a, const Key& b) const noexcept {
+            return a.x == b.x && a.y == b.y && a.z == b.z;
+        }
+    };
+    std::unordered_map<Key, uint32_t, KeyHash, KeyEq> vertexCache;
+    vertexCache.reserve(2048);
+
+    auto addVertex = [&](float x, float y, float z) -> uint32_t {
+        // 1e-5 quantization is finer than vertexInterp's clamping epsilon
+        // but coarse enough to absorb any residual FP noise.
+        Key k{
+            static_cast<int32_t>(std::lround(x * 100000.0f)),
+            static_cast<int32_t>(std::lround(y * 100000.0f)),
+            static_cast<int32_t>(std::lround(z * 100000.0f)),
+        };
+        auto it = vertexCache.find(k);
+        if (it != vertexCache.end()) return it->second;
+        uint32_t idx = static_cast<uint32_t>(mesh.positions.size() / 3);
+        mesh.positions.push_back(x);
+        mesh.positions.push_back(y);
+        mesh.positions.push_back(z);
+        vertexCache.emplace(k, idx);
+        return idx;
+    };
+
+    for (int z = zLo; z < zHi; ++z) {
+        for (int y = yLo; y < yHi; ++y) {
+            for (int x = xLo; x < xHi; ++x) {
+                // Sample 8 corners (sentinel for out-of-range when closing).
                 float cornerVals[8];
                 for (int c = 0; c < 8; ++c) {
                     int cx = x + cornerOffsets[c][0];
                     int cy = y + cornerOffsets[c][1];
                     int cz = z + cornerOffsets[c][2];
-                    cornerVals[c] = field[cz * gridY * gridX + cy * gridX + cx];
+                    cornerVals[c] = sampleField(cx, cy, cz);
                 }
 
                 // Build cube index: bit i is set if corner i is below isoLevel
@@ -380,17 +473,21 @@ MeshData marchingCubes(const float* field, int gridX, int gridY, int gridZ,
                     }
                 }
 
-                // Emit triangles
+                // Emit triangles, welding vertices through the cache so
+                // adjacent cells share their edge intersections.
                 for (int i = 0; triTable[cubeIndex][i] != -1; i += 3) {
-                    uint32_t baseIdx = static_cast<uint32_t>(mesh.positions.size() / 3);
-
-                    for (int t = 0; t < 3; ++t) {
-                        int edge = triTable[cubeIndex][i + t];
-                        mesh.positions.push_back(edgeVerts[edge][0]);
-                        mesh.positions.push_back(edgeVerts[edge][1]);
-                        mesh.positions.push_back(edgeVerts[edge][2]);
-                        mesh.indices.push_back(baseIdx + t);
-                    }
+                    int e0 = triTable[cubeIndex][i + 0];
+                    int e1 = triTable[cubeIndex][i + 1];
+                    int e2 = triTable[cubeIndex][i + 2];
+                    uint32_t i0 = addVertex(edgeVerts[e0][0], edgeVerts[e0][1], edgeVerts[e0][2]);
+                    uint32_t i1 = addVertex(edgeVerts[e1][0], edgeVerts[e1][1], edgeVerts[e1][2]);
+                    uint32_t i2 = addVertex(edgeVerts[e2][0], edgeVerts[e2][1], edgeVerts[e2][2]);
+                    // Skip degenerate triangles caused by interpolated
+                    // collisions on multi-edge configurations.
+                    if (i0 == i1 || i1 == i2 || i0 == i2) continue;
+                    mesh.indices.push_back(i0);
+                    mesh.indices.push_back(i1);
+                    mesh.indices.push_back(i2);
                 }
             }
         }

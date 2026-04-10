@@ -3,6 +3,8 @@
 
 #include <cmath>
 #include <algorithm>
+#include <cstdint>
+#include <unordered_map>
 
 namespace bromesh {
 
@@ -313,7 +315,14 @@ static const int cornerOffsets[8][3] = {
     {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}
 };
 
+// See marching_cubes.cpp for the canonical-order rationale: adjacent cells
+// traverse a shared edge in opposite directions, so we sort the endpoints by
+// value before interpolating to keep the result bit-exact across neighbors.
 static float vertexInterp(float isoLevel, float v1, float v2, float p1, float p2) {
+    if (v2 < v1 || (v2 == v1 && p2 < p1)) {
+        float tv = v1; v1 = v2; v2 = tv;
+        float tp = p1; p1 = p2; p2 = tp;
+    }
     if (std::fabs(isoLevel - v1) < 1.0e-5f) return p1;
     if (std::fabs(isoLevel - v2) < 1.0e-5f) return p2;
     if (std::fabs(v1 - v2) < 1.0e-5f) return p1;
@@ -350,6 +359,46 @@ MeshData transvoxel(const float* field, int gridSize, int lod,
 
     mesh.positions.reserve(1024 * 3);
     mesh.indices.reserve(1024 * 3);
+
+    // Vertex-welding cache (see marching_cubes.cpp for the rationale).
+    // Same approach: canonical vertexInterp + quantized-position hash so
+    // adjacent cells share their edge intersections, producing a closed
+    // manifold surface that downstream code can analyze and raycast against.
+    struct Key { int32_t x, y, z; };
+    struct KeyHash {
+        size_t operator()(const Key& k) const noexcept {
+            uint64_t h = 0xcbf29ce484222325ull;
+            auto mix = [&](int32_t v) {
+                h ^= static_cast<uint32_t>(v);
+                h *= 0x100000001b3ull;
+            };
+            mix(k.x); mix(k.y); mix(k.z);
+            return static_cast<size_t>(h);
+        }
+    };
+    struct KeyEq {
+        bool operator()(const Key& a, const Key& b) const noexcept {
+            return a.x == b.x && a.y == b.y && a.z == b.z;
+        }
+    };
+    std::unordered_map<Key, uint32_t, KeyHash, KeyEq> vertexCache;
+    vertexCache.reserve(2048);
+
+    auto addVertex = [&](float x, float y, float z) -> uint32_t {
+        Key k{
+            static_cast<int32_t>(std::lround(x * 100000.0f)),
+            static_cast<int32_t>(std::lround(y * 100000.0f)),
+            static_cast<int32_t>(std::lround(z * 100000.0f)),
+        };
+        auto it = vertexCache.find(k);
+        if (it != vertexCache.end()) return it->second;
+        uint32_t idx = static_cast<uint32_t>(mesh.positions.size() / 3);
+        mesh.positions.push_back(x);
+        mesh.positions.push_back(y);
+        mesh.positions.push_back(z);
+        vertexCache.emplace(k, idx);
+        return idx;
+    };
 
     // Phase 1: Run marching cubes at this LOD's stride over the full chunk.
     for (int cz = 0; cz < cellCount; ++cz) {
@@ -403,17 +452,18 @@ MeshData transvoxel(const float* field, int gridSize, int lod,
                     }
                 }
 
-                // Emit triangles
+                // Emit triangles, welding vertices through the cache.
                 for (int i = 0; triTable[cubeIndex][i] != -1; i += 3) {
-                    uint32_t baseIdx = static_cast<uint32_t>(mesh.positions.size() / 3);
-
-                    for (int t = 0; t < 3; ++t) {
-                        int edge = triTable[cubeIndex][i + t];
-                        mesh.positions.push_back(edgeVerts[edge][0]);
-                        mesh.positions.push_back(edgeVerts[edge][1]);
-                        mesh.positions.push_back(edgeVerts[edge][2]);
-                        mesh.indices.push_back(baseIdx + t);
-                    }
+                    int e0 = triTable[cubeIndex][i + 0];
+                    int e1 = triTable[cubeIndex][i + 1];
+                    int e2 = triTable[cubeIndex][i + 2];
+                    uint32_t i0 = addVertex(edgeVerts[e0][0], edgeVerts[e0][1], edgeVerts[e0][2]);
+                    uint32_t i1 = addVertex(edgeVerts[e1][0], edgeVerts[e1][1], edgeVerts[e1][2]);
+                    uint32_t i2 = addVertex(edgeVerts[e2][0], edgeVerts[e2][1], edgeVerts[e2][2]);
+                    if (i0 == i1 || i1 == i2 || i0 == i2) continue;
+                    mesh.indices.push_back(i0);
+                    mesh.indices.push_back(i1);
+                    mesh.indices.push_back(i2);
                 }
             }
         }
