@@ -6,7 +6,8 @@
 namespace bromesh {
 
 MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
-                    float cellSize, const float* palette, int paletteCount) {
+                    float cellSize, const float* palette, int paletteCount,
+                    int filterMaterial) {
     MeshData mesh;
     if (!voxels || gridX <= 0 || gridY <= 0 || gridZ <= 0) return mesh;
 
@@ -14,7 +15,10 @@ MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
     auto voxelAt = [&](int x, int y, int z) -> uint8_t {
         if (x < 0 || x >= gridX || y < 0 || y >= gridY || z < 0 || z >= gridZ)
             return 0;
-        return voxels[z * gridY * gridX + y * gridX + x];
+        uint8_t v = voxels[z * gridY * gridX + y * gridX + x];
+        if (filterMaterial >= 0 && v != static_cast<uint8_t>(filterMaterial))
+            return 0;
+        return v;
     };
 
     // Emit a quad as 2 triangles (4 verts, 6 indices)
