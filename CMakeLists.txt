@@ -159,6 +159,7 @@ add_library(bromesh STATIC
 
     # Discrete voxel
     src/voxel/greedy_mesh.cpp
+    src/voxel/voxel_chunk.cpp
 
     # Primitives
     src/primitives/primitives.cpp
