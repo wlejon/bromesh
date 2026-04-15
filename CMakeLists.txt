@@ -233,6 +233,7 @@ add_library(bromesh STATIC
 
     # Rigging
     src/rigging/rig_spec.cpp
+    src/rigging/skeleton_fit.cpp
 )
 
 target_include_directories(bromesh PUBLIC include)
