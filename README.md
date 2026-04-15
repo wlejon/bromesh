@@ -10,18 +10,20 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 | **Voxel** | Greedy meshing with palette colors |
 | **Primitives** | Box, sphere, cylinder, capsule, plane, torus, heightmap grid; parametric: geodesic sphere, Platonic solids, cone, disc, rock, trefoil knot, Klein bottle |
 | **Subdivision** | Loop, Catmull-Clark, midpoint (iterative, arbitrary depth) |
-| **Manipulation** | Smooth/flat normals, tangents, simplify (quadric error + attribute-aware), target triangle count decimation, LOD chain, weld, split components, merge, repair (degenerate/duplicate removal, hole filling), translate/rotate/scale/mirror/center/transform |
-| **Skinning** | Apply bone transforms (4 weights/vertex), morph target blending, weight normalization |
+| **Manipulation** | Smooth/flat normals, tangents, simplify (quadric error + attribute-aware), target triangle count decimation, LOD chain, weld, split components, merge, repair (degenerate/duplicate removal, hole filling), translate/rotate/scale/mirror/center/transform, shrinkwrap (nearest / normal-project / axis-project) |
+| **Skinning** | Apply bone transforms (4 weights/vertex), morph target blending, weight normalization, closest-point skin weight transfer between meshes |
+| **Rigging** | One-call auto-rig from landmarks + RigSpec (bundled humanoid/quadruped/hexapod/octopod specs); geometric landmark detection; skeleton fitting; skin weighting via bone heat, bounded biharmonic weights (BBW, OSQP), or voxel-bind; Laplacian weight smoothing; skin validation |
+| **Animation** | Pose evaluation (bind/animation/blend with bone masks), world & skinning matrix composition, socket resolution, two-bone IK, FABRIK, look-at IK, name-based animation retargeting (Rigify/Mixamo), procedural locomotion cycles (biped/quadruped/hexapod/octopod gaits) |
 | **Smoothing** | Laplacian, Taubin (shrinkage-free) |
 | **Remeshing** | Isotropic remeshing (edge split/collapse/flip + tangential relaxation) |
 | **Reconstruction** | Point cloud to mesh via implicit surface estimation + marching cubes |
 | **Analysis** | Bounding box, manifold check, volume, surface area, triangle areas, convex decomposition (V-HACD), convex hull, surface sampling, self-intersection detection |
 | **Queries** | Raycast (closest/all/test), closest point on surface, mesh-mesh intersection test |
-| **Baking** | Ambient occlusion, mean curvature, thickness — to vertex colors or UV-space textures; world-space normal maps, position maps |
+| **Baking** | Ambient occlusion, mean curvature, thickness — to vertex colors or UV-space textures; world-space normal maps, position maps; high-poly→low-poly transfer of tangent-space normals and AO |
 | **UV** | Box, planar (XY/XZ/YZ), cylindrical, spherical projection; automatic unwrapping and atlas packing (xatlas); quality metrics (L2 stretch, area/angle distortion, packing efficiency) |
 | **Optimization** | Vertex cache, vertex fetch, overdraw, meshlet generation, spatial sorting, shadow index buffer, mesh encoding/compression, triangle strips, progressive mesh (continuous LOD with serialization) |
 | **Boolean/CSG** | Union, difference, intersection, plane splitting (manifold) |
-| **I/O** | OBJ read/write, STL read/write, PLY read/write, glTF/GLB read/write, FBX read, MagicaVoxel VOX read |
+| **I/O** | OBJ read/write, STL read/write, PLY read/write, glTF/GLB read/write (meshes, skins, skeletons, animations, materials, embedded images), FBX read, MagicaVoxel VOX read |
 
 All algorithms produce `bromesh::MeshData` -- a flat struct with separate position, normal, UV, color, and index arrays ready for GPU upload or TypedArray transfer.
 
@@ -56,6 +58,7 @@ All vendored under `third_party/` as git submodules or single headers:
 | [xatlas](https://github.com/jpcy/xatlas) | Automatic UV unwrapping and atlas packing | MIT |
 | [manifold](https://github.com/elalish/manifold) | Boolean/CSG operations | Apache-2.0 |
 | [OpenFBX](https://github.com/nem0/OpenFBX) | FBX file loading | MIT |
+| [OSQP](https://github.com/osqp/osqp) | Quadratic program solver backing bounded biharmonic weights (BBW) | Apache-2.0 |
 
 If a submodule is missing, its features are disabled at configure time and the library still builds.
 
@@ -151,6 +154,90 @@ bromesh::applySkinning(mesh, skin, poseMatrices);         // Skeletal animation
 bromesh::applyMorphTarget(mesh, morphTarget, 0.5f);      // 50% blend shape
 ```
 
+### Auto-rigging
+
+One call fits a bundled `RigSpec` (humanoid, quadruped, hexapod, octopod) to a
+mesh from a set of landmarks and produces a ready-to-skin skeleton + weights.
+`WeightingMethod::Auto` picks bone-heat for manifold meshes and voxel-bind for
+non-manifold input; BBW is opt-in (higher quality, costs a QP solve per bone).
+
+```cpp
+#include "bromesh/rigging/auto_rig.h"
+#include "bromesh/rigging/landmark_detect.h"
+#include "bromesh/rigging/rig_spec.h"
+
+auto spec      = bromesh::builtinHumanoidSpec();
+auto landmarks = bromesh::detectHumanoidLandmarks(mesh);  // or author by hand
+
+bromesh::WeightingOptions wopts;
+wopts.method = bromesh::WeightingMethod::Auto;             // or BoneHeat / BBW / VoxelBind
+auto result  = bromesh::autoRig(mesh, spec, landmarks, wopts);
+// result.skeleton, result.skin, result.missingLandmarks, result.warnings
+```
+
+### Skin weight transfer
+
+Project skin weights from a source mesh onto a target (e.g. swappable armor
+that should ride the same skeleton as a base body).
+
+```cpp
+#include "bromesh/manipulation/skin_transfer.h"
+
+auto armorSkin = bromesh::transferSkinWeights(armorMesh, bodyMesh, bodySkin);
+```
+
+### Pose evaluation and animation
+
+```cpp
+#include "bromesh/animation/pose.h"
+
+auto pose = bromesh::evaluateAnimation(skeleton, anim, tSeconds, /*loop=*/true);
+bromesh::blendPoses(pose, upperBodyPose, 0.5f, boneMaskOrNull);
+
+std::vector<float> skinningMatrices;
+bromesh::computeSkinningMatrices(skeleton, pose, skinningMatrices);
+bromesh::applySkinning(mesh, skin, skinningMatrices.data());
+
+float socket[16];
+bromesh::socketWorldMatrix(skeleton, pose, "hand.R", socket);
+```
+
+### Inverse kinematics
+
+```cpp
+#include "bromesh/animation/ik.h"
+
+float target[3] = {0.3f, 1.2f, 0.4f};
+bromesh::solveTwoBoneIK(skeleton, pose, shoulder, elbow, wrist, target);
+bromesh::solveFABRIK(skeleton, pose, spineChain, target);
+bromesh::solveLookAt(skeleton, pose, headBone, target);
+```
+
+### Retargeting and procedural locomotion
+
+```cpp
+#include "bromesh/animation/retarget.h"
+#include "bromesh/animation/locomotion.h"
+
+auto retargeted = bromesh::retargetAnimation(srcAnim, srcSkeleton, dstSkeleton);
+
+bromesh::LocomotionParams params;
+params.cycleDuration = 1.0f;
+params.strideLength  = 0.30f;
+auto walk = bromesh::generateLocomotionCycle(skeleton, spec, params);
+```
+
+### Shrinkwrap
+
+Project one mesh's vertices onto another (armor to body, cloth to form, etc.).
+
+```cpp
+#include "bromesh/manipulation/shrinkwrap.h"
+
+bromesh::shrinkwrap(armor, body, bromesh::ShrinkwrapMode::Nearest,
+                    /*maxDistance=*/0.0f, /*offset=*/0.002f);
+```
+
 ### Vertex color baking
 
 ```cpp
@@ -171,6 +258,15 @@ auto curvMap = bromesh::bakeCurvatureToTexture(mesh, 512, 512);
 auto nrmMap  = bromesh::bakeNormalsToTexture(mesh, 1024, 1024);
 auto posMap  = bromesh::bakePositionToTexture(mesh, 1024, 1024);
 // Access pixels: aoMap.at(x, y) returns float*, aoMap.pixels for raw data
+```
+
+### High-poly → low-poly transfer
+
+```cpp
+#include "bromesh/analysis/bake_transfer.h"
+
+auto nrmMap = bromesh::bakeNormalsFromReference(lowPoly, highPoly, 1024, 1024);
+auto aoMap  = bromesh::bakeAOFromReference(lowPoly, highPoly, 512, 512, /*rays=*/64);
 ```
 
 ### UV quality metrics
