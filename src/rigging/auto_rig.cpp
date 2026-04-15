@@ -36,16 +36,20 @@ size_t countInfluences(const WeightingOptions& w, WeightingMethod m) {
     }
 }
 
-// Detect weighting failure by scanning for non-leaf bones that received zero
-// total influence. BoneHeat/BBW use ray visibility from bone to vertex and can
-// fully orphan interior bones when the skeleton lies inside overlapping shells
-// (common in MeshyAI "generate" outputs) — every torso vert then falls through
-// the unused spine and skins to an arm/leg/head instead, which tears the mesh
-// apart at the boundary between those regions during animation. VoxelBind
-// routes through a voxel grid and does not have this failure mode.
+// Detect weighting failure by scanning for non-leaf bones that are
+// effectively dead — either zero total influence, OR not the top
+// influence on any vertex. A bone that is nobody's dominant bone cannot
+// drive any visible mesh region during animation, so rotating it is a
+// no-op and the mesh tears at the boundary between neighboring bones
+// that absorbed its territory.
 //
-// Leaf bones (tips: toes, fingertips) losing all influence is common and not
-// catastrophic, so we only flag failure when a non-leaf bone is orphaned.
+// BoneHeat/BBW use ray visibility and can fully orphan interior bones
+// when the skeleton lies inside overlapping shells (common in MeshyAI
+// "generate" outputs). VoxelBind routes through a voxel grid and is
+// typically robust enough to restore hierarchy coverage.
+//
+// Leaf bones losing dominance is common (tight toes/fingertips) and not
+// catastrophic, so we only flag failure for non-leaf bones.
 bool weightingProducedOrphanedNonLeafBones(const Skeleton& skel,
                                            const SkinData& skin,
                                            size_t stride) {
@@ -59,17 +63,24 @@ bool weightingProducedOrphanedNonLeafBones(const Skeleton& skel,
     }
 
     std::vector<float> sumW(nBones, 0.0f);
+    std::vector<uint32_t> dominantCount(nBones, 0);
     const size_t vCount = skin.boneWeights.size() / stride;
     for (size_t v = 0; v < vCount; ++v) {
+        float bestW = 0.0f;
+        uint32_t bestB = 0;
         for (size_t k = 0; k < stride; ++k) {
             uint32_t b = skin.boneIndices[v * stride + k];
             float    w = skin.boneWeights[v * stride + k];
             if (b < nBones) sumW[b] += w;
+            if (w > bestW) { bestW = w; bestB = b; }
         }
+        if (bestW > 0.0f && bestB < nBones) dominantCount[bestB]++;
     }
 
     for (size_t b = 0; b < nBones; ++b) {
-        if (hasChildren[b] && sumW[b] <= 0.0f) return true;
+        if (!hasChildren[b]) continue;
+        if (sumW[b] <= 0.0f) return true;
+        if (dominantCount[b] == 0) return true;
     }
     return false;
 }
