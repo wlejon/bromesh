@@ -36,6 +36,11 @@ struct LocomotionParams {
     float footLiftHeight    = 0.08f;
     int   keyframesPerCycle = 24;
     float bodyBobAmplitude  = 0.02f; // 0 disables the subtle root-bone bob
+    /// Peak swing angle (radians) for each non-grounded IK chain (arms). The
+    /// chain's root bone rotates about the world side axis with this
+    /// amplitude, phased opposite to the same-side leg so the arms
+    /// counter-swing. 0 disables.
+    float armSwingAmplitude = 0.35f; // ~20°
     float forwardAxis[3]    = {0.0f, 0.0f, 1.0f};
     float upAxis[3]         = {0.0f, 1.0f, 0.0f};
 };

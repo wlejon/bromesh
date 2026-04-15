@@ -151,7 +151,11 @@ Animation generateLocomotionCycle(const Skeleton& sk, const RigSpec& spec,
 
     auto chains = identifyLegChains(sk, spec);
     std::vector<const LegChain*> grounded;
-    for (const auto& c : chains) if (c.grounded) grounded.push_back(&c);
+    std::vector<const LegChain*> airborne;
+    for (const auto& c : chains) {
+        if (c.grounded) grounded.push_back(&c);
+        else            airborne.push_back(&c);
+    }
     if (grounded.empty()) return anim;
 
     GaitPattern gait = paramsIn.gait;
@@ -185,6 +189,77 @@ Animation generateLocomotionCycle(const Skeleton& sk, const RigSpec& spec,
     int rootBone = -1;
     for (size_t i = 0; i < sk.bones.size(); ++i) {
         if (sk.bones[i].parent < 0) { rootBone = (int)i; break; }
+    }
+
+    // Pair each airborne IK chain (arms) with a grounded chain (legs) for
+    // counter-swing. Same sort on both lists → left-arm[0] pairs with
+    // left-leg[0]'s opposite i.e. right-leg[1]. For biped this gives the
+    // classic "left arm forward when right leg forward" phasing; for
+    // asymmetric leg counts we best-effort pair by ordinal index.
+    std::vector<size_t> armPairLegIdx(airborne.size());
+    for (size_t i = 0; i < airborne.size(); ++i) {
+        armPairLegIdx[i] = (i + 1) % grounded.size(); // swap L↔R for biped
+    }
+    // Side axis (perpendicular to forward+up). Positive-rotation about it
+    // sweeps the arm "forward" in the world forward direction.
+    float sideAxis[3] = {
+        up[1]*forward[2] - up[2]*forward[1],
+        up[2]*forward[0] - up[0]*forward[2],
+        up[0]*forward[1] - up[1]*forward[0],
+    };
+    // Precompute each arm chain's root-bone index and its parent's world
+    // rotation (from bind pose). We apply the swing delta in *world* space
+    // and convert to a local-frame delta for the root bone.
+    struct ArmInfo {
+        int rootBone;
+        float parentWorldR[4];
+        float bindLocalR[4];
+    };
+    std::vector<ArmInfo> armInfos(airborne.size());
+    std::vector<float> bindWorld;
+    computeWorldMatrices(sk, bind, bindWorld);
+    for (size_t i = 0; i < airborne.size(); ++i) {
+        int rb = airborne[i]->bones.front();
+        armInfos[i].rootBone = rb;
+        int p = sk.bones[rb].parent;
+        float pwm[16];
+        if (p >= 0) {
+            std::memcpy(pwm, &bindWorld[p * 16], sizeof(pwm));
+        } else {
+            for (int k = 0; k < 16; ++k) pwm[k] = (k % 5 == 0) ? 1.0f : 0.0f;
+        }
+        // Extract rotation quaternion from 3x3 upper-left.
+        auto matToQ = [](const float* m, float* q) {
+            float tr = m[0] + m[5] + m[10];
+            if (tr > 0.0f) {
+                float s = std::sqrt(tr + 1.0f) * 2.0f;
+                q[3] = 0.25f * s;
+                q[0] = (m[6] - m[9]) / s;
+                q[1] = (m[8] - m[2]) / s;
+                q[2] = (m[1] - m[4]) / s;
+            } else if (m[0] > m[5] && m[0] > m[10]) {
+                float s = std::sqrt(1.0f + m[0] - m[5] - m[10]) * 2.0f;
+                q[3] = (m[6] - m[9]) / s;
+                q[0] = 0.25f * s;
+                q[1] = (m[1] + m[4]) / s;
+                q[2] = (m[8] + m[2]) / s;
+            } else if (m[5] > m[10]) {
+                float s = std::sqrt(1.0f + m[5] - m[0] - m[10]) * 2.0f;
+                q[3] = (m[8] - m[2]) / s;
+                q[0] = (m[1] + m[4]) / s;
+                q[1] = 0.25f * s;
+                q[2] = (m[6] + m[9]) / s;
+            } else {
+                float s = std::sqrt(1.0f + m[10] - m[0] - m[5]) * 2.0f;
+                q[3] = (m[1] - m[4]) / s;
+                q[0] = (m[8] + m[2]) / s;
+                q[1] = (m[6] + m[9]) / s;
+                q[2] = 0.25f * s;
+            }
+        };
+        matToQ(pwm, armInfos[i].parentWorldR);
+        const float* bl = &bind.data[rb * 10 + 3];
+        for (int k = 0; k < 4; ++k) armInfos[i].bindLocalR[k] = bl[k];
     }
 
     struct BoneKeys {
@@ -240,6 +315,53 @@ Animation generateLocomotionCycle(const Skeleton& sk, const RigSpec& spec,
                                target, nullptr);
             } else if (lc.bones.size() >= 2) {
                 solveFABRIK(sk, pose, lc.bones, target);
+            }
+        }
+
+        // Arm counter-swing. Each airborne chain's root bone gets a world-
+        // space rotation about the side axis by amplitude*sin(2π * (t +
+        // opposite-leg phase)) — so the arm leads/trails opposite to the
+        // paired leg.
+        if (paramsIn.armSwingAmplitude > 0.0f) {
+            for (size_t i = 0; i < airborne.size(); ++i) {
+                size_t legIdx = armPairLegIdx[i];
+                float legPhase = gait.phases[legIdx];
+                float a = paramsIn.armSwingAmplitude *
+                          std::sin(2.0f * kPi * (t + legPhase));
+                // Quaternion around world side axis by angle a.
+                float half = 0.5f * a;
+                float s = std::sin(half), c = std::cos(half);
+                float dqWorld[4] = { sideAxis[0]*s, sideAxis[1]*s, sideAxis[2]*s, c };
+
+                // Convert world-space rotation delta to local-frame delta:
+                //   newLocal = inverse(parentWorld) * dqWorld * parentWorld * bindLocal
+                // (dqWorld applied in world composes as parentWorld-conjugated
+                // local rotation on top of the bind local.)
+                const float* pw = armInfos[i].parentWorldR;
+                float pwInv[4] = { -pw[0], -pw[1], -pw[2], pw[3] };
+                auto qmul = [](const float* p, const float* q, float* out) {
+                    float r0 = p[3]*q[0] + p[0]*q[3] + p[1]*q[2] - p[2]*q[1];
+                    float r1 = p[3]*q[1] - p[0]*q[2] + p[1]*q[3] + p[2]*q[0];
+                    float r2 = p[3]*q[2] + p[0]*q[1] - p[1]*q[0] + p[2]*q[3];
+                    float r3 = p[3]*q[3] - p[0]*q[0] - p[1]*q[1] - p[2]*q[2];
+                    out[0]=r0; out[1]=r1; out[2]=r2; out[3]=r3;
+                };
+                float tmp[4], dqLocal[4];
+                qmul(pwInv, dqWorld, tmp);
+                qmul(tmp, pw, dqLocal);
+                float newLocal[4];
+                qmul(dqLocal, armInfos[i].bindLocalR, newLocal);
+                // Normalize (guard against drift).
+                float n = std::sqrt(newLocal[0]*newLocal[0] + newLocal[1]*newLocal[1]
+                                  + newLocal[2]*newLocal[2] + newLocal[3]*newLocal[3]);
+                if (n > 1e-8f) {
+                    newLocal[0]/=n; newLocal[1]/=n; newLocal[2]/=n; newLocal[3]/=n;
+                }
+                float* dst = &pose.data[armInfos[i].rootBone * 10 + 3];
+                dst[0] = newLocal[0];
+                dst[1] = newLocal[1];
+                dst[2] = newLocal[2];
+                dst[3] = newLocal[3];
             }
         }
 
