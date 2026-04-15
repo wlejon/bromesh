@@ -176,6 +176,8 @@ add_library(bromesh STATIC
     src/manipulation/smooth.cpp
     src/manipulation/remesh.cpp
     src/manipulation/skin.cpp
+    src/manipulation/skin_transfer.cpp
+    src/manipulation/shrinkwrap.cpp
     src/manipulation/transform.cpp
 
     # Analysis
@@ -184,10 +186,16 @@ add_library(bromesh STATIC
     src/analysis/convex_decomposition.cpp
     src/analysis/bake.cpp
     src/analysis/bake_texture.cpp
+    src/analysis/bake_transfer.cpp
     src/analysis/sample.cpp
     src/analysis/raycast.cpp
     src/analysis/bvh.cpp
     src/analysis/intersect.cpp
+
+    # Animation
+    src/animation/pose.cpp
+    src/animation/ik.cpp
+    src/animation/retarget.cpp
 
     # UV
     src/uv/projection.cpp
