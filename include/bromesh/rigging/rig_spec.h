@@ -69,4 +69,17 @@ RigSpec loadRigSpecFile(const std::string& path);
 /// regardless of which optional deps are compiled in.
 RigSpec builtinHumanoidSpec();
 
+/// Bundled quadruped spec (dog-like): pelvis-root spine, tail chain, and
+/// four bilateral legs. Exists to verify that the RigSpec schema generalizes
+/// to non-humanoid topologies without any code changes downstream.
+RigSpec builtinQuadrupedSpec();
+
+/// Bundled hexapod spec (insect-like): abdomen-root body and three
+/// bilateral leg pairs (front / mid / rear) of three segments each.
+RigSpec builtinHexapodSpec();
+
+/// Bundled octopod spec (spider-like): body-root with four bilateral arm
+/// pairs of two segments each.
+RigSpec builtinOctopodSpec();
+
 } // namespace bromesh

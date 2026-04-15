@@ -1,0 +1,258 @@
+{
+  "bones": [
+    {
+      "head": "landmark:body",
+      "name": "body",
+      "parent": "",
+      "tail": "landmark:head"
+    },
+    {
+      "head": "landmark:head",
+      "name": "head",
+      "parent": "body",
+      "tail": "offset:head,0,0.05,0"
+    },
+    {
+      "head": "landmark:arm_a_hip_L",
+      "name": "arm_a_upper_L",
+      "parent": "body",
+      "tail": "landmark:arm_a_mid_L"
+    },
+    {
+      "head": "landmark:arm_a_hip_R",
+      "name": "arm_a_upper_R",
+      "parent": "body",
+      "tail": "landmark:arm_a_mid_R"
+    },
+    {
+      "head": "landmark:arm_a_mid_L",
+      "ikChain": true,
+      "interior": false,
+      "name": "arm_a_lower_L",
+      "parent": "arm_a_upper_L",
+      "tail": "landmark:arm_a_tip_L"
+    },
+    {
+      "head": "landmark:arm_a_mid_R",
+      "ikChain": true,
+      "interior": false,
+      "name": "arm_a_lower_R",
+      "parent": "arm_a_upper_R",
+      "tail": "landmark:arm_a_tip_R"
+    },
+    {
+      "head": "landmark:arm_b_hip_L",
+      "name": "arm_b_upper_L",
+      "parent": "body",
+      "tail": "landmark:arm_b_mid_L"
+    },
+    {
+      "head": "landmark:arm_b_hip_R",
+      "name": "arm_b_upper_R",
+      "parent": "body",
+      "tail": "landmark:arm_b_mid_R"
+    },
+    {
+      "head": "landmark:arm_b_mid_L",
+      "ikChain": true,
+      "interior": false,
+      "name": "arm_b_lower_L",
+      "parent": "arm_b_upper_L",
+      "tail": "landmark:arm_b_tip_L"
+    },
+    {
+      "head": "landmark:arm_b_mid_R",
+      "ikChain": true,
+      "interior": false,
+      "name": "arm_b_lower_R",
+      "parent": "arm_b_upper_R",
+      "tail": "landmark:arm_b_tip_R"
+    },
+    {
+      "head": "landmark:arm_c_hip_L",
+      "name": "arm_c_upper_L",
+      "parent": "body",
+      "tail": "landmark:arm_c_mid_L"
+    },
+    {
+      "head": "landmark:arm_c_hip_R",
+      "name": "arm_c_upper_R",
+      "parent": "body",
+      "tail": "landmark:arm_c_mid_R"
+    },
+    {
+      "head": "landmark:arm_c_mid_L",
+      "ikChain": true,
+      "interior": false,
+      "name": "arm_c_lower_L",
+      "parent": "arm_c_upper_L",
+      "tail": "landmark:arm_c_tip_L"
+    },
+    {
+      "head": "landmark:arm_c_mid_R",
+      "ikChain": true,
+      "interior": false,
+      "name": "arm_c_lower_R",
+      "parent": "arm_c_upper_R",
+      "tail": "landmark:arm_c_tip_R"
+    },
+    {
+      "head": "landmark:arm_d_hip_L",
+      "name": "arm_d_upper_L",
+      "parent": "body",
+      "tail": "landmark:arm_d_mid_L"
+    },
+    {
+      "head": "landmark:arm_d_hip_R",
+      "name": "arm_d_upper_R",
+      "parent": "body",
+      "tail": "landmark:arm_d_mid_R"
+    },
+    {
+      "head": "landmark:arm_d_mid_L",
+      "ikChain": true,
+      "interior": false,
+      "name": "arm_d_lower_L",
+      "parent": "arm_d_upper_L",
+      "tail": "landmark:arm_d_tip_L"
+    },
+    {
+      "head": "landmark:arm_d_mid_R",
+      "ikChain": true,
+      "interior": false,
+      "name": "arm_d_lower_R",
+      "parent": "arm_d_upper_R",
+      "tail": "landmark:arm_d_tip_R"
+    }
+  ],
+  "landmarks": [
+    {
+      "name": "body"
+    },
+    {
+      "name": "head"
+    },
+    {
+      "mirror": "arm_a_hip_R",
+      "name": "arm_a_hip_L"
+    },
+    {
+      "mirror": "arm_a_hip_L",
+      "name": "arm_a_hip_R"
+    },
+    {
+      "mirror": "arm_a_mid_R",
+      "name": "arm_a_mid_L"
+    },
+    {
+      "mirror": "arm_a_mid_L",
+      "name": "arm_a_mid_R"
+    },
+    {
+      "mirror": "arm_a_tip_R",
+      "name": "arm_a_tip_L"
+    },
+    {
+      "mirror": "arm_a_tip_L",
+      "name": "arm_a_tip_R"
+    },
+    {
+      "mirror": "arm_b_hip_R",
+      "name": "arm_b_hip_L"
+    },
+    {
+      "mirror": "arm_b_hip_L",
+      "name": "arm_b_hip_R"
+    },
+    {
+      "mirror": "arm_b_mid_R",
+      "name": "arm_b_mid_L"
+    },
+    {
+      "mirror": "arm_b_mid_L",
+      "name": "arm_b_mid_R"
+    },
+    {
+      "mirror": "arm_b_tip_R",
+      "name": "arm_b_tip_L"
+    },
+    {
+      "mirror": "arm_b_tip_L",
+      "name": "arm_b_tip_R"
+    },
+    {
+      "mirror": "arm_c_hip_R",
+      "name": "arm_c_hip_L"
+    },
+    {
+      "mirror": "arm_c_hip_L",
+      "name": "arm_c_hip_R"
+    },
+    {
+      "mirror": "arm_c_mid_R",
+      "name": "arm_c_mid_L"
+    },
+    {
+      "mirror": "arm_c_mid_L",
+      "name": "arm_c_mid_R"
+    },
+    {
+      "mirror": "arm_c_tip_R",
+      "name": "arm_c_tip_L"
+    },
+    {
+      "mirror": "arm_c_tip_L",
+      "name": "arm_c_tip_R"
+    },
+    {
+      "mirror": "arm_d_hip_R",
+      "name": "arm_d_hip_L"
+    },
+    {
+      "mirror": "arm_d_hip_L",
+      "name": "arm_d_hip_R"
+    },
+    {
+      "mirror": "arm_d_mid_R",
+      "name": "arm_d_mid_L"
+    },
+    {
+      "mirror": "arm_d_mid_L",
+      "name": "arm_d_mid_R"
+    },
+    {
+      "mirror": "arm_d_tip_R",
+      "name": "arm_d_tip_L"
+    },
+    {
+      "mirror": "arm_d_tip_L",
+      "name": "arm_d_tip_R"
+    }
+  ],
+  "name": "octopod",
+  "sockets": [
+    {
+      "bone": "body",
+      "name": "body_attach",
+      "offset": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ],
+  "symmetric": true
+}

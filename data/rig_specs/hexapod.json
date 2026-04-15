@@ -1,0 +1,257 @@
+{
+  "bones": [
+    {
+      "head": "landmark:abdomen",
+      "name": "abdomen",
+      "parent": "",
+      "tail": "landmark:thorax"
+    },
+    {
+      "head": "landmark:thorax",
+      "name": "thorax",
+      "parent": "abdomen",
+      "tail": "landmark:head"
+    },
+    {
+      "head": "landmark:head",
+      "name": "head",
+      "parent": "thorax",
+      "tail": "landmark:head_tip"
+    },
+    {
+      "head": "landmark:front_hip_L",
+      "name": "front_coxa_L",
+      "parent": "thorax",
+      "tail": "landmark:front_knee_L"
+    },
+    {
+      "head": "landmark:front_hip_R",
+      "name": "front_coxa_R",
+      "parent": "thorax",
+      "tail": "landmark:front_knee_R"
+    },
+    {
+      "head": "landmark:front_knee_L",
+      "name": "front_femur_L",
+      "parent": "front_coxa_L",
+      "tail": "landmark:front_foot_L"
+    },
+    {
+      "head": "landmark:front_knee_R",
+      "name": "front_femur_R",
+      "parent": "front_coxa_R",
+      "tail": "landmark:front_foot_R"
+    },
+    {
+      "head": "landmark:front_foot_L",
+      "ikChain": true,
+      "interior": false,
+      "name": "front_tibia_L",
+      "parent": "front_femur_L",
+      "tail": "offset:front_foot_L,0,-0.02,0"
+    },
+    {
+      "head": "landmark:front_foot_R",
+      "ikChain": true,
+      "interior": false,
+      "name": "front_tibia_R",
+      "parent": "front_femur_R",
+      "tail": "offset:front_foot_R,0,-0.02,0"
+    },
+    {
+      "head": "landmark:mid_hip_L",
+      "name": "mid_coxa_L",
+      "parent": "thorax",
+      "tail": "landmark:mid_knee_L"
+    },
+    {
+      "head": "landmark:mid_hip_R",
+      "name": "mid_coxa_R",
+      "parent": "thorax",
+      "tail": "landmark:mid_knee_R"
+    },
+    {
+      "head": "landmark:mid_knee_L",
+      "name": "mid_femur_L",
+      "parent": "mid_coxa_L",
+      "tail": "landmark:mid_foot_L"
+    },
+    {
+      "head": "landmark:mid_knee_R",
+      "name": "mid_femur_R",
+      "parent": "mid_coxa_R",
+      "tail": "landmark:mid_foot_R"
+    },
+    {
+      "head": "landmark:mid_foot_L",
+      "ikChain": true,
+      "interior": false,
+      "name": "mid_tibia_L",
+      "parent": "mid_femur_L",
+      "tail": "offset:mid_foot_L,0,-0.02,0"
+    },
+    {
+      "head": "landmark:mid_foot_R",
+      "ikChain": true,
+      "interior": false,
+      "name": "mid_tibia_R",
+      "parent": "mid_femur_R",
+      "tail": "offset:mid_foot_R,0,-0.02,0"
+    },
+    {
+      "head": "landmark:rear_hip_L",
+      "name": "rear_coxa_L",
+      "parent": "thorax",
+      "tail": "landmark:rear_knee_L"
+    },
+    {
+      "head": "landmark:rear_hip_R",
+      "name": "rear_coxa_R",
+      "parent": "thorax",
+      "tail": "landmark:rear_knee_R"
+    },
+    {
+      "head": "landmark:rear_knee_L",
+      "name": "rear_femur_L",
+      "parent": "rear_coxa_L",
+      "tail": "landmark:rear_foot_L"
+    },
+    {
+      "head": "landmark:rear_knee_R",
+      "name": "rear_femur_R",
+      "parent": "rear_coxa_R",
+      "tail": "landmark:rear_foot_R"
+    },
+    {
+      "head": "landmark:rear_foot_L",
+      "ikChain": true,
+      "interior": false,
+      "name": "rear_tibia_L",
+      "parent": "rear_femur_L",
+      "tail": "offset:rear_foot_L,0,-0.02,0"
+    },
+    {
+      "head": "landmark:rear_foot_R",
+      "ikChain": true,
+      "interior": false,
+      "name": "rear_tibia_R",
+      "parent": "rear_femur_R",
+      "tail": "offset:rear_foot_R,0,-0.02,0"
+    }
+  ],
+  "landmarks": [
+    {
+      "name": "abdomen_tip"
+    },
+    {
+      "name": "abdomen"
+    },
+    {
+      "name": "thorax"
+    },
+    {
+      "name": "head"
+    },
+    {
+      "name": "head_tip"
+    },
+    {
+      "mirror": "front_hip_R",
+      "name": "front_hip_L"
+    },
+    {
+      "mirror": "front_hip_L",
+      "name": "front_hip_R"
+    },
+    {
+      "mirror": "front_knee_R",
+      "name": "front_knee_L"
+    },
+    {
+      "mirror": "front_knee_L",
+      "name": "front_knee_R"
+    },
+    {
+      "mirror": "front_foot_R",
+      "name": "front_foot_L"
+    },
+    {
+      "mirror": "front_foot_L",
+      "name": "front_foot_R"
+    },
+    {
+      "mirror": "mid_hip_R",
+      "name": "mid_hip_L"
+    },
+    {
+      "mirror": "mid_hip_L",
+      "name": "mid_hip_R"
+    },
+    {
+      "mirror": "mid_knee_R",
+      "name": "mid_knee_L"
+    },
+    {
+      "mirror": "mid_knee_L",
+      "name": "mid_knee_R"
+    },
+    {
+      "mirror": "mid_foot_R",
+      "name": "mid_foot_L"
+    },
+    {
+      "mirror": "mid_foot_L",
+      "name": "mid_foot_R"
+    },
+    {
+      "mirror": "rear_hip_R",
+      "name": "rear_hip_L"
+    },
+    {
+      "mirror": "rear_hip_L",
+      "name": "rear_hip_R"
+    },
+    {
+      "mirror": "rear_knee_R",
+      "name": "rear_knee_L"
+    },
+    {
+      "mirror": "rear_knee_L",
+      "name": "rear_knee_R"
+    },
+    {
+      "mirror": "rear_foot_R",
+      "name": "rear_foot_L"
+    },
+    {
+      "mirror": "rear_foot_L",
+      "name": "rear_foot_R"
+    }
+  ],
+  "name": "hexapod",
+  "sockets": [
+    {
+      "bone": "head",
+      "name": "head_attach",
+      "offset": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ],
+  "symmetric": true
+}

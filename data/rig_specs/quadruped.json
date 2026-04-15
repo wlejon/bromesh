@@ -1,0 +1,251 @@
+{
+  "bones": [
+    {
+      "head": "landmark:pelvis",
+      "name": "pelvis",
+      "parent": "",
+      "tail": "lerp:pelvis,chest,0.33"
+    },
+    {
+      "head": "lerp:pelvis,chest,0.33",
+      "name": "spine_01",
+      "parent": "pelvis",
+      "tail": "lerp:pelvis,chest,0.66"
+    },
+    {
+      "head": "lerp:pelvis,chest,0.66",
+      "name": "chest",
+      "parent": "spine_01",
+      "tail": "landmark:neck_base"
+    },
+    {
+      "head": "landmark:neck_base",
+      "name": "neck",
+      "parent": "chest",
+      "tail": "lerp:neck_base,crown,0.5"
+    },
+    {
+      "head": "lerp:neck_base,crown,0.5",
+      "name": "head",
+      "parent": "neck",
+      "tail": "landmark:muzzle"
+    },
+    {
+      "head": "landmark:tail_base",
+      "name": "tail_01",
+      "parent": "pelvis",
+      "tail": "lerp:tail_base,tail_tip,0.33"
+    },
+    {
+      "head": "lerp:tail_base,tail_tip,0.33",
+      "name": "tail_02",
+      "parent": "tail_01",
+      "tail": "lerp:tail_base,tail_tip,0.66"
+    },
+    {
+      "head": "lerp:tail_base,tail_tip,0.66",
+      "name": "tail_03",
+      "parent": "tail_02",
+      "tail": "landmark:tail_tip"
+    },
+    {
+      "head": "landmark:fshoulder_L",
+      "name": "fl_upper_L",
+      "parent": "chest",
+      "tail": "landmark:felbow_L"
+    },
+    {
+      "head": "landmark:fshoulder_R",
+      "name": "fl_upper_R",
+      "parent": "chest",
+      "tail": "landmark:felbow_R"
+    },
+    {
+      "head": "landmark:felbow_L",
+      "name": "fl_lower_L",
+      "parent": "fl_upper_L",
+      "tail": "landmark:fpaw_L"
+    },
+    {
+      "head": "landmark:felbow_R",
+      "name": "fl_lower_R",
+      "parent": "fl_upper_R",
+      "tail": "landmark:fpaw_R"
+    },
+    {
+      "head": "landmark:fpaw_L",
+      "ikChain": true,
+      "interior": false,
+      "name": "fl_paw_L",
+      "parent": "fl_lower_L",
+      "tail": "offset:fpaw_L,0,0,0.06"
+    },
+    {
+      "head": "landmark:fpaw_R",
+      "ikChain": true,
+      "interior": false,
+      "name": "fl_paw_R",
+      "parent": "fl_lower_R",
+      "tail": "offset:fpaw_R,0,0,0.06"
+    },
+    {
+      "head": "landmark:hip_L",
+      "name": "hl_upper_L",
+      "parent": "pelvis",
+      "tail": "landmark:hknee_L"
+    },
+    {
+      "head": "landmark:hip_R",
+      "name": "hl_upper_R",
+      "parent": "pelvis",
+      "tail": "landmark:hknee_R"
+    },
+    {
+      "head": "landmark:hknee_L",
+      "name": "hl_lower_L",
+      "parent": "hl_upper_L",
+      "tail": "landmark:hpaw_L"
+    },
+    {
+      "head": "landmark:hknee_R",
+      "name": "hl_lower_R",
+      "parent": "hl_upper_R",
+      "tail": "landmark:hpaw_R"
+    },
+    {
+      "head": "landmark:hpaw_L",
+      "ikChain": true,
+      "interior": false,
+      "name": "hl_paw_L",
+      "parent": "hl_lower_L",
+      "tail": "offset:hpaw_L,0,0,0.06"
+    },
+    {
+      "head": "landmark:hpaw_R",
+      "ikChain": true,
+      "interior": false,
+      "name": "hl_paw_R",
+      "parent": "hl_lower_R",
+      "tail": "offset:hpaw_R,0,0,0.06"
+    }
+  ],
+  "landmarks": [
+    {
+      "name": "pelvis"
+    },
+    {
+      "name": "chest"
+    },
+    {
+      "name": "neck_base"
+    },
+    {
+      "name": "crown"
+    },
+    {
+      "name": "muzzle"
+    },
+    {
+      "name": "tail_base"
+    },
+    {
+      "name": "tail_tip"
+    },
+    {
+      "mirror": "fshoulder_R",
+      "name": "fshoulder_L"
+    },
+    {
+      "mirror": "fshoulder_L",
+      "name": "fshoulder_R"
+    },
+    {
+      "mirror": "felbow_R",
+      "name": "felbow_L"
+    },
+    {
+      "mirror": "felbow_L",
+      "name": "felbow_R"
+    },
+    {
+      "mirror": "fpaw_R",
+      "name": "fpaw_L"
+    },
+    {
+      "mirror": "fpaw_L",
+      "name": "fpaw_R"
+    },
+    {
+      "mirror": "hip_R",
+      "name": "hip_L"
+    },
+    {
+      "mirror": "hip_L",
+      "name": "hip_R"
+    },
+    {
+      "mirror": "hknee_R",
+      "name": "hknee_L"
+    },
+    {
+      "mirror": "hknee_L",
+      "name": "hknee_R"
+    },
+    {
+      "mirror": "hpaw_R",
+      "name": "hpaw_L"
+    },
+    {
+      "mirror": "hpaw_L",
+      "name": "hpaw_R"
+    }
+  ],
+  "name": "quadruped",
+  "sockets": [
+    {
+      "bone": "head",
+      "name": "head_attach",
+      "offset": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "bone": "chest",
+      "name": "saddle",
+      "offset": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ],
+  "symmetric": true
+}
