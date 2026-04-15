@@ -25,4 +25,11 @@ struct LandmarkDetectOptions {
 Landmarks detectHumanoidLandmarks(const MeshData& mesh,
                                   const LandmarkDetectOptions& opts = {});
 
+/// Derive the 19 landmarks declared by builtinQuadrupedSpec() from mesh
+/// shape. Assumes the body's long axis is the forward axis, with the head
+/// at +forward and tail at -forward, four legs hanging down along -up.
+/// Bilateral symmetry across the right axis is assumed (left = -R, right = +R).
+Landmarks detectQuadrupedLandmarks(const MeshData& mesh,
+                                   const LandmarkDetectOptions& opts = {});
+
 } // namespace bromesh

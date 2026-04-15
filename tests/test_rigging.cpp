@@ -441,6 +441,75 @@ TEST(auto_rig_octopod_end_to_end) {
                            phase2::makeSyntheticOctopod());
 }
 
+// --- Phase-5: heuristic quadruped landmark detection ---------------------
+
+TEST(detect_landmarks_quadruped_completeness) {
+    auto mesh = phase2::makeSyntheticQuadruped();
+    auto lm = bromesh::detectQuadrupedLandmarks(mesh);
+    auto spec = bromesh::builtinQuadrupedSpec();
+    auto missing = bromesh::missingLandmarks(spec, lm);
+    ASSERT(missing.empty(), "all 19 quadruped landmarks detected");
+}
+
+TEST(detect_landmarks_quadruped_near_reference) {
+    auto mesh = phase2::makeSyntheticQuadruped();
+    auto detected = bromesh::detectQuadrupedLandmarks(mesh);
+    auto reference = phase2::makeQuadrupedLandmarks();
+
+    // Quadruped body is elongated along forward; tolerance tracks the
+    // largest extent so the bar doesn't vary wildly with species shape.
+    auto bbox = bromesh::computeBBox(mesh);
+    float scale = std::max({bbox.extentX(), bbox.extentY(), bbox.extentZ()});
+    float tol = 0.15f * scale;
+
+    int checked = 0;
+    for (const auto& [name, ref] : reference.points) {
+        if (!detected.has(name)) continue;
+        auto d = detected.points[name];
+        float dx = d[0]-ref[0], dy = d[1]-ref[1], dz = d[2]-ref[2];
+        float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+        ASSERT(dist < tol, name.c_str());
+        ++checked;
+    }
+    ASSERT(checked == 19, "checked all 19 landmarks");
+}
+
+TEST(detect_landmarks_quadruped_end_to_end) {
+    auto mesh = phase2::makeSyntheticQuadruped();
+    auto spec = bromesh::builtinQuadrupedSpec();
+    auto lm = bromesh::detectQuadrupedLandmarks(mesh);
+
+    bromesh::VoxelBindOptions opts; opts.maxResolution = 48;
+    auto r = bromesh::autoRig(mesh, spec, lm, opts);
+    ASSERT(r.missingLandmarks.empty(), "no missing landmarks");
+    ASSERT(r.skeleton.bones.size() == spec.bones.size(), "bone count");
+
+    auto pose = bromesh::bindPose(r.skeleton);
+    std::vector<float> world;
+    bromesh::computeWorldMatrices(r.skeleton, pose, world);
+    auto skinned = mesh;
+    bromesh::applySkinning(skinned, r.skin, world.data());
+    float maxDelta = 0.0f;
+    for (size_t i = 0; i < mesh.positions.size(); ++i) {
+        float d = std::fabs(skinned.positions[i] - mesh.positions[i]);
+        if (d > maxDelta) maxDelta = d;
+    }
+    ASSERT(maxDelta < 1e-3f, "bind pose skinning is identity");
+}
+
+TEST(detect_landmarks_quadruped_deterministic) {
+    auto mesh = phase2::makeSyntheticQuadruped();
+    auto a = bromesh::detectQuadrupedLandmarks(mesh);
+    auto b = bromesh::detectQuadrupedLandmarks(mesh);
+    ASSERT(a.points.size() == b.points.size(), "same count");
+    for (const auto& [name, pa] : a.points) {
+        ASSERT(b.has(name), name.c_str());
+        auto pb = b.points[name];
+        ASSERT(pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2],
+               "same position both calls");
+    }
+}
+
 TEST(auto_rig_quadruped_deterministic) {
     auto spec = bromesh::builtinQuadrupedSpec();
     auto lm = phase2::makeQuadrupedLandmarks();

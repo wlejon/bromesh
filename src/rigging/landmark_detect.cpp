@@ -215,4 +215,157 @@ Landmarks detectHumanoidLandmarks(const MeshData& mesh,
     return out;
 }
 
+Landmarks detectQuadrupedLandmarks(const MeshData& mesh,
+                                   const LandmarkDetectOptions& opts) {
+    Landmarks out;
+    if (mesh.vertexCount() == 0) return out;
+
+    Vec3 up  = normalize(opts.upAxis);
+    Vec3 fwd = normalize(opts.forwardAxis);
+    float upDotFwd = up[0]*fwd[0] + up[1]*fwd[1] + up[2]*fwd[2];
+    fwd = { fwd[0] - up[0]*upDotFwd,
+            fwd[1] - up[1]*upDotFwd,
+            fwd[2] - up[2]*upDotFwd };
+    fwd = normalize(fwd.data());
+    Vec3 right = cross(up, fwd);
+
+    const size_t V = mesh.vertexCount();
+    std::vector<float> R(V), U(V), F(V);
+    for (size_t i = 0; i < V; ++i) {
+        float x = mesh.positions[i*3+0];
+        float y = mesh.positions[i*3+1];
+        float z = mesh.positions[i*3+2];
+        R[i] = x*right[0] + y*right[1] + z*right[2];
+        U[i] = x*up[0]    + y*up[1]    + z*up[2];
+        F[i] = x*fwd[0]   + y*fwd[1]   + z*fwd[2];
+    }
+
+    float uMin = U[0], uMax = U[0];
+    float rMin = R[0], rMax = R[0];
+    float fMin = F[0], fMax = F[0];
+    for (size_t i = 1; i < V; ++i) {
+        uMin = std::min(uMin, U[i]); uMax = std::max(uMax, U[i]);
+        rMin = std::min(rMin, R[i]); rMax = std::max(rMax, R[i]);
+        fMin = std::min(fMin, F[i]); fMax = std::max(fMax, F[i]);
+    }
+    const float H = uMax - uMin;
+    const float L = std::max(fMax - fMin, 1e-6f);
+    const float W = std::max(rMax - rMin, 1e-6f);
+    (void)L; (void)W;
+    const float rMidSym = 0.5f*(rMin + rMax);
+    const float fMid    = 0.5f*(fMin + fMax);
+
+    // Muzzle / tail tip: fwd extrema in the upper half of the body.
+    float muR=0, muU=0, muF=-std::numeric_limits<float>::infinity();
+    float ttR=0, ttU=0, ttF= std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < V; ++i) {
+        if (U[i] < uMin + 0.4f*H) continue;
+        if (F[i] > muF) { muF=F[i]; muR=R[i]; muU=U[i]; }
+        if (F[i] < ttF) { ttF=F[i]; ttR=R[i]; ttU=U[i]; }
+    }
+
+    // Crown: centroid of top-5% up vertices in the front half. More stable
+    // than argmax on discrete meshes where the "top" is a whole face.
+    float uThresh = uMax - 0.05f*H;
+    float crR = rMidSym, crU = uMax, crF = muF;
+    {
+        double sumR=0, sumU=0, sumF=0; int n=0;
+        for (size_t i = 0; i < V; ++i) {
+            if (U[i] < uThresh) continue;
+            if (F[i] < fMid)    continue;
+            sumR += R[i]; sumU += U[i]; sumF += F[i]; ++n;
+        }
+        if (n > 0) {
+            crR = float(sumR / n);
+            crU = float(sumU / n);
+            crF = float(sumF / n);
+        }
+    }
+
+    // Four paws: argmin-up in each (left/right × front/back) quadrant, filtered
+    // to the lower third of the body.
+    auto pickPaw = [&](bool leftSide, bool front,
+                       float& oR, float& oU, float& oF) {
+        float bestU = std::numeric_limits<float>::infinity();
+        oR = 0; oU = 0; oF = 0;
+        for (size_t i = 0; i < V; ++i) {
+            if (U[i] > uMin + 0.3f*H) continue;
+            float dr = R[i] - rMidSym;
+            if (leftSide ? !(dr < 0) : !(dr > 0)) continue;
+            float df = F[i] - fMid;
+            if (front ? !(df > 0) : !(df < 0)) continue;
+            if (U[i] < bestU) { bestU=U[i]; oR=R[i]; oU=U[i]; oF=F[i]; }
+        }
+    };
+    float fpLR, fpLU, fpLF, fpRR, fpRU, fpRF;
+    float hpLR, hpLU, hpLF, hpRR, hpRU, hpRF;
+    pickPaw(true,  true,  fpLR, fpLU, fpLF);
+    pickPaw(false, true,  fpRR, fpRU, fpRF);
+    pickPaw(true,  false, hpLR, hpLU, hpLF);
+    pickPaw(false, false, hpRR, hpRU, hpRF);
+
+    // Shoulder / hip U: ~75% of body height. In a natural stance the legs
+    // hang vertically, so the leg column's R,F carries straight up to the
+    // torso attachment; we don't need to hunt for it in the mesh.
+    const float shoulderHipU = uMin + 0.75f*H;
+
+    Vec3 muzzle    = unproject(right, up, fwd, muR,  muU,  muF);
+    Vec3 tailTip   = unproject(right, up, fwd, ttR,  ttU,  ttF);
+    Vec3 crown     = unproject(right, up, fwd, crR,  crU,  crF);
+    Vec3 fpawL     = unproject(right, up, fwd, fpLR, fpLU, fpLF);
+    Vec3 fpawR     = unproject(right, up, fwd, fpRR, fpRU, fpRF);
+    Vec3 hpawL     = unproject(right, up, fwd, hpLR, hpLU, hpLF);
+    Vec3 hpawR     = unproject(right, up, fwd, hpRR, hpRU, hpRF);
+    Vec3 shoulderL = unproject(right, up, fwd, fpLR, shoulderHipU, fpLF);
+    Vec3 shoulderR = unproject(right, up, fwd, fpRR, shoulderHipU, fpRF);
+    Vec3 hipL      = unproject(right, up, fwd, hpLR, shoulderHipU, hpLF);
+    Vec3 hipR      = unproject(right, up, fwd, hpRR, shoulderHipU, hpRF);
+
+    auto mid  = [](Vec3 a, Vec3 b) {
+        return Vec3{0.5f*(a[0]+b[0]), 0.5f*(a[1]+b[1]), 0.5f*(a[2]+b[2])};
+    };
+    auto lerp = [](Vec3 a, Vec3 b, float t) {
+        return Vec3{a[0]+t*(b[0]-a[0]), a[1]+t*(b[1]-a[1]), a[2]+t*(b[2]-a[2])};
+    };
+
+    Vec3 chest    = mid(shoulderL, shoulderR);
+    Vec3 pelvis   = mid(hipL, hipR);
+    Vec3 neckBase = { chest[0] + 0.20f*(crown[0]-chest[0]),
+                      chest[1] + 0.30f*(crown[1]-chest[1]),
+                      chest[2] + 0.40f*(crown[2]-chest[2]) };
+
+    Vec3 felbowL = lerp(shoulderL, fpawL, 0.5f);
+    Vec3 felbowR = lerp(shoulderR, fpawR, 0.5f);
+    Vec3 hkneeL  = lerp(hipL, hpawL, 0.5f);
+    Vec3 hkneeR  = lerp(hipR, hpawR, 0.5f);
+
+    // Tail base: 25% past the pelvis along the chest→pelvis direction. This
+    // reliably lands at the rump without needing a torso/tail separation
+    // heuristic that might trip on messy topology.
+    Vec3 tailBase = { pelvis[0] + 0.25f*(pelvis[0]-chest[0]),
+                      pelvis[1] + 0.25f*(pelvis[1]-chest[1]),
+                      pelvis[2] + 0.25f*(pelvis[2]-chest[2]) };
+
+    setLm(out, "pelvis",      pelvis);
+    setLm(out, "chest",       chest);
+    setLm(out, "neck_base",   neckBase);
+    setLm(out, "crown",       crown);
+    setLm(out, "muzzle",      muzzle);
+    setLm(out, "tail_base",   tailBase);
+    setLm(out, "tail_tip",    tailTip);
+    setLm(out, "fshoulder_L", shoulderL);
+    setLm(out, "fshoulder_R", shoulderR);
+    setLm(out, "felbow_L",    felbowL);
+    setLm(out, "felbow_R",    felbowR);
+    setLm(out, "fpaw_L",      fpawL);
+    setLm(out, "fpaw_R",      fpawR);
+    setLm(out, "hip_L",       hipL);
+    setLm(out, "hip_R",       hipR);
+    setLm(out, "hknee_L",     hkneeL);
+    setLm(out, "hknee_R",     hkneeR);
+    setLm(out, "hpaw_L",      hpawL);
+    setLm(out, "hpaw_R",      hpawR);
+    return out;
+}
+
 } // namespace bromesh
