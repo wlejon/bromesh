@@ -241,33 +241,52 @@ GltfScene loadGLTF(const std::string& path) {
             }
         }
 
-        // Capture any scene-tree ancestry above the joint list into
-        // Skeleton::rootTransform. glTF stores inverseBindMatrices relative to
-        // the full scene-root → joint chain, but our Skeleton only preserves
-        // transforms for nodes listed in skin.joints. Without accounting for
-        // that ancestry, any armature / root node with a non-identity scale
-        // (common in MeshyAI exports: scale=0.01 to convert cm→m) produces
-        // skinning matrices with a constant scale factor at bind pose.
-        // Use the first root bone's ancestor chain; all root bones in a
-        // glTF skin typically share the same armature ancestor.
-        for (size_t j = 0; j < sk.bones.size(); ++j) {
-            if (sk.bones[j].parent != -1) continue;
-
-            int nodeIdx = gskin.joints[j];
+        // Fold any scene-tree ancestry above the joint list into each bone's
+        // inverseBindMatrix so the skeleton is self-contained. glTF stores
+        // inverseBindMatrices relative to the full scene-root → joint chain,
+        // but our runtime's `computeWorldMatrices` starts from identity at
+        // the root bone (ignoring whatever transform an armature/root node
+        // above the joints contributes). Without folding the ancestor chain
+        // into the IBMs, a non-identity armature scale (common in MeshyAI
+        // exports: scale=0.01 to convert cm→m) produces skinning matrices
+        // with a constant scale factor at bind pose.
+        //
+        // Math: glTF IBM_old = (worldAncestor · worldJoint_local)⁻¹. Our
+        // pose = worldJoint_local. Skinning computes pose · IBM, which
+        // yields worldAncestor⁻¹ at bind pose — not identity. Post-multiply
+        // each IBM by `anc` (= worldAncestor) so pose · IBM_new = I at
+        // bind pose.
+        //
+        // All root bones in a glTF skin typically share the same armature
+        // ancestor; we capture anc from the first root and apply uniformly.
+        {
             float anc[16]; matIdentity(anc);
-            std::vector<int> chain;
-            for (int cur = parentOfNode[nodeIdx]; cur != -1; cur = parentOfNode[cur]) {
-                chain.push_back(cur);
-            }
-            // Walk from outermost ancestor inward so anc accumulates
-            // left-to-right (column-major): anc = outermost * ... * innermost.
-            for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-                float lm[16]; nodeLocalMat(model.nodes[*it], lm);
-                float out[16]; matMul4(anc, lm, out);
-                std::memcpy(anc, out, 16 * sizeof(float));
+            bool haveAnc = false;
+            for (size_t j = 0; j < sk.bones.size(); ++j) {
+                if (sk.bones[j].parent != -1) continue;
+                int nodeIdx = gskin.joints[j];
+                std::vector<int> chain;
+                for (int cur = parentOfNode[nodeIdx]; cur != -1; cur = parentOfNode[cur]) {
+                    chain.push_back(cur);
+                }
+                // Walk from outermost ancestor inward so anc accumulates
+                // left-to-right (column-major): anc = outermost * ... * innermost.
+                for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+                    float lm[16]; nodeLocalMat(model.nodes[*it], lm);
+                    float out[16]; matMul4(anc, lm, out);
+                    std::memcpy(anc, out, 16 * sizeof(float));
+                }
+                haveAnc = true;
+                break;
             }
             std::memcpy(sk.rootTransform, anc, 16 * sizeof(float));
-            break;
+            if (haveAnc) {
+                for (auto& bone : sk.bones) {
+                    float out[16];
+                    matMul4(bone.inverseBind, anc, out);
+                    std::memcpy(bone.inverseBind, out, 16 * sizeof(float));
+                }
+            }
         }
 
         scene.skeletons.push_back(std::move(sk));
