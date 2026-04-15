@@ -36,6 +36,44 @@ size_t countInfluences(const WeightingOptions& w, WeightingMethod m) {
     }
 }
 
+// Detect weighting failure by scanning for non-leaf bones that received zero
+// total influence. BoneHeat/BBW use ray visibility from bone to vertex and can
+// fully orphan interior bones when the skeleton lies inside overlapping shells
+// (common in MeshyAI "generate" outputs) — every torso vert then falls through
+// the unused spine and skins to an arm/leg/head instead, which tears the mesh
+// apart at the boundary between those regions during animation. VoxelBind
+// routes through a voxel grid and does not have this failure mode.
+//
+// Leaf bones (tips: toes, fingertips) losing all influence is common and not
+// catastrophic, so we only flag failure when a non-leaf bone is orphaned.
+bool weightingProducedOrphanedNonLeafBones(const Skeleton& skel,
+                                           const SkinData& skin,
+                                           size_t stride) {
+    const size_t nBones = skel.bones.size();
+    if (nBones == 0 || skin.boneWeights.empty()) return false;
+
+    std::vector<uint8_t> hasChildren(nBones, 0);
+    for (size_t b = 0; b < nBones; ++b) {
+        int p = skel.bones[b].parent;
+        if (p >= 0 && (size_t)p < nBones) hasChildren[p] = 1;
+    }
+
+    std::vector<float> sumW(nBones, 0.0f);
+    const size_t vCount = skin.boneWeights.size() / stride;
+    for (size_t v = 0; v < vCount; ++v) {
+        for (size_t k = 0; k < stride; ++k) {
+            uint32_t b = skin.boneIndices[v * stride + k];
+            float    w = skin.boneWeights[v * stride + k];
+            if (b < nBones) sumW[b] += w;
+        }
+    }
+
+    for (size_t b = 0; b < nBones; ++b) {
+        if (hasChildren[b] && sumW[b] <= 0.0f) return true;
+    }
+    return false;
+}
+
 AutoRigResult runAutoRig(const MeshData& mesh,
                          const RigSpec& spec,
                          const Landmarks& landmarks,
@@ -54,6 +92,23 @@ AutoRigResult runAutoRig(const MeshData& mesh,
     }
 
     r.skin = dispatchWeighting(mesh, r.skeleton, wopts, r.methodUsed);
+
+    // If Auto picked BoneHeat/BBW and it orphaned interior bones, retry with
+    // VoxelBind. Only triggered for Auto — if the caller explicitly asked for
+    // a method, respect that.
+    if (wopts.method == WeightingMethod::Auto &&
+        r.methodUsed != WeightingMethod::VoxelBind) {
+        size_t stride = countInfluences(wopts, r.methodUsed);
+        if (weightingProducedOrphanedNonLeafBones(r.skeleton, r.skin, stride)) {
+            r.warnings.push_back(
+                std::string("weighting fallback: ") +
+                weightingMethodName(r.methodUsed) +
+                " orphaned non-leaf bones; retrying with voxel");
+            WeightingOptions retry = wopts;
+            retry.method = WeightingMethod::VoxelBind;
+            r.skin = dispatchWeighting(mesh, r.skeleton, retry, r.methodUsed);
+        }
+    }
 
     // Post-process smoothing (safe with 0 iterations; just renormalizes).
     WeightPostProcessOptions smoothOpts;
