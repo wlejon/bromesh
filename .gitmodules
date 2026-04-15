@@ -16,3 +16,6 @@
 [submodule "third_party/OpenFBX"]
 	path = third_party/OpenFBX
 	url = https://github.com/nem0/OpenFBX.git
+[submodule "third_party/osqp"]
+	path = third_party/osqp
+	url = https://github.com/osqp/osqp.git
