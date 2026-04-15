@@ -62,6 +62,10 @@
 #include "bromesh/rigging/auto_rig.h"
 #include "bromesh/rigging/landmark_detect.h"
 #include "bromesh/rigging/weight_smooth.h"
+#include "bromesh/rigging/bone_heat.h"
+#include "bromesh/rigging/bbw.h"
+#include "bromesh/rigging/weighting.h"
+#include "bromesh/rigging/mesh_laplacian.h"
 
 #include <cstdio>
 #include <cstdlib>

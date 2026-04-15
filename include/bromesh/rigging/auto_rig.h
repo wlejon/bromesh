@@ -3,7 +3,7 @@
 #include "bromesh/mesh_data.h"
 #include "bromesh/rigging/landmarks.h"
 #include "bromesh/rigging/rig_spec.h"
-#include "bromesh/rigging/voxel_bind.h"
+#include "bromesh/rigging/weighting.h"
 
 #include <string>
 #include <vector>
@@ -15,6 +15,7 @@ struct AutoRigResult {
     SkinData skin;
     std::vector<std::string> missingLandmarks; // required-but-absent landmark names
     std::vector<std::string> warnings;         // soft issues (zero-length bones, orphan verts, ...)
+    WeightingMethod methodUsed = WeightingMethod::Auto; // resolved method (never Auto on return)
 };
 
 /// One-call driver: validate landmarks, fit skeleton, compute weights.
@@ -25,6 +26,13 @@ struct AutoRigResult {
 AutoRigResult autoRig(const MeshData& mesh,
                       const RigSpec& spec,
                       const Landmarks& landmarks,
-                      const VoxelBindOptions& bindOpts = {});
+                      const WeightingOptions& wopts = {});
+
+/// Back-compat overload: VoxelBindOptions-only caller. Dispatches to
+/// VoxelBind regardless of manifoldness.
+AutoRigResult autoRig(const MeshData& mesh,
+                      const RigSpec& spec,
+                      const Landmarks& landmarks,
+                      const VoxelBindOptions& bindOpts);
 
 } // namespace bromesh

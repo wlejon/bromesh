@@ -169,6 +169,149 @@ TEST(auto_rig_deterministic) {
     ASSERT(a.skin.boneIndices == b.skin.boneIndices, "indices deterministic");
 }
 
+// --- Phase 4 remainder: bone-heat + BBW + weighting dispatch ---------------
+
+// Build a simple manifold capsule-ish mesh by subdividing a box. Used as
+// input to the manifold-only weighting paths.
+static bromesh::MeshData makeManifoldCapsule() {
+    auto m = bromesh::box(0.1f, 0.5f, 0.1f);
+    m = bromesh::subdivideMidpoint(m, 2); // smoother discretization
+    return m;
+}
+
+// Build a simple 2-bone skeleton along Y so per-vertex weights will vary.
+static bromesh::Skeleton makeTwoBoneSkeleton() {
+    bromesh::Skeleton s;
+    bromesh::Bone root; root.name = "root"; root.parent = -1;
+    // inverseBind = translate(-0, -0.5, 0) to place the bone at world y=+0.5? We
+    // want head in world space at y=-0.5 and tip at y=+0.5. inverseBind is
+    // the inverse of world: if world is translate(0, -0.5, 0), inverseBind
+    // is translate(0, +0.5, 0). Column-major mat4.
+    float ib0[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,+0.5f,0,1};
+    std::memcpy(root.inverseBind, ib0, sizeof(ib0));
+    bromesh::Bone tip; tip.name = "tip"; tip.parent = 0;
+    tip.localT[0] = 0; tip.localT[1] = 1.0f; tip.localT[2] = 0;
+    float ib1[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,-0.5f,0,1};
+    std::memcpy(tip.inverseBind, ib1, sizeof(ib1));
+    s.bones.push_back(root);
+    s.bones.push_back(tip);
+    return s;
+}
+
+TEST(mesh_laplacian_row_sum_zero) {
+    // (Lf)[i] = sum over neighbors of w_ij (f[j] - f[i]) — so for f constant,
+    // (Lf) must be zero. Equivalent: each row of L sums to zero.
+    auto m = makeManifoldCapsule();
+    bromesh::SparseCsr L;
+    std::vector<double> mass;
+    bromesh::assembleCotangentLaplacian(m, L, mass);
+    double maxRowSum = 0.0;
+    for (int i = 0; i < L.rows; ++i) {
+        double s = 0.0;
+        for (int k = L.rowStart[i]; k < L.rowStart[i+1]; ++k) s += L.values[k];
+        if (std::fabs(s) > maxRowSum) maxRowSum = std::fabs(s);
+    }
+    ASSERT(maxRowSum < 1e-9, "cot-Laplacian row sums ~ 0");
+    double totalMass = 0.0;
+    for (double x : mass) totalMass += x;
+    ASSERT(totalMass > 1e-6, "mass matrix is positive");
+}
+
+TEST(bone_heat_weights_valid) {
+    auto mesh = makeManifoldCapsule();
+    auto skel = makeTwoBoneSkeleton();
+    bromesh::BoneHeatOptions opts;
+    auto skin = bromesh::boneHeatWeights(mesh, skel, opts);
+
+    ASSERT(skin.boneCount == 2, "boneCount");
+    ASSERT(skin.boneWeights.size() == mesh.vertexCount() * 4, "weights sized");
+    // Every vertex: weights sum to ~1 and are non-negative.
+    size_t bad = 0;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float s = 0.0f;
+        for (int k = 0; k < 4; ++k) {
+            float w = skin.boneWeights[v * 4 + k];
+            if (!(w >= 0.0f) || w != w) { ++bad; break; }
+            s += w;
+        }
+        if (std::fabs(s - 1.0f) > 1e-3f) ++bad;
+    }
+    ASSERT(bad == 0, "bone-heat weights normalized and non-negative");
+}
+
+TEST(bone_heat_deterministic) {
+    auto mesh = makeManifoldCapsule();
+    auto skel = makeTwoBoneSkeleton();
+    auto a = bromesh::boneHeatWeights(mesh, skel);
+    auto b = bromesh::boneHeatWeights(mesh, skel);
+    ASSERT(a.boneWeights == b.boneWeights, "bone-heat deterministic");
+    ASSERT(a.boneIndices == b.boneIndices, "bone-heat indices deterministic");
+}
+
+TEST(bbw_weights_valid) {
+#if BROMESH_HAS_OSQP
+    auto mesh = makeManifoldCapsule();
+    auto skel = makeTwoBoneSkeleton();
+    bromesh::BBWOptions opts;
+    opts.anchorsPerBone = 2;
+    opts.maxIter = 3000;
+    auto skin = bromesh::bbwWeights(mesh, skel, opts);
+
+    ASSERT(skin.boneCount == 2, "bbw boneCount");
+    ASSERT(skin.boneWeights.size() == mesh.vertexCount() * 4, "bbw weights sized");
+    size_t bad = 0;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float s = 0.0f;
+        for (int k = 0; k < 4; ++k) {
+            float w = skin.boneWeights[v * 4 + k];
+            if (!(w >= 0.0f) || w != w) { ++bad; break; }
+            s += w;
+        }
+        if (std::fabs(s - 1.0f) > 1e-2f) ++bad;
+    }
+    ASSERT(bad == 0, "BBW weights normalized and non-negative");
+#endif
+}
+
+TEST(weighting_auto_select_manifold) {
+    auto mesh = makeManifoldCapsule();
+    auto sel = bromesh::autoSelectWeightingMethod(mesh);
+    ASSERT(sel == bromesh::WeightingMethod::BoneHeat, "manifold → bone heat");
+}
+
+TEST(weighting_auto_select_non_manifold) {
+    // Take a manifold box and punch a hole (remove one triangle) — gives a
+    // boundary edge shared by only 1 triangle.
+    auto mesh = bromesh::box(0.1f, 0.5f, 0.1f);
+    ASSERT(!mesh.indices.empty(), "sanity: box has triangles");
+    mesh.indices.resize(mesh.indices.size() - 3);
+    auto sel = bromesh::autoSelectWeightingMethod(mesh);
+    ASSERT(sel == bromesh::WeightingMethod::VoxelBind, "non-manifold → voxel");
+}
+
+TEST(auto_rig_new_options_path_compat) {
+    // Back-compat overload (VoxelBindOptions) still works and matches the
+    // new overload when method is forced to VoxelBind.
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto lm = makeHumanoidLandmarks();
+    auto mesh = makeSyntheticHumanoid();
+    bromesh::VoxelBindOptions bOpts; bOpts.maxResolution = 48;
+    auto legacy = bromesh::autoRig(mesh, spec, lm, bOpts);
+
+    bromesh::WeightingOptions wOpts;
+    wOpts.method = bromesh::WeightingMethod::VoxelBind;
+    wOpts.voxel = bOpts;
+    wOpts.smoothIterations = bOpts.smoothIterations;
+    wOpts.smoothAlpha = bOpts.smoothAlpha;
+    wOpts.minWeight = bOpts.minWeight;
+    auto newPath = bromesh::autoRig(mesh, spec, lm, wOpts);
+
+    ASSERT(legacy.skin.boneWeights == newPath.skin.boneWeights,
+           "new/legacy autoRig produce same weights");
+    ASSERT(legacy.methodUsed == bromesh::WeightingMethod::VoxelBind,
+           "legacy path reports VoxelBind");
+}
+
 // --- Phase-2: non-humanoid rig specs ---------------------------------------
 //
 // The tests below verify that the data-driven RigSpec schema generalizes to

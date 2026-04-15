@@ -1,5 +1,8 @@
 #include "bromesh/rigging/auto_rig.h"
+#include "bromesh/rigging/bbw.h"
+#include "bromesh/rigging/bone_heat.h"
 #include "bromesh/rigging/skeleton_fit.h"
+#include "bromesh/rigging/voxel_bind.h"
 #include "bromesh/rigging/weight_smooth.h"
 
 #include <cmath>
@@ -7,40 +10,59 @@
 
 namespace bromesh {
 
-AutoRigResult autoRig(const MeshData& mesh,
-                      const RigSpec& spec,
-                      const Landmarks& landmarks,
-                      const VoxelBindOptions& bindOpts) {
+namespace {
+
+SkinData dispatchWeighting(const MeshData& mesh,
+                           const Skeleton& skeleton,
+                           const WeightingOptions& w,
+                           WeightingMethod& chosen) {
+    WeightingMethod m = w.method;
+    if (m == WeightingMethod::Auto) m = autoSelectWeightingMethod(mesh);
+    chosen = m;
+    switch (m) {
+        case WeightingMethod::BoneHeat: return boneHeatWeights(mesh, skeleton, w.boneHeat);
+        case WeightingMethod::BBW:      return bbwWeights(mesh, skeleton, w.bbw);
+        case WeightingMethod::VoxelBind:
+        default:                        return voxelBindWeights(mesh, skeleton, w.voxel);
+    }
+}
+
+size_t countInfluences(const WeightingOptions& w, WeightingMethod m) {
+    switch (m) {
+        case WeightingMethod::BoneHeat: return (size_t)w.boneHeat.maxInfluences;
+        case WeightingMethod::BBW:      return (size_t)w.bbw.maxInfluences;
+        case WeightingMethod::VoxelBind:
+        default:                        return (size_t)w.voxel.maxInfluences;
+    }
+}
+
+AutoRigResult runAutoRig(const MeshData& mesh,
+                         const RigSpec& spec,
+                         const Landmarks& landmarks,
+                         const WeightingOptions& wopts) {
     AutoRigResult r;
     r.missingLandmarks = bromesh::missingLandmarks(spec, landmarks);
-
     r.skeleton = fitSkeleton(spec, landmarks, mesh);
 
-    // Warn about degenerate (zero-length) bones — usually caused by missing
-    // landmarks or bad expressions.
     for (size_t i = 0; i < r.skeleton.bones.size(); ++i) {
         const auto& b = r.skeleton.bones[i];
         float tx = b.localT[0], ty = b.localT[1], tz = b.localT[2];
         float lenSq = tx*tx + ty*ty + tz*tz;
-        // Only flag non-root bones with zero offset from parent.
         if (b.parent >= 0 && lenSq < 1e-10f) {
             r.warnings.push_back("zero-length bone: " + b.name);
         }
     }
 
-    r.skin = voxelBindWeights(mesh, r.skeleton, bindOpts);
+    r.skin = dispatchWeighting(mesh, r.skeleton, wopts, r.methodUsed);
 
-    // Post-process: Laplacian smoothing + outlier rejection. Safe to call
-    // with iterations=0 (just re-normalizes). Driven by the same options
-    // struct so callers have a single knob.
+    // Post-process smoothing (safe with 0 iterations; just renormalizes).
     WeightPostProcessOptions smoothOpts;
-    smoothOpts.iterations = bindOpts.smoothIterations;
-    smoothOpts.alpha      = bindOpts.smoothAlpha;
-    smoothOpts.minWeight  = bindOpts.minWeight;
+    smoothOpts.iterations = wopts.smoothIterations;
+    smoothOpts.alpha      = wopts.smoothAlpha;
+    smoothOpts.minWeight  = wopts.minWeight;
     postProcessWeights(mesh, r.skin, smoothOpts);
 
-    // Sanity check: every vertex should have at least one non-zero weight.
-    size_t stride = bindOpts.maxInfluences;
+    size_t stride = countInfluences(wopts, r.methodUsed);
     size_t orphans = 0;
     for (size_t v = 0; v < mesh.vertexCount(); ++v) {
         bool any = false;
@@ -53,8 +75,29 @@ AutoRigResult autoRig(const MeshData& mesh,
         r.warnings.push_back("orphan vertices without bone influence: "
                              + std::to_string(orphans));
     }
-
     return r;
+}
+
+} // namespace
+
+AutoRigResult autoRig(const MeshData& mesh,
+                      const RigSpec& spec,
+                      const Landmarks& landmarks,
+                      const WeightingOptions& wopts) {
+    return runAutoRig(mesh, spec, landmarks, wopts);
+}
+
+AutoRigResult autoRig(const MeshData& mesh,
+                      const RigSpec& spec,
+                      const Landmarks& landmarks,
+                      const VoxelBindOptions& bindOpts) {
+    WeightingOptions w;
+    w.method = WeightingMethod::VoxelBind;
+    w.voxel  = bindOpts;
+    w.smoothIterations = bindOpts.smoothIterations;
+    w.smoothAlpha      = bindOpts.smoothAlpha;
+    w.minWeight        = bindOpts.minWeight;
+    return runAutoRig(mesh, spec, landmarks, w);
 }
 
 } // namespace bromesh
