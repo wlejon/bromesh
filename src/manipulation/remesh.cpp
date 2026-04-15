@@ -299,6 +299,16 @@ static void flipEdges(HalfEdgeMesh& hm) {
     candidates.reserve(edgeFaces.size());
     for (const auto& kv : edgeFaces) candidates.push_back(kv.first);
 
+    // edgeDir: +1 if face f traverses edge as (a→b), -1 if (b→a), 0 if neither.
+    auto edgeDir = [&](size_t f, uint32_t a, uint32_t b) -> int {
+        const auto& tri = hm.tris[f];
+        for (int i = 0; i < 3; ++i) {
+            if (tri[i] == a && tri[(i+1)%3] == b) return +1;
+            if (tri[i] == b && tri[(i+1)%3] == a) return -1;
+        }
+        return 0;
+    };
+
     for (const EdgeKey& key : candidates) {
         auto it = edgeFaces.find(key);
         if (it == edgeFaces.end() || it->second.size() != 2) continue;
@@ -307,47 +317,58 @@ static void flipEdges(HalfEdgeMesh& hm) {
         if (hm.verts[a].boundary && hm.verts[b].boundary) continue;
 
         size_t f0 = it->second[0], f1 = it->second[1];
-        // Face lists can go stale after earlier flips; re-verify membership.
         if (!containsEdge(f0, a, b) || !containsEdge(f1, a, b)) continue;
 
-        uint32_t c = UINT32_MAX, d = UINT32_MAX;
+        // Classify sides so winding is preserved.
+        // FA = face traversing a→b (its opposite vert = vA).
+        // FB = face traversing b→a (its opposite vert = vB).
+        int d0 = edgeDir(f0, a, b), d1 = edgeDir(f1, a, b);
+        if (d0 == 0 || d1 == 0 || d0 == d1) continue;
+        size_t FA, FB;
+        if (d0 > 0) { FA = f0; FB = f1; }
+        else        { FA = f1; FB = f0; }
+
+        uint32_t vA = UINT32_MAX, vB = UINT32_MAX;
         for (int i = 0; i < 3; ++i) {
-            uint32_t v = hm.tris[f0][i];
-            if (v != a && v != b) c = v;
-            v = hm.tris[f1][i];
-            if (v != a && v != b) d = v;
+            uint32_t v = hm.tris[FA][i];
+            if (v != a && v != b) vA = v;
+            v = hm.tris[FB][i];
+            if (v != a && v != b) vB = v;
         }
-        if (c == UINT32_MAX || d == UINT32_MAX || c == d) continue;
+        if (vA == UINT32_MAX || vB == UINT32_MAX || vA == vB) continue;
 
-        // Don't flip if the diagonal edge (c,d) already exists elsewhere:
-        // the flip would land a third face on that edge → non-manifold.
-        auto itCd = edgeFaces.find(EdgeKey(c, d));
-        if (itCd != edgeFaces.end() && !itCd->second.empty()) continue;
+        // Don't flip if the diagonal (vA,vB) already exists: would become
+        // a 3-face non-manifold edge.
+        auto itNew = edgeFaces.find(EdgeKey(vA, vB));
+        if (itNew != edgeFaces.end() && !itNew->second.empty()) continue;
 
-        int devBefore = std::abs(valence[a]     - tgt(a))
-                      + std::abs(valence[b]     - tgt(b))
-                      + std::abs(valence[c]     - tgt(c))
-                      + std::abs(valence[d]     - tgt(d));
-        int devAfter  = std::abs(valence[a] - 1 - tgt(a))
-                      + std::abs(valence[b] - 1 - tgt(b))
-                      + std::abs(valence[c] + 1 - tgt(c))
-                      + std::abs(valence[d] + 1 - tgt(d));
-
+        int devBefore = std::abs(valence[a]      - tgt(a))
+                      + std::abs(valence[b]      - tgt(b))
+                      + std::abs(valence[vA]     - tgt(vA))
+                      + std::abs(valence[vB]     - tgt(vB));
+        int devAfter  = std::abs(valence[a]  - 1 - tgt(a))
+                      + std::abs(valence[b]  - 1 - tgt(b))
+                      + std::abs(valence[vA] + 1 - tgt(vA))
+                      + std::abs(valence[vB] + 1 - tgt(vB));
         if (devAfter >= devBefore) continue;
 
-        // Commit flip. Rewrite tris and update edgeFaces incrementally.
-        hm.tris[f0] = {c, d, a};
-        hm.tris[f1] = {c, b, d};
+        // Commit. New triangles preserve CCW winding of the original quad:
+        //   FA: (a, vB, vA)   — a-side
+        //   FB: (b, vA, vB)   — b-side
+        // The shared diagonal (vA,vB) appears as (vB→vA) in FA and (vA→vB)
+        // in FB, which is the correct opposite-direction pairing.
+        hm.tris[FA] = {a, vB, vA};
+        hm.tris[FB] = {b, vA, vB};
         valence[a]--; valence[b]--;
-        valence[c]++; valence[d]++;
+        valence[vA]++; valence[vB]++;
 
-        // f0: leaves (a,b),(b,c); joins (c,d),(d,a); stays (a,c).
-        rmEdge(a, b, f0); rmEdge(b, c, f0);
-        addEdge(c, d, f0); addEdge(d, a, f0);
-        // f1: leaves (a,b),(a,d); joins (c,d),(c,b); stays (b,d).
-        rmEdge(a, b, f1); rmEdge(a, d, f1);
-        addEdge(c, d, f1); addEdge(c, b, f1);
-        // Drop empty entry for (a,b).
+        // edgeFaces incremental update.
+        // FA leaves (a,b),(b,vA); joins (a,vB),(vA,vB); stays (vA,a).
+        rmEdge(a, b, FA); rmEdge(b, vA, FA);
+        addEdge(a, vB, FA); addEdge(vA, vB, FA);
+        // FB leaves (a,b),(a,vB); joins (b,vA),(vA,vB); stays (vB,b).
+        rmEdge(a, b, FB); rmEdge(a, vB, FB);
+        addEdge(b, vA, FB); addEdge(vA, vB, FB);
         auto itAb = edgeFaces.find(EdgeKey(a, b));
         if (itAb != edgeFaces.end() && itAb->second.empty())
             edgeFaces.erase(itAb);
