@@ -230,6 +230,9 @@ add_library(bromesh STATIC
 
     # Boolean/CSG
     src/csg/boolean.cpp
+
+    # Rigging
+    src/rigging/rig_spec.cpp
 )
 
 target_include_directories(bromesh PUBLIC include)

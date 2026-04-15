@@ -1,0 +1,57 @@
+{
+  "name": "humanoid",
+  "symmetric": true,
+  "landmarks": [
+    { "name": "pelvis" },
+    { "name": "chest" },
+    { "name": "neck_base" },
+    { "name": "crown" },
+    { "name": "shoulder_L", "mirror": "shoulder_R" },
+    { "name": "shoulder_R", "mirror": "shoulder_L" },
+    { "name": "elbow_L",    "mirror": "elbow_R" },
+    { "name": "elbow_R",    "mirror": "elbow_L" },
+    { "name": "wrist_L",    "mirror": "wrist_R" },
+    { "name": "wrist_R",    "mirror": "wrist_L" },
+    { "name": "hip_L",      "mirror": "hip_R" },
+    { "name": "hip_R",      "mirror": "hip_L" },
+    { "name": "knee_L",     "mirror": "knee_R" },
+    { "name": "knee_R",     "mirror": "knee_L" },
+    { "name": "ankle_L",    "mirror": "ankle_R" },
+    { "name": "ankle_R",    "mirror": "ankle_L" },
+    { "name": "toe_L",      "mirror": "toe_R" },
+    { "name": "toe_R",      "mirror": "toe_L" }
+  ],
+  "bones": [
+    { "name": "pelvis",     "parent": "",           "head": "landmark:pelvis",             "tail": "landmark:chest" },
+    { "name": "spine_01",   "parent": "pelvis",     "head": "lerp:pelvis,chest,0.33",      "tail": "lerp:pelvis,chest,0.66" },
+    { "name": "spine_02",   "parent": "spine_01",   "head": "lerp:pelvis,chest,0.66",      "tail": "landmark:chest" },
+    { "name": "spine_03",   "parent": "spine_02",   "head": "landmark:chest",              "tail": "landmark:neck_base" },
+    { "name": "neck",       "parent": "spine_03",   "head": "landmark:neck_base",          "tail": "lerp:neck_base,crown,0.5" },
+    { "name": "head",       "parent": "neck",       "head": "lerp:neck_base,crown,0.5",    "tail": "landmark:crown" },
+
+    { "name": "shoulder_L", "parent": "spine_03",   "head": "lerp:neck_base,shoulder_L,0.6", "tail": "landmark:shoulder_L" },
+    { "name": "upper_arm_L","parent": "shoulder_L", "head": "landmark:shoulder_L",         "tail": "landmark:elbow_L" },
+    { "name": "forearm_L",  "parent": "upper_arm_L","head": "landmark:elbow_L",            "tail": "landmark:wrist_L" },
+    { "name": "hand_L",     "parent": "forearm_L",  "head": "landmark:wrist_L",            "tail": "offset:wrist_L,0.08,0,0", "interior": false, "ikChain": true },
+
+    { "name": "shoulder_R", "parent": "spine_03",   "head": "lerp:neck_base,shoulder_R,0.6", "tail": "landmark:shoulder_R" },
+    { "name": "upper_arm_R","parent": "shoulder_R", "head": "landmark:shoulder_R",         "tail": "landmark:elbow_R" },
+    { "name": "forearm_R",  "parent": "upper_arm_R","head": "landmark:elbow_R",            "tail": "landmark:wrist_R" },
+    { "name": "hand_R",     "parent": "forearm_R",  "head": "landmark:wrist_R",            "tail": "offset:wrist_R,-0.08,0,0", "interior": false, "ikChain": true },
+
+    { "name": "upper_leg_L","parent": "pelvis",     "head": "landmark:hip_L",              "tail": "landmark:knee_L" },
+    { "name": "lower_leg_L","parent": "upper_leg_L","head": "landmark:knee_L",             "tail": "landmark:ankle_L" },
+    { "name": "foot_L",     "parent": "lower_leg_L","head": "landmark:ankle_L",            "tail": "landmark:toe_L", "interior": false, "ikChain": true },
+    { "name": "toe_L",      "parent": "foot_L",     "head": "landmark:toe_L",              "tail": "offset:toe_L,0,0,0.04", "interior": false },
+
+    { "name": "upper_leg_R","parent": "pelvis",     "head": "landmark:hip_R",              "tail": "landmark:knee_R" },
+    { "name": "lower_leg_R","parent": "upper_leg_R","head": "landmark:knee_R",             "tail": "landmark:ankle_R" },
+    { "name": "foot_R",     "parent": "lower_leg_R","head": "landmark:ankle_R",            "tail": "landmark:toe_R", "interior": false, "ikChain": true },
+    { "name": "toe_R",      "parent": "foot_R",     "head": "landmark:toe_R",              "tail": "offset:toe_R,0,0,0.04", "interior": false }
+  ],
+  "sockets": [
+    { "name": "hand_L_grip", "bone": "hand_L", "offset": [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1] },
+    { "name": "hand_R_grip", "bone": "hand_R", "offset": [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1] },
+    { "name": "head_attach", "bone": "head",   "offset": [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1] }
+  ]
+}
