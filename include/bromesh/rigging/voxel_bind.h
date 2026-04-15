@@ -18,6 +18,13 @@ struct VoxelBindOptions {
     float falloffPower = 4.0f;
     /// Weights below this are dropped before final renormalization.
     float minWeight = 1e-3f;
+    /// Laplacian weight-smoothing passes applied to the voxel-bind output.
+    /// Removes stairstep artifacts at joint bends produced by the voxel
+    /// grid. 0 disables. Post-processing also prunes bones whose influence
+    /// has no support in the mesh-adjacency neighborhood (outlier rejection).
+    int smoothIterations = 4;
+    /// Per-iteration blend toward the neighbor mean (0..1).
+    float smoothAlpha = 0.5f;
 };
 
 /// Compute skin weights by geodesic voxel binding (Dionne & de Lasa 2013,

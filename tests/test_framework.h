@@ -61,6 +61,7 @@
 #include "bromesh/rigging/voxel_bind.h"
 #include "bromesh/rigging/auto_rig.h"
 #include "bromesh/rigging/landmark_detect.h"
+#include "bromesh/rigging/weight_smooth.h"
 
 #include <cstdio>
 #include <cstdlib>

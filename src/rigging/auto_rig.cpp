@@ -1,5 +1,6 @@
 #include "bromesh/rigging/auto_rig.h"
 #include "bromesh/rigging/skeleton_fit.h"
+#include "bromesh/rigging/weight_smooth.h"
 
 #include <cmath>
 #include <cstring>
@@ -28,6 +29,15 @@ AutoRigResult autoRig(const MeshData& mesh,
     }
 
     r.skin = voxelBindWeights(mesh, r.skeleton, bindOpts);
+
+    // Post-process: Laplacian smoothing + outlier rejection. Safe to call
+    // with iterations=0 (just re-normalizes). Driven by the same options
+    // struct so callers have a single knob.
+    WeightPostProcessOptions smoothOpts;
+    smoothOpts.iterations = bindOpts.smoothIterations;
+    smoothOpts.alpha      = bindOpts.smoothAlpha;
+    smoothOpts.minWeight  = bindOpts.minWeight;
+    postProcessWeights(mesh, r.skin, smoothOpts);
 
     // Sanity check: every vertex should have at least one non-zero weight.
     size_t stride = bindOpts.maxInfluences;

@@ -521,6 +521,144 @@ TEST(auto_rig_quadruped_deterministic) {
     ASSERT(a.skin.boneIndices == b.skin.boneIndices, "indices deterministic");
 }
 
+// --- Phase-4: weight post-processing (smoothing + outlier rejection) ----
+
+// Helper: compute mean neighbor-to-neighbor weight difference across the
+// mesh. Lower = smoother (voxel-grid stairsteps show up as high values).
+static float meshWeightRoughness(const bromesh::MeshData& mesh,
+                                 const bromesh::SkinData& skin) {
+    const size_t nV = mesh.vertexCount();
+    if (nV == 0) return 0.0f;
+    const size_t K = 4;
+    // Build adjacency.
+    std::vector<std::unordered_set<uint32_t>> adj(nV);
+    for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+        uint32_t a = mesh.indices[t], b = mesh.indices[t+1], c = mesh.indices[t+2];
+        if (a>=nV||b>=nV||c>=nV) continue;
+        adj[a].insert(b); adj[a].insert(c);
+        adj[b].insert(a); adj[b].insert(c);
+        adj[c].insert(a); adj[c].insert(b);
+    }
+    // Dense per-vertex weight table.
+    const size_t B = skin.boneCount;
+    std::vector<float> dense(nV * B, 0.0f);
+    for (size_t v = 0; v < nV; ++v) {
+        for (size_t k = 0; k < K; ++k) {
+            float w = skin.boneWeights[v*K+k];
+            uint32_t bi = skin.boneIndices[v*K+k];
+            if (w > 0.0f && bi < B) dense[v*B + bi] += w;
+        }
+    }
+    double total = 0.0; size_t edges = 0;
+    for (size_t v = 0; v < nV; ++v) {
+        for (uint32_t n : adj[v]) {
+            if (n <= v) continue;
+            for (size_t bi = 0; bi < B; ++bi) {
+                total += std::fabs(dense[v*B + bi] - dense[(size_t)n*B + bi]);
+            }
+            ++edges;
+        }
+    }
+    return edges ? float(total / (double)edges) : 0.0f;
+}
+
+TEST(post_process_preserves_sum_to_one) {
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto lm = makeHumanoidLandmarks();
+    auto mesh = makeSyntheticHumanoid();
+    bromesh::VoxelBindOptions opts; opts.maxResolution = 48;
+    auto r = bromesh::autoRig(mesh, spec, lm, opts);
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float sum = 0.0f;
+        for (int k = 0; k < 4; ++k) sum += r.skin.boneWeights[v*4+k];
+        ASSERT(std::fabs(sum - 1.0f) < 1e-3f, "weights sum to 1 after post-process");
+    }
+}
+
+TEST(post_process_reduces_roughness) {
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto lm = makeHumanoidLandmarks();
+    auto mesh = makeSyntheticHumanoid();
+
+    bromesh::VoxelBindOptions raw;  raw.maxResolution = 48; raw.smoothIterations = 0;
+    bromesh::VoxelBindOptions smth; smth.maxResolution = 48; smth.smoothIterations = 6;
+    auto rRaw = bromesh::autoRig(mesh, spec, lm, raw);
+    auto rSmth = bromesh::autoRig(mesh, spec, lm, smth);
+
+    float rough0 = meshWeightRoughness(mesh, rRaw.skin);
+    float rough1 = meshWeightRoughness(mesh, rSmth.skin);
+    ASSERT(rough1 <= rough0, "smoothing does not increase roughness");
+    // Expect a meaningful reduction — at least 15%. Voxel-bind on this mesh
+    // produces visible stepping so smoothing should win clearly.
+    ASSERT(rough1 < rough0 * 0.85f, "smoothing reduces roughness by >=15%");
+}
+
+TEST(post_process_bind_pose_identity) {
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto lm = makeHumanoidLandmarks();
+    auto mesh = makeSyntheticHumanoid();
+    bromesh::VoxelBindOptions opts; opts.maxResolution = 48; opts.smoothIterations = 6;
+    auto r = bromesh::autoRig(mesh, spec, lm, opts);
+
+    auto pose = bromesh::bindPose(r.skeleton);
+    std::vector<float> world;
+    bromesh::computeWorldMatrices(r.skeleton, pose, world);
+    auto skinned = mesh;
+    bromesh::applySkinning(skinned, r.skin, world.data());
+    float maxDelta = 0.0f;
+    for (size_t i = 0; i < mesh.positions.size(); ++i) {
+        float d = std::fabs(skinned.positions[i] - mesh.positions[i]);
+        if (d > maxDelta) maxDelta = d;
+    }
+    ASSERT(maxDelta < 1e-3f, "bind pose is identity even after smoothing");
+}
+
+TEST(post_process_deterministic) {
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto lm = makeHumanoidLandmarks();
+    auto mesh = makeSyntheticHumanoid();
+    bromesh::VoxelBindOptions opts; opts.maxResolution = 48; opts.smoothIterations = 4;
+    auto a = bromesh::autoRig(mesh, spec, lm, opts);
+    auto b = bromesh::autoRig(mesh, spec, lm, opts);
+    ASSERT(a.skin.boneWeights == b.skin.boneWeights, "deterministic weights");
+    ASSERT(a.skin.boneIndices == b.skin.boneIndices, "deterministic indices");
+}
+
+TEST(post_process_side_affinity_intact) {
+    // Smoothing must not destroy left/right separation — if it did, posing
+    // one arm would drag the other. Re-use the side-affinity check with
+    // smoothing on.
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto lm = makeHumanoidLandmarks();
+    auto mesh = makeSyntheticHumanoid();
+    bromesh::VoxelBindOptions opts; opts.maxResolution = 48; opts.smoothIterations = 6;
+    auto r = bromesh::autoRig(mesh, spec, lm, opts);
+    int leftArmBones[3] = { -1, -1, -1 };
+    for (size_t i = 0; i < r.skeleton.bones.size(); ++i) {
+        const auto& n = r.skeleton.bones[i].name;
+        if (n == "upper_arm_L")  leftArmBones[0] = (int)i;
+        if (n == "forearm_L")    leftArmBones[1] = (int)i;
+        if (n == "shoulder_L")   leftArmBones[2] = (int)i;
+    }
+    int inspected = 0, withLeft = 0;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float x = mesh.positions[v*3];
+        float y = mesh.positions[v*3+1];
+        if (x > -0.4f) continue;
+        if (y < 0.35f || y > 0.55f) continue;
+        ++inspected;
+        for (int k = 0; k < 4; ++k) {
+            uint32_t bi = r.skin.boneIndices[v*4+k];
+            float bw = r.skin.boneWeights[v*4+k];
+            if (bw <= 0.0f) continue;
+            if ((int)bi == leftArmBones[0] || (int)bi == leftArmBones[1] ||
+                (int)bi == leftArmBones[2]) { ++withLeft; break; }
+        }
+    }
+    ASSERT(inspected > 0, "have left-arm verts");
+    ASSERT(withLeft * 2 >= inspected, "left-arm verts still bind left-side after smoothing");
+}
+
 // --- Phase-5: heuristic landmark detection --------------------------------
 
 TEST(detect_landmarks_humanoid_completeness) {
