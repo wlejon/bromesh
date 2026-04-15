@@ -82,16 +82,31 @@ Landmarks detectHumanoidLandmarks(const MeshData& mesh,
         if (U[i] > crownU) { crownU = U[i]; crownR = R[i]; crownF = F[i]; }
     }
 
-    // -- Ankles: lowest-up vertex on each side, filtered to the lower quarter
+    // -- Ankles: centroid of the bottom 5% of vertices on each side. Using a
+    // single min-U vertex made ankle.F land on whichever toe-tip or heel was
+    // lowest, which in turn placed the hip column at the front/back surface
+    // of the body (not its centerline). The centroid is stable against foot
+    // shape — toes/heels cancel out, leaving the foot's geometric center.
     auto pickAnkle = [&](bool leftSide, float& oR, float& oU, float& oF) {
-        float bestU = std::numeric_limits<float>::infinity();
-        oR = 0; oU = 0; oF = 0;
+        std::vector<size_t> cand;
+        cand.reserve(V / 4);
         for (size_t i = 0; i < V; ++i) {
             float dr = R[i] - rMidSym;
             if (leftSide ? !(dr < 0) : !(dr > 0)) continue;
             if (U[i] > uMin + 0.25f * H) continue;
-            if (U[i] < bestU) { bestU = U[i]; oR = R[i]; oU = U[i]; oF = F[i]; }
+            cand.push_back(i);
         }
+        if (cand.empty()) { oR = 0; oU = 0; oF = 0; return; }
+        std::sort(cand.begin(), cand.end(),
+            [&](size_t a, size_t b){ return U[a] < U[b]; });
+        size_t n = std::max((size_t)1, cand.size() / 20);
+        double sR = 0, sU = 0, sF = 0;
+        for (size_t i = 0; i < n; ++i) {
+            sR += R[cand[i]]; sU += U[cand[i]]; sF += F[cand[i]];
+        }
+        oR = (float)(sR / (double)n);
+        oU = (float)(sU / (double)n);
+        oF = (float)(sF / (double)n);
     };
     float ankLR, ankLU, ankLF, ankRR, ankRU, ankRF;
     pickAnkle(true,  ankLR, ankLU, ankLF);

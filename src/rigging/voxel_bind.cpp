@@ -215,11 +215,15 @@ std::vector<int> seedVoxels(const Grid& g, Vec3 head, Vec3 tail) {
     return seeds;
 }
 
-// 6-neighbor BFS. Distances are in voxel hops (uint16_t; capped at 65535).
-// Unreached voxels keep 65535 sentinel.
+// 6-neighbor BFS with an optional hop cap. Voxels reached beyond `maxHops`
+// are left at INF so they never receive influence from this bone — the cap
+// is what prevents distant bones (e.g. neck) from flooding across the whole
+// body and outvoting closer bones in the top-K. `maxHops = 0` disables the
+// cap (full flood fill, original behavior).
 void bfsFromSeeds(const Grid& g,
                   const std::vector<int>& seeds,
-                  std::vector<uint16_t>& dist) {
+                  std::vector<uint16_t>& dist,
+                  uint16_t maxHops = 0) {
     constexpr uint16_t INF = std::numeric_limits<uint16_t>::max();
     dist.assign(g.solid.size(), INF);
     std::queue<int> q;
@@ -230,6 +234,7 @@ void bfsFromSeeds(const Grid& g,
     const int dz[6] = { 0,  0, 0,  0, 1, -1 };
     while (!q.empty()) {
         int i = q.front(); q.pop();
+        if (maxHops > 0 && dist[i] >= maxHops) continue;
         int z = i / (g.sx * g.sy);
         int rem = i - z * g.sx * g.sy;
         int y = rem / g.sx;
@@ -287,48 +292,104 @@ SkinData voxelBindWeights(const MeshData& mesh,
     fillInterior(g);
     const size_t V = g.solid.size();
 
-    // Extract per-bone world head. For segment we use head + 1-cell along +Y,
-    // or parent->this if we have a parent (more accurate bone direction).
-    std::vector<Vec3> headW(nBones), tailW(nBones);
+    // Extract per-bone world head. Build one *or more* segments per bone:
+    // every (head, child.head) pair is a segment. For bones with multiple
+    // children (pelvis → spine/legL/legR, spine_03 → neck/shoulderL/R) this
+    // spreads seeds along every spoke so the bone has presence across its
+    // whole volume. Leaf bones (no children) extend +Y by the parent's bone
+    // length — the old `cell * 4` stub was too short to compete with longer
+    // neighboring bones.
+    std::vector<Vec3> headW(nBones);
+    std::vector<std::vector<Vec3>> tailsW(nBones);
     for (size_t i = 0; i < nBones; ++i) {
         Vec3 h, y;
         extractHeadY(skeleton.bones[i].inverseBind, h, y);
         headW[i] = h;
     }
+    // Parent-to-this segment length (used to size leaf-bone tails).
+    std::vector<float> parentSegLen(nBones, 0.0f);
     for (size_t i = 0; i < nBones; ++i) {
-        // Tail: use first child's head if available; else head + yAxis * cell * 4.
-        int firstChild = -1;
-        for (size_t j = 0; j < nBones; ++j) {
-            if (skeleton.bones[j].parent == (int)i) { firstChild = (int)j; break; }
-        }
-        if (firstChild >= 0) {
-            tailW[i] = headW[firstChild];
-        } else {
-            Vec3 h, y;
-            extractHeadY(skeleton.bones[i].inverseBind, h, y);
-            tailW[i] = h + y * (g.cell * 4.0f);
+        int p = skeleton.bones[i].parent;
+        if (p >= 0) {
+            parentSegLen[i] = std::sqrt(lenSq(headW[i] - headW[p]));
         }
     }
+    for (size_t i = 0; i < nBones; ++i) {
+        for (size_t j = 0; j < nBones; ++j) {
+            if (skeleton.bones[j].parent == (int)i) tailsW[i].push_back(headW[j]);
+        }
+        if (tailsW[i].empty()) {
+            Vec3 h, y;
+            extractHeadY(skeleton.bones[i].inverseBind, h, y);
+            float leafLen = parentSegLen[i] > 0.0f
+                          ? parentSegLen[i]
+                          : g.cell * 4.0f;
+            tailsW[i].push_back(h + y * leafLen);
+        }
+    }
+
+    // Per-segment length. The BFS reach cap is applied per segment (not per
+    // bone) so a bone with one short and one long spoke (e.g. spine_03 has
+    // neck, shoulder_L, shoulder_R, head) gets localized influence along
+    // each spoke rather than a huge radius from the longest spoke.
+    (void)nBones;
 
     // Per-voxel top-K.
     std::vector<float> topW((size_t)V * K, 0.0f);
     std::vector<int32_t> topB((size_t)V * K, -1);
 
-    std::vector<uint16_t> dist;
     constexpr uint16_t INF = std::numeric_limits<uint16_t>::max();
     const float eps = 1e-6f;
     const float pow2 = opts.falloffPower;
 
+    // BFS reach factor: each segment's BFS is capped at this many segment-
+    // lengths from its seeds. 2× covers the bone plus a blend band into the
+    // next bone without spilling across the body.
+    const float reachFactor = 1.5f;
+    // Absolute cap on BFS reach in cells, to prevent long bones (T-pose
+    // forearm, spine_03) from flooding across the body. 12% of the longest
+    // grid axis roughly matches a humanoid torso half-width — enough for
+    // natural blend into adjacent bones but short of cross-body bleed.
+    const float maxAbsReachCells = (float)std::max({g.sx, g.sy, g.sz}) * 0.12f;
+
+    // Per-bone distance map (min across segments) — voxels get a single
+    // geodesic distance from the bone for weight computation.
+    std::vector<uint16_t> boneDist;
+    std::vector<uint16_t> segDist;
+
     for (size_t b = 0; b < nBones; ++b) {
-        auto seeds = seedVoxels(g, headW[b], tailW[b]);
-        if (seeds.empty()) continue;
-        bfsFromSeeds(g, seeds, dist);
+        boneDist.assign(V, INF);
+        bool anySeg = false;
+        for (const auto& tail : tailsW[b]) {
+            auto seeds = seedVoxels(g, headW[b], tail);
+            if (seeds.empty()) continue;
+            std::sort(seeds.begin(), seeds.end());
+            seeds.erase(std::unique(seeds.begin(), seeds.end()), seeds.end());
+
+            float segLen = std::sqrt(lenSq(tail - headW[b]));
+            if (segLen < g.cell) segLen = g.cell;
+            float reachCells = std::min(reachFactor * segLen / g.cell,
+                                        maxAbsReachCells);
+            uint16_t cap = (uint16_t)std::max(6.0f, reachCells);
+            bfsFromSeeds(g, seeds, segDist, cap);
+            for (size_t v = 0; v < V; ++v) {
+                if (segDist[v] < boneDist[v]) boneDist[v] = segDist[v];
+            }
+            anySeg = true;
+        }
+        if (!anySeg) continue;
+
         for (size_t v = 0; v < V; ++v) {
             if (!g.solid[v]) continue;
-            if (dist[v] == INF) continue;
-            float d = (float)dist[v];
+            if (boneDist[v] == INF) continue;
+            float d = (float)boneDist[v];
             float w = 1.0f / (std::pow(d + 1.0f, pow2) + eps);
-            // Insert into voxel's top-K.
+            // Drop below-threshold contributions pre-normalization. Without
+            // this, a cap-boundary voxel reached only by a distant bone at
+            // weight ~1e-5 gets normalized to 1.0 and then leaks into
+            // neighbor-vertex sampling — making upper_arm dominant in the
+            // thigh, for example.
+            if (w < opts.minWeight) continue;
             float* vw = &topW[v * K];
             int32_t* vb = &topB[v * K];
             if (w <= vw[K - 1]) continue;
