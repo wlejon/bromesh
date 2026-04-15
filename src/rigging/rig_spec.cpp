@@ -507,4 +507,12 @@ RigSpec loadRigSpecFile(const std::string& path) {
     return parseRigSpecJSON(buf.str());
 }
 
+RigSpec builtinRigSpec(const std::string& name) {
+    if (name == "humanoid")  return builtinHumanoidSpec();
+    if (name == "quadruped") return builtinQuadrupedSpec();
+    if (name == "hexapod")   return builtinHexapodSpec();
+    if (name == "octopod")   return builtinOctopodSpec();
+    return {};
+}
+
 } // namespace bromesh

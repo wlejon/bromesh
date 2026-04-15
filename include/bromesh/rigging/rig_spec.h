@@ -82,4 +82,9 @@ RigSpec builtinHexapodSpec();
 /// pairs of two segments each.
 RigSpec builtinOctopodSpec();
 
+/// Look up a bundled spec by name. Accepted values: "humanoid", "quadruped",
+/// "hexapod", "octopod". Returns an empty spec for unknown names — callers
+/// should check `spec.bones.empty()` before use.
+RigSpec builtinRigSpec(const std::string& name);
+
 } // namespace bromesh

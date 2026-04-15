@@ -66,6 +66,7 @@
 #include "bromesh/rigging/bbw.h"
 #include "bromesh/rigging/weighting.h"
 #include "bromesh/rigging/mesh_laplacian.h"
+#include "bromesh/rigging/skin_validate.h"
 
 #include <cstdio>
 #include <cstdlib>

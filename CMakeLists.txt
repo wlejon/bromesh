@@ -260,6 +260,7 @@ add_library(bromesh STATIC
     src/rigging/bone_heat.cpp
     src/rigging/bbw.cpp
     src/rigging/weighting.cpp
+    src/rigging/skin_validate.cpp
 )
 
 target_include_directories(bromesh PUBLIC include)

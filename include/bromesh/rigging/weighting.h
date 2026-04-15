@@ -39,4 +39,13 @@ struct WeightingOptions {
 /// otherwise. Never returns Auto / BBW.
 WeightingMethod autoSelectWeightingMethod(const MeshData& mesh);
 
+/// Stable string name for a WeightingMethod. Round-trips through
+/// parseWeightingMethod. Used at language/data boundaries (JSON, JS bindings).
+const char* weightingMethodName(WeightingMethod m);
+
+/// Parse a stable string back to a WeightingMethod. Accepts the exact
+/// lowercase names emitted by weightingMethodName. Unknown strings fall
+/// back to WeightingMethod::Auto.
+WeightingMethod parseWeightingMethod(const char* name);
+
 } // namespace bromesh

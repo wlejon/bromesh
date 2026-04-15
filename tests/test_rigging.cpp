@@ -289,6 +289,37 @@ TEST(weighting_auto_select_non_manifold) {
     ASSERT(sel == bromesh::WeightingMethod::VoxelBind, "non-manifold → voxel");
 }
 
+TEST(builtin_rig_spec_dispatcher) {
+    ASSERT(!bromesh::builtinRigSpec("humanoid").bones.empty(),  "humanoid spec");
+    ASSERT(!bromesh::builtinRigSpec("quadruped").bones.empty(), "quadruped spec");
+    ASSERT(!bromesh::builtinRigSpec("hexapod").bones.empty(),   "hexapod spec");
+    ASSERT(!bromesh::builtinRigSpec("octopod").bones.empty(),   "octopod spec");
+    ASSERT(bromesh::builtinRigSpec("nonsense").bones.empty(),   "unknown → empty");
+}
+
+TEST(weighting_method_name_roundtrip) {
+    using bromesh::WeightingMethod;
+    for (auto m : { WeightingMethod::Auto, WeightingMethod::VoxelBind,
+                    WeightingMethod::BoneHeat, WeightingMethod::BBW }) {
+        ASSERT(bromesh::parseWeightingMethod(bromesh::weightingMethodName(m)) == m,
+               "method name round-trips");
+    }
+    ASSERT(bromesh::parseWeightingMethod("garbage") == WeightingMethod::Auto,
+           "unknown method → auto");
+}
+
+TEST(validate_skin_matches_test_bar) {
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto lm = makeHumanoidLandmarks();
+    auto mesh = makeSyntheticHumanoid();
+    bromesh::VoxelBindOptions opts; opts.maxResolution = 48;
+    auto r = bromesh::autoRig(mesh, spec, lm, opts);
+    auto v = bromesh::validateSkin(mesh, r.skin, 4);
+    ASSERT(v.vertexCount == mesh.vertexCount(),      "vertexCount");
+    ASSERT(v.clean(),                                 "validateSkin clean on good rig");
+    ASSERT(v.maxInfluencesObserved <= 4,             "at most 4 influences");
+}
+
 TEST(auto_rig_new_options_path_compat) {
     // Back-compat overload (VoxelBindOptions) still works and matches the
     // new overload when method is forced to VoxelBind.
