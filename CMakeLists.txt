@@ -46,11 +46,14 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf/tiny_gltf.h")
     add_library(tinygltf STATIC third_party/impl/tinygltf_impl.cpp)
     target_include_directories(tinygltf PUBLIC third_party/tinygltf)
+    # stb_image is bundled in third_party/tinygltf and is compiled into
+    # tinygltf_impl.cpp so tinygltf can decode embedded textures; loadGLTF
+    # then surfaces them via GltfScene::images. External images (.glb with
+    # separate PNGs alongside) stay disabled for sandboxing.
     target_compile_definitions(tinygltf PUBLIC
         TINYGLTF_NO_INCLUDE_STB_IMAGE
         TINYGLTF_NO_INCLUDE_STB_IMAGE_WRITE
         TINYGLTF_NO_EXTERNAL_IMAGE
-        TINYGLTF_NO_STB_IMAGE
         TINYGLTF_NO_STB_IMAGE_WRITE
     )
     if(MSVC)

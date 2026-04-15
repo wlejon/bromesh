@@ -145,15 +145,7 @@ GltfScene loadGLTF(const std::string& path) {
     tinygltf::TinyGLTF loader;
     std::string err, warn;
 
-    // Skip image decode — bromesh only consumes geometry/skeletons/animations.
-    // Without this, tinygltf treats embedded textures as a hard failure.
-    loader.SetImageLoader(
-        [](tinygltf::Image*, const int, std::string*, std::string*,
-           int, int, const unsigned char*, int, void*) -> bool {
-            return true;
-        },
-        nullptr);
-
+    // Let tinygltf's bundled stb_image decode embedded textures.
     bool ok = false;
     if (path.size() >= 4 && path.substr(path.size() - 4) == ".glb") {
         ok = loader.LoadBinaryFromFile(&model, &err, &warn, path);
@@ -392,8 +384,73 @@ GltfScene loadGLTF(const std::string& path) {
             scene.meshes.push_back(std::move(md));
             scene.skins.push_back(std::move(skin));
             scene.meshSkeleton.push_back(skIdx);
+            scene.meshMaterial.push_back(prim.material);
             (void)vertCount;
         }
+    }
+
+    // Build images — tinygltf has already decoded each model.image via its
+    // bundled stb_image into 8-bit RGBA when component == 4, or R/RG/RGB
+    // variants otherwise. Normalize everything to RGBA8 for uniform consumers.
+    scene.images.reserve(model.images.size());
+    for (const auto& gi : model.images) {
+        Image img;
+        img.name = gi.name;
+        img.mimeType = gi.mimeType;
+        img.width  = gi.width;
+        img.height = gi.height;
+
+        if (gi.width > 0 && gi.height > 0 && !gi.image.empty()) {
+            const size_t px = (size_t)gi.width * (size_t)gi.height;
+            img.data.resize(px * 4);
+            const int c = gi.component;
+            const int bits = gi.bits;   // 8 or 16
+            const uint8_t* src = gi.image.data();
+
+            auto get8 = [&](size_t i, int channel) -> uint8_t {
+                if (bits == 16) {
+                    uint16_t v = ((const uint16_t*)src)[i * c + channel];
+                    return (uint8_t)(v >> 8);
+                }
+                return src[i * c + channel];
+            };
+            for (size_t i = 0; i < px; ++i) {
+                uint8_t r = 0, g = 0, b = 0, a = 255;
+                if (c >= 1) r = get8(i, 0);
+                if (c >= 2) g = get8(i, 1); else g = r;
+                if (c >= 3) b = get8(i, 2); else b = r;
+                if (c >= 4) a = get8(i, 3);
+                img.data[i*4 + 0] = r;
+                img.data[i*4 + 1] = g;
+                img.data[i*4 + 2] = b;
+                img.data[i*4 + 3] = a;
+            }
+        }
+        scene.images.push_back(std::move(img));
+    }
+
+    // Build materials. Resolve each material's baseColorTexture to the
+    // underlying image index (via model.textures[tex].source) so consumers
+    // don't have to know about the glTF texture indirection.
+    scene.materials.reserve(model.materials.size());
+    for (const auto& gm : model.materials) {
+        Material mat;
+        mat.name = gm.name;
+        const auto& pbr = gm.pbrMetallicRoughness;
+        if (pbr.baseColorFactor.size() == 4) {
+            mat.baseColorFactor[0] = (float)pbr.baseColorFactor[0];
+            mat.baseColorFactor[1] = (float)pbr.baseColorFactor[1];
+            mat.baseColorFactor[2] = (float)pbr.baseColorFactor[2];
+            mat.baseColorFactor[3] = (float)pbr.baseColorFactor[3];
+        }
+        int texIdx = pbr.baseColorTexture.index;
+        if (texIdx >= 0 && texIdx < (int)model.textures.size()) {
+            int src = model.textures[texIdx].source;
+            if (src >= 0 && src < (int)scene.images.size()) {
+                mat.baseColorTexture = src;
+            }
+        }
+        scene.materials.push_back(std::move(mat));
     }
 
     // Build animations.
