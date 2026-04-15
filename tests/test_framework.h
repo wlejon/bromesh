@@ -71,9 +71,23 @@
 extern int tests_run;
 extern int tests_passed;
 
+// Test registry. Tests register themselves at static-init time via the TEST
+// macro, but execution is deferred to main() — running them during static
+// init leads to cross-TU init-order fiascos on Windows (e.g. calling into
+// meshoptimizer before its own file-scope lookup tables have been built).
+using TestFn = void(*)();
+struct TestEntry { const char* name; TestFn fn; };
+std::vector<TestEntry>& testRegistry();
+
+struct TestRegistrar {
+    TestRegistrar(const char* name, TestFn fn) {
+        testRegistry().push_back({name, fn});
+    }
+};
+
 #define TEST(name) \
     static void test_##name(); \
-    struct test_reg_##name { test_reg_##name() { test_##name(); } } reg_##name; \
+    static TestRegistrar reg_##name(#name, &test_##name); \
     static void test_##name()
 
 #define ASSERT(cond, msg) do { \
