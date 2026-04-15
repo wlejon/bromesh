@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "synthetic_rigs.h"
 
 // Rig / animation / transfer / bake tests (new additions)
 // =============================================================================
@@ -245,5 +246,248 @@ TEST(rigify_sockets) {
     ASSERT(added >= 5, "rigify helper added at least 5 sockets");
     ASSERT(sk.findSocket("hand.R") >= 0, "hand.R socket present");
     ASSERT(sk.findSocket("head") >= 0, "head socket present");
+}
+
+// --- Phase-3: procedural locomotion ---------------------------------------
+
+namespace phase3 {
+
+static bromesh::Skeleton fitCreature(const bromesh::RigSpec& spec,
+                                     const bromesh::Landmarks& lm,
+                                     const bromesh::MeshData& mesh) {
+    return bromesh::fitSkeleton(spec, lm, mesh);
+}
+
+static int groundedCount(const std::vector<bromesh::LegChain>& chains) {
+    int n = 0;
+    for (const auto& c : chains) if (c.grounded) ++n;
+    return n;
+}
+
+static void sampleTipPositions(const bromesh::Skeleton& sk,
+                               const bromesh::Animation& anim,
+                               float t,
+                               const std::vector<int>& tips,
+                               std::vector<float>& outXYZ) {
+    auto pose = bromesh::evaluateAnimation(sk, anim, t, /*loop=*/true);
+    std::vector<float> world;
+    bromesh::computeWorldMatrices(sk, pose, world);
+    outXYZ.resize(tips.size() * 3);
+    for (size_t i = 0; i < tips.size(); ++i) {
+        outXYZ[i*3+0] = world[tips[i]*16 + 12];
+        outXYZ[i*3+1] = world[tips[i]*16 + 13];
+        outXYZ[i*3+2] = world[tips[i]*16 + 14];
+    }
+}
+
+} // namespace phase3
+
+TEST(locomotion_identify_legs_humanoid) {
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto sk = phase3::fitCreature(spec, synthrig::makeHumanoidLandmarks(),
+                                  synthrig::makeHumanoidMesh());
+    auto chains = bromesh::identifyLegChains(sk, spec);
+    ASSERT(chains.size() == 4, "humanoid: 4 IK chains total (2 arms + 2 legs)");
+    ASSERT(phase3::groundedCount(chains) == 2, "humanoid: 2 grounded");
+
+    // Grounded ones come first; their tip Z are all ~0 and X are -, + respectively.
+    ASSERT(chains[0].grounded && chains[1].grounded, "grounded first");
+    ASSERT(chains[0].bones.size() == 3, "leg chain is hip->knee->foot");
+    // Each 3-bone chain: parent relations must hold for two-bone IK.
+    for (int k = 0; k < 2; ++k) {
+        const auto& c = chains[k];
+        ASSERT(sk.bones[c.bones[1]].parent == c.bones[0], "mid parent = root");
+        ASSERT(sk.bones[c.bones[2]].parent == c.bones[1], "end parent = mid");
+    }
+}
+
+TEST(locomotion_identify_legs_quadruped) {
+    auto spec = bromesh::builtinQuadrupedSpec();
+    auto sk = phase3::fitCreature(spec, synthrig::makeQuadrupedLandmarks(),
+                                  synthrig::makeQuadrupedMesh());
+    auto chains = bromesh::identifyLegChains(sk, spec);
+    ASSERT(chains.size() == 4, "quadruped: 4 IK chains (paws only)");
+    ASSERT(phase3::groundedCount(chains) == 4, "all 4 grounded");
+    // Order: front-L, front-R, hind-L, hind-R (by tip Z desc, then X asc).
+    ASSERT(sk.bones[chains[0].tipBone].name == "fl_paw_L", "order[0]=fl_paw_L");
+    ASSERT(sk.bones[chains[1].tipBone].name == "fl_paw_R", "order[1]=fl_paw_R");
+    ASSERT(sk.bones[chains[2].tipBone].name == "hl_paw_L", "order[2]=hl_paw_L");
+    ASSERT(sk.bones[chains[3].tipBone].name == "hl_paw_R", "order[3]=hl_paw_R");
+}
+
+TEST(locomotion_identify_legs_hexapod) {
+    auto spec = bromesh::builtinHexapodSpec();
+    auto sk = phase3::fitCreature(spec, synthrig::makeHexapodLandmarks(),
+                                  synthrig::makeHexapodMesh());
+    auto chains = bromesh::identifyLegChains(sk, spec);
+    ASSERT(chains.size() == 6, "hexapod: 6 IK chains");
+    ASSERT(phase3::groundedCount(chains) == 6, "all 6 grounded");
+    const char* expected[6] = {
+        "front_tibia_L", "front_tibia_R",
+        "mid_tibia_L",   "mid_tibia_R",
+        "rear_tibia_L",  "rear_tibia_R",
+    };
+    for (int i = 0; i < 6; ++i) {
+        ASSERT(sk.bones[chains[i].tipBone].name == expected[i], "hexapod leg order");
+    }
+}
+
+TEST(locomotion_identify_legs_octopod) {
+    auto spec = bromesh::builtinOctopodSpec();
+    auto sk = phase3::fitCreature(spec, synthrig::makeOctopodLandmarks(),
+                                  synthrig::makeOctopodMesh());
+    auto chains = bromesh::identifyLegChains(sk, spec);
+    ASSERT(chains.size() == 8, "octopod: 8 IK chains");
+    ASSERT(phase3::groundedCount(chains) == 8, "all 8 grounded");
+    // Each octopod chain is only 2 bones (upper, lower) → FABRIK path at runtime.
+    for (const auto& c : chains) {
+        ASSERT(c.bones.size() == 2, "octopod arm chain has 2 bones");
+    }
+}
+
+TEST(locomotion_default_gait_sizes) {
+    ASSERT(bromesh::defaultGait(2).phases.size() == 2, "biped gait size");
+    ASSERT(bromesh::defaultGait(4).phases.size() == 4, "quadruped gait size");
+    ASSERT(bromesh::defaultGait(6).phases.size() == 6, "hexapod gait size");
+    ASSERT(bromesh::defaultGait(8).phases.size() == 8, "octopod gait size");
+    ASSERT(bromesh::defaultGait(3).phases.empty(), "odd leg count has no default");
+    ASSERT(bromesh::defaultGait(2).dutyFactor > 0.0f &&
+           bromesh::defaultGait(2).dutyFactor < 1.0f, "duty in (0,1)");
+}
+
+TEST(locomotion_cycle_humanoid_closes) {
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto sk = phase3::fitCreature(spec, synthrig::makeHumanoidLandmarks(),
+                                  synthrig::makeHumanoidMesh());
+    bromesh::LocomotionParams p;
+    p.cycleDuration = 1.0f;
+    p.strideLength = 0.25f;
+    auto anim = bromesh::generateLocomotionCycle(sk, spec, p);
+    ASSERT(std::fabs(anim.duration - 1.0f) < 1e-5f, "duration == cycleDuration");
+    ASSERT(!anim.channels.empty(), "channels emitted");
+
+    // Loop closure: tip positions at t=0 and t=duration must match.
+    auto chains = bromesh::identifyLegChains(sk, spec);
+    std::vector<int> tips;
+    for (const auto& c : chains) if (c.grounded) tips.push_back(c.tipBone);
+
+    std::vector<float> p0, p1;
+    phase3::sampleTipPositions(sk, anim, 0.0f,            tips, p0);
+    phase3::sampleTipPositions(sk, anim, anim.duration,   tips, p1);
+    float maxD = 0.0f;
+    for (size_t i = 0; i < p0.size(); ++i) {
+        float d = std::fabs(p0[i] - p1[i]);
+        if (d > maxD) maxD = d;
+    }
+    ASSERT(maxD < 1e-3f, "loop closure: t=0 matches t=duration");
+}
+
+TEST(locomotion_feet_actually_move) {
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto sk = phase3::fitCreature(spec, synthrig::makeHumanoidLandmarks(),
+                                  synthrig::makeHumanoidMesh());
+    bromesh::LocomotionParams p;
+    p.cycleDuration = 1.0f;
+    p.strideLength = 0.25f;
+    auto anim = bromesh::generateLocomotionCycle(sk, spec, p);
+
+    auto chains = bromesh::identifyLegChains(sk, spec);
+    std::vector<int> tips;
+    for (const auto& c : chains) if (c.grounded) tips.push_back(c.tipBone);
+
+    std::vector<float> p0, pHalf;
+    phase3::sampleTipPositions(sk, anim, 0.0f, tips, p0);
+    phase3::sampleTipPositions(sk, anim, 0.5f, tips, pHalf);
+
+    // At t=0.5 (half cycle), with biped [0, 0.5] phases, one foot is planted
+    // near the rear and one is near the front: both should have moved from
+    // their bind positions by a visible fraction of stride.
+    float maxD = 0.0f;
+    for (size_t i = 0; i < p0.size(); ++i) {
+        float d = std::fabs(p0[i] - pHalf[i]);
+        if (d > maxD) maxD = d;
+    }
+    ASSERT(maxD > p.strideLength * 0.15f, "feet move across the cycle");
+}
+
+TEST(locomotion_deterministic) {
+    auto spec = bromesh::builtinQuadrupedSpec();
+    auto sk = phase3::fitCreature(spec, synthrig::makeQuadrupedLandmarks(),
+                                  synthrig::makeQuadrupedMesh());
+    bromesh::LocomotionParams p;
+    p.cycleDuration = 0.8f;
+    auto a = bromesh::generateLocomotionCycle(sk, spec, p);
+    auto b = bromesh::generateLocomotionCycle(sk, spec, p);
+    ASSERT(a.channels.size() == b.channels.size(), "same channel count");
+    bool allEqual = true;
+    for (size_t i = 0; i < a.channels.size(); ++i) {
+        if (a.channels[i].values != b.channels[i].values) { allEqual = false; break; }
+        if (a.channels[i].times  != b.channels[i].times)  { allEqual = false; break; }
+    }
+    ASSERT(allEqual, "channel data byte-identical across calls");
+}
+
+TEST(locomotion_cycle_all_creatures_smoke) {
+    struct Case {
+        const char* name;
+        bromesh::RigSpec spec;
+        bromesh::Skeleton sk;
+    };
+    std::vector<Case> cases;
+    {
+        Case c; c.name = "humanoid"; c.spec = bromesh::builtinHumanoidSpec();
+        c.sk = phase3::fitCreature(c.spec, synthrig::makeHumanoidLandmarks(),
+                                   synthrig::makeHumanoidMesh());
+        cases.push_back(std::move(c));
+    }
+    {
+        Case c; c.name = "quadruped"; c.spec = bromesh::builtinQuadrupedSpec();
+        c.sk = phase3::fitCreature(c.spec, synthrig::makeQuadrupedLandmarks(),
+                                   synthrig::makeQuadrupedMesh());
+        cases.push_back(std::move(c));
+    }
+    {
+        Case c; c.name = "hexapod"; c.spec = bromesh::builtinHexapodSpec();
+        c.sk = phase3::fitCreature(c.spec, synthrig::makeHexapodLandmarks(),
+                                   synthrig::makeHexapodMesh());
+        cases.push_back(std::move(c));
+    }
+    {
+        Case c; c.name = "octopod"; c.spec = bromesh::builtinOctopodSpec();
+        c.sk = phase3::fitCreature(c.spec, synthrig::makeOctopodLandmarks(),
+                                   synthrig::makeOctopodMesh());
+        cases.push_back(std::move(c));
+    }
+
+    bromesh::LocomotionParams p;
+    p.cycleDuration = 1.0f;
+    p.strideLength = 0.20f;
+    p.footLiftHeight = 0.06f;
+    p.keyframesPerCycle = 16;
+
+    for (const auto& c : cases) {
+        auto anim = bromesh::generateLocomotionCycle(c.sk, c.spec, p);
+        ASSERT(anim.duration > 0.0f, "anim has duration");
+        ASSERT(!anim.channels.empty(), "anim has channels");
+
+        // Sample at multiple times and verify pose values finite, and
+        // skinning matrix composition succeeds without NaN.
+        bool allFinite = true;
+        for (int i = 0; i <= 8; ++i) {
+            float t = (float)i / 8.0f * anim.duration;
+            auto pose = bromesh::evaluateAnimation(c.sk, anim, t, true);
+            for (float v : pose.data) {
+                if (!(v == v)) { allFinite = false; break; }
+            }
+            if (!allFinite) break;
+            std::vector<float> skm;
+            bromesh::computeSkinningMatrices(c.sk, pose, skm);
+            for (float v : skm) {
+                if (!(v == v)) { allFinite = false; break; }
+            }
+            if (!allFinite) break;
+        }
+        ASSERT(allFinite, "locomotion pose values finite across cycle");
+    }
 }
 

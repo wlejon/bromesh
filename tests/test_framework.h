@@ -36,6 +36,7 @@
 #include "bromesh/animation/pose.h"
 #include "bromesh/animation/ik.h"
 #include "bromesh/animation/retarget.h"
+#include "bromesh/animation/locomotion.h"
 #include "bromesh/uv/projection.h"
 #include "bromesh/uv/unwrap.h"
 #include "bromesh/uv/uv_metrics.h"

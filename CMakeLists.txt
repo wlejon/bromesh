@@ -196,6 +196,7 @@ add_library(bromesh STATIC
     src/animation/pose.cpp
     src/animation/ik.cpp
     src/animation/retarget.cpp
+    src/animation/locomotion.cpp
 
     # UV
     src/uv/projection.cpp
