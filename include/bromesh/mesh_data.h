@@ -116,6 +116,15 @@ struct Skeleton {
     std::vector<Bone> bones;
     std::vector<Socket> sockets;
 
+    /// Pre-transform applied to root bones (parent == -1) when computing world
+    /// matrices. Column-major 4x4. Identity by default. Used to preserve any
+    /// scene-tree ancestry above the skinned joints — e.g. a glTF armature
+    /// node with a unit-conversion scale. Keeping it out of the bones' local
+    /// TRS means animation keyframes stay in the original (unscaled) space.
+    float rootTransform[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+
     /// Linear bone lookup by name. Returns -1 if not found.
     int findBone(const std::string& boneName) const {
         for (size_t i = 0; i < bones.size(); ++i)

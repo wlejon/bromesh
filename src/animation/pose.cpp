@@ -223,13 +223,25 @@ void computeWorldMatrices(const Skeleton& skeleton, const Pose& pose,
     size_t bones = skeleton.bones.size();
     outWorld.assign(bones * 16, 0.0f);
 
+    // Identity check on rootTransform — skip the extra matMul in the common
+    // case (procedurally-built skeletons, saved-out rigs with no ancestry).
+    bool rootIsIdentity = true;
+    for (int k = 0; k < 16 && rootIsIdentity; ++k) {
+        float want = (k == 0 || k == 5 || k == 10 || k == 15) ? 1.0f : 0.0f;
+        if (skeleton.rootTransform[k] != want) rootIsIdentity = false;
+    }
+
     for (size_t i = 0; i < bones; ++i) {
         const float* d = &pose.data[i * 10];
         float local[16];
         composeTRS(&d[0], &d[3], &d[7], local);
         int parent = skeleton.bones[i].parent;
         if (parent < 0) {
-            std::memcpy(&outWorld[i * 16], local, 16 * sizeof(float));
+            if (rootIsIdentity) {
+                std::memcpy(&outWorld[i * 16], local, 16 * sizeof(float));
+            } else {
+                matMul(skeleton.rootTransform, local, &outWorld[i * 16]);
+            }
         } else {
             matMul(&outWorld[parent * 16], local, &outWorld[i * 16]);
         }

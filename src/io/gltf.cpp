@@ -79,12 +79,80 @@ static const uint8_t* accessorData(const tinygltf::Model& model, int accessorIdx
     return model.buffers[bv.buffer].data.data() + bv.byteOffset + a.byteOffset;
 }
 
+// Column-major 4x4 multiply: out = a * b.
+static void matMul4(const float* a, const float* b, float* out) {
+    float tmp[16];
+    for (int c = 0; c < 4; ++c) {
+        for (int r = 0; r < 4; ++r) {
+            tmp[c*4 + r] =
+                a[0*4+r]*b[c*4+0] + a[1*4+r]*b[c*4+1] +
+                a[2*4+r]*b[c*4+2] + a[3*4+r]*b[c*4+3];
+        }
+    }
+    std::memcpy(out, tmp, 16 * sizeof(float));
+}
+
+// Build a column-major 4x4 from T, R (quat xyzw), S.
+static void trsToMat(const float t[3], const float r[4], const float s[3], float* m) {
+    float xx = r[0]*r[0], yy = r[1]*r[1], zz = r[2]*r[2];
+    float xy = r[0]*r[1], xz = r[0]*r[2], yz = r[1]*r[2];
+    float wx = r[3]*r[0], wy = r[3]*r[1], wz = r[3]*r[2];
+    m[0]  = (1.0f - 2.0f*(yy + zz)) * s[0];
+    m[1]  = (2.0f*(xy + wz))        * s[0];
+    m[2]  = (2.0f*(xz - wy))        * s[0];
+    m[3]  = 0.0f;
+    m[4]  = (2.0f*(xy - wz))        * s[1];
+    m[5]  = (1.0f - 2.0f*(xx + zz)) * s[1];
+    m[6]  = (2.0f*(yz + wx))        * s[1];
+    m[7]  = 0.0f;
+    m[8]  = (2.0f*(xz + wy))        * s[2];
+    m[9]  = (2.0f*(yz - wx))        * s[2];
+    m[10] = (1.0f - 2.0f*(xx + yy)) * s[2];
+    m[11] = 0.0f;
+    m[12] = t[0]; m[13] = t[1]; m[14] = t[2]; m[15] = 1.0f;
+}
+
+// Build the local transform matrix of a glTF node (matrix, or TRS).
+static void nodeLocalMat(const tinygltf::Node& node, float* m) {
+    if (!node.matrix.empty() && node.matrix.size() == 16) {
+        for (int k = 0; k < 16; ++k) m[k] = static_cast<float>(node.matrix[k]);
+        return;
+    }
+    float t[3] = {0,0,0}, r[4] = {0,0,0,1}, s[3] = {1,1,1};
+    if (node.translation.size() == 3) {
+        t[0] = (float)node.translation[0];
+        t[1] = (float)node.translation[1];
+        t[2] = (float)node.translation[2];
+    }
+    if (node.rotation.size() == 4) {
+        r[0] = (float)node.rotation[0];
+        r[1] = (float)node.rotation[1];
+        r[2] = (float)node.rotation[2];
+        r[3] = (float)node.rotation[3];
+    }
+    if (node.scale.size() == 3) {
+        s[0] = (float)node.scale[0];
+        s[1] = (float)node.scale[1];
+        s[2] = (float)node.scale[2];
+    }
+    trsToMat(t, r, s, m);
+}
+
 // ---- load ------------------------------------------------------------------
 
 GltfScene loadGLTF(const std::string& path) {
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
     std::string err, warn;
+
+    // Skip image decode — bromesh only consumes geometry/skeletons/animations.
+    // Without this, tinygltf treats embedded textures as a hard failure.
+    loader.SetImageLoader(
+        [](tinygltf::Image*, const int, std::string*, std::string*,
+           int, int, const unsigned char*, int, void*) -> bool {
+            return true;
+        },
+        nullptr);
 
     bool ok = false;
     if (path.size() >= 4 && path.substr(path.size() - 4) == ".glb") {
@@ -98,6 +166,17 @@ GltfScene loadGLTF(const std::string& path) {
 
     // Per-skin: map of glTF node index -> bone index within that skeleton.
     std::vector<std::unordered_map<int, int>> nodeToBone(model.skins.size());
+
+    // Build a parent-of map for all nodes (node idx -> parent node idx, -1 if
+    // none). glTF nodes only know their children, so we invert the relation.
+    std::vector<int> parentOfNode(model.nodes.size(), -1);
+    for (size_t n = 0; n < model.nodes.size(); ++n) {
+        for (int c : model.nodes[n].children) {
+            if (c >= 0 && (size_t)c < parentOfNode.size()) {
+                parentOfNode[c] = static_cast<int>(n);
+            }
+        }
+    }
 
     // Build skeletons from glTF skins.
     for (size_t si = 0; si < model.skins.size(); ++si) {
@@ -168,6 +247,35 @@ GltfScene loadGLTF(const std::string& path) {
             } else {
                 matIdentity(b.inverseBind);
             }
+        }
+
+        // Capture any scene-tree ancestry above the joint list into
+        // Skeleton::rootTransform. glTF stores inverseBindMatrices relative to
+        // the full scene-root → joint chain, but our Skeleton only preserves
+        // transforms for nodes listed in skin.joints. Without accounting for
+        // that ancestry, any armature / root node with a non-identity scale
+        // (common in MeshyAI exports: scale=0.01 to convert cm→m) produces
+        // skinning matrices with a constant scale factor at bind pose.
+        // Use the first root bone's ancestor chain; all root bones in a
+        // glTF skin typically share the same armature ancestor.
+        for (size_t j = 0; j < sk.bones.size(); ++j) {
+            if (sk.bones[j].parent != -1) continue;
+
+            int nodeIdx = gskin.joints[j];
+            float anc[16]; matIdentity(anc);
+            std::vector<int> chain;
+            for (int cur = parentOfNode[nodeIdx]; cur != -1; cur = parentOfNode[cur]) {
+                chain.push_back(cur);
+            }
+            // Walk from outermost ancestor inward so anc accumulates
+            // left-to-right (column-major): anc = outermost * ... * innermost.
+            for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+                float lm[16]; nodeLocalMat(model.nodes[*it], lm);
+                float out[16]; matMul4(anc, lm, out);
+                std::memcpy(anc, out, 16 * sizeof(float));
+            }
+            std::memcpy(sk.rootTransform, anc, 16 * sizeof(float));
+            break;
         }
 
         scene.skeletons.push_back(std::move(sk));
