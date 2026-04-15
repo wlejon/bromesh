@@ -237,6 +237,7 @@ add_library(bromesh STATIC
     src/rigging/skeleton_fit.cpp
     src/rigging/voxel_bind.cpp
     src/rigging/auto_rig.cpp
+    src/rigging/landmark_detect.cpp
 )
 
 target_include_directories(bromesh PUBLIC include)

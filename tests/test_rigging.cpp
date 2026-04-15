@@ -452,6 +452,77 @@ TEST(auto_rig_quadruped_deterministic) {
     ASSERT(a.skin.boneIndices == b.skin.boneIndices, "indices deterministic");
 }
 
+// --- Phase-5: heuristic landmark detection --------------------------------
+
+TEST(detect_landmarks_humanoid_completeness) {
+    auto mesh = makeSyntheticHumanoid();
+    auto lm = bromesh::detectHumanoidLandmarks(mesh);
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto missing = bromesh::missingLandmarks(spec, lm);
+    ASSERT(missing.empty(), "all 18 humanoid landmarks detected");
+}
+
+TEST(detect_landmarks_humanoid_near_reference) {
+    auto mesh = makeSyntheticHumanoid();
+    auto detected = bromesh::detectHumanoidLandmarks(mesh);
+    auto reference = makeHumanoidLandmarks();
+
+    // Body height of the synthetic mesh is ~1.72. Accept landmarks within
+    // 15% of body height from the hand-authored reference — the detector is
+    // a geometric heuristic, not a pixel-perfect match.
+    auto bbox = bromesh::computeBBox(mesh);
+    float H = bbox.extentY();
+    float tol = 0.15f * H;
+
+    int checked = 0;
+    for (const auto& [name, ref] : reference.points) {
+        if (!detected.has(name)) continue;
+        auto d = detected.points[name];
+        float dx = d[0]-ref[0], dy = d[1]-ref[1], dz = d[2]-ref[2];
+        float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+        ASSERT(dist < tol, name.c_str());
+        ++checked;
+    }
+    ASSERT(checked == 18, "checked all 18 landmarks");
+}
+
+TEST(detect_landmarks_humanoid_end_to_end) {
+    auto mesh = makeSyntheticHumanoid();
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto lm = bromesh::detectHumanoidLandmarks(mesh);
+
+    bromesh::VoxelBindOptions opts; opts.maxResolution = 48;
+    auto r = bromesh::autoRig(mesh, spec, lm, opts);
+    ASSERT(r.missingLandmarks.empty(), "no missing landmarks");
+    ASSERT(r.skeleton.bones.size() == spec.bones.size(), "bone count");
+
+    // Bind-pose skinning is identity.
+    auto pose = bromesh::bindPose(r.skeleton);
+    std::vector<float> world;
+    bromesh::computeWorldMatrices(r.skeleton, pose, world);
+    auto skinned = mesh;
+    bromesh::applySkinning(skinned, r.skin, world.data());
+    float maxDelta = 0.0f;
+    for (size_t i = 0; i < mesh.positions.size(); ++i) {
+        float d = std::fabs(skinned.positions[i] - mesh.positions[i]);
+        if (d > maxDelta) maxDelta = d;
+    }
+    ASSERT(maxDelta < 1e-3f, "bind pose skinning is identity");
+}
+
+TEST(detect_landmarks_humanoid_deterministic) {
+    auto mesh = makeSyntheticHumanoid();
+    auto a = bromesh::detectHumanoidLandmarks(mesh);
+    auto b = bromesh::detectHumanoidLandmarks(mesh);
+    ASSERT(a.points.size() == b.points.size(), "same landmark count");
+    for (const auto& [name, pa] : a.points) {
+        ASSERT(b.has(name), name.c_str());
+        auto pb = b.points[name];
+        ASSERT(pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2],
+               "same position both calls");
+    }
+}
+
 TEST(auto_rig_side_affinity) {
     // Vertices on the left side of the torso should have a left-side bone
     // (upper_arm_L, forearm_L, shoulder_L, or similar) in their top 4.

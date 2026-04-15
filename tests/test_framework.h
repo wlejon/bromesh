@@ -60,6 +60,7 @@
 #include "bromesh/rigging/skeleton_fit.h"
 #include "bromesh/rigging/voxel_bind.h"
 #include "bromesh/rigging/auto_rig.h"
+#include "bromesh/rigging/landmark_detect.h"
 
 #include <cstdio>
 #include <cstdlib>
