@@ -29,26 +29,35 @@ BBox computeBBox(const MeshData& mesh) {
 bool isManifold(const MeshData& mesh) {
     if (mesh.indices.empty()) return false;
 
-    // Weld vertices by position to get canonical vertex indices.
-    // This handles meshes with split vertices (e.g., box with separate normals per face).
-    struct Vec3Hash {
-        size_t operator()(const std::tuple<float,float,float>& v) const {
-            // Quantize to avoid floating point issues
-            auto qi = [](float f) -> int32_t { return static_cast<int32_t>(std::round(f * 10000.0f)); };
-            size_t h = std::hash<int32_t>{}(qi(std::get<0>(v)));
-            h ^= std::hash<int32_t>{}(qi(std::get<1>(v))) + 0x9e3779b9 + (h << 6) + (h >> 2);
-            h ^= std::hash<int32_t>{}(qi(std::get<2>(v))) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    // Weld vertices by position to get canonical vertex indices. Handles
+    // meshes with split vertices (box with per-face normals, sphere seam
+    // duplicates, etc.). The key is a quantized int triple so that values
+    // differing only in ULP — e.g. a seam vertex at theta=2pi whose
+    // computed (cos(2pi), sin(2pi)) is (0.99999994, -8.7e-8) rather than
+    // (1, 0) — canonicalize with their theta=0 counterpart. Using raw
+    // floats + quantized hash (an earlier attempt) created hash-only
+    // collisions but not actual equality, so seam duplicates never merged.
+    auto qi = [](float f) -> int32_t {
+        return static_cast<int32_t>(std::round(f * 10000.0f));
+    };
+    struct Vec3iHash {
+        size_t operator()(const std::tuple<int32_t,int32_t,int32_t>& v) const {
+            size_t h = std::hash<int32_t>{}(std::get<0>(v));
+            h ^= std::hash<int32_t>{}(std::get<1>(v)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= std::hash<int32_t>{}(std::get<2>(v)) + 0x9e3779b9 + (h << 6) + (h >> 2);
             return h;
         }
     };
 
-    // Map positions to canonical vertex IDs
-    std::unordered_map<std::tuple<float,float,float>, uint32_t, Vec3Hash> posMap;
+    std::unordered_map<std::tuple<int32_t,int32_t,int32_t>, uint32_t, Vec3iHash> posMap;
     std::vector<uint32_t> canonicalId(mesh.vertexCount());
     uint32_t nextId = 0;
 
     for (size_t v = 0; v < mesh.vertexCount(); ++v) {
-        auto key = std::make_tuple(mesh.positions[v*3], mesh.positions[v*3+1], mesh.positions[v*3+2]);
+        auto key = std::make_tuple(
+            qi(mesh.positions[v*3]),
+            qi(mesh.positions[v*3+1]),
+            qi(mesh.positions[v*3+2]));
         auto it = posMap.find(key);
         if (it == posMap.end()) {
             canonicalId[v] = nextId;

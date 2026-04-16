@@ -80,25 +80,36 @@ MeshData box(float halfW, float halfH, float halfD) {
 
 MeshData sphere(float radius, int segments, int rings) {
     MeshData m;
-    int vertCount = (segments + 1) * (rings + 1);
-    int idxCount = segments * rings * 6;
-    m.reserve(vertCount, idxCount);
+    if (rings < 2 || segments < 3) return m;
 
-    for (int r = 0; r <= rings; r++) {
+    // Pole topology: each pole is a single vertex (UV pinches to u=0.5), not
+    // (segments+1) duplicates. The old layout collapsed a whole ring of
+    // verts onto each pole position, which broke every topology-aware
+    // consumer — half-edge builders saw zero-length edges, CSG saw
+    // undefined face normals, OBJ roundtrip dropped the unreferenced
+    // duplicates so vertex counts didn't match. A single pole vertex, with
+    // a proper fan of triangles under it, is the clean representation.
+    const int interiorRings = rings - 1;
+    const int vertCount = 2 + interiorRings * (segments + 1);
+    const int triCount = 2 * segments + (interiorRings - 1) * 2 * segments;
+    m.reserve(vertCount, triCount * 3);
+
+    // Top pole
+    pushVert(m, 0.0f, radius, 0.0f, 0.0f, 1.0f, 0.0f, 0.5f, 0.0f);
+
+    // Interior rings r = 1 .. rings-1 (between the poles)
+    for (int r = 1; r < rings; r++) {
         float v = (float)r / rings;
-        float phi = v * (float)M_PI; // 0 to PI (top to bottom)
+        float phi = v * (float)M_PI;
         float sinPhi = std::sin(phi);
         float cosPhi = std::cos(phi);
 
         for (int s = 0; s <= segments; s++) {
             float u = (float)s / segments;
             float theta = u * 2.0f * (float)M_PI;
-            float sinTheta = std::sin(theta);
-            float cosTheta = std::cos(theta);
-
-            float nx = sinPhi * cosTheta;
+            float nx = sinPhi * std::cos(theta);
             float ny = cosPhi;
-            float nz = sinPhi * sinTheta;
+            float nz = sinPhi * std::sin(theta);
 
             pushVert(m,
                      nx * radius, ny * radius, nz * radius,
@@ -107,16 +118,40 @@ MeshData sphere(float radius, int segments, int rings) {
         }
     }
 
-    for (int r = 0; r < rings; r++) {
+    // Bottom pole
+    pushVert(m, 0.0f, -radius, 0.0f, 0.0f, -1.0f, 0.0f, 0.5f, 1.0f);
+
+    const uint32_t topPole    = 0;
+    const uint32_t ring1Start = 1;
+    const uint32_t bottomPole = (uint32_t)m.vertexCount() - 1;
+
+    // Top fan
+    for (int s = 0; s < segments; s++) {
+        uint32_t b = ring1Start + s;
+        uint32_t c = ring1Start + s + 1;
+        pushTri(m, topPole, c, b);
+    }
+
+    // Middle strips (between interior ring r and r+1), r = 1 .. interiorRings-1
+    for (int r = 1; r < interiorRings; r++) {
+        uint32_t aBase = ring1Start + (r - 1) * (segments + 1);
+        uint32_t bBase = ring1Start + r * (segments + 1);
         for (int s = 0; s < segments; s++) {
-            uint32_t a = r * (segments + 1) + s;
-            uint32_t b = a + (segments + 1);
+            uint32_t a = aBase + s;
+            uint32_t b = bBase + s;
             uint32_t c = a + 1;
             uint32_t d = b + 1;
-
             pushTri(m, a, c, b);
             pushTri(m, c, d, b);
         }
+    }
+
+    // Bottom fan
+    uint32_t lastRingStart = ring1Start + (interiorRings - 1) * (segments + 1);
+    for (int s = 0; s < segments; s++) {
+        uint32_t a = lastRingStart + s;
+        uint32_t c = a + 1;
+        pushTri(m, a, c, bottomPole);
     }
 
     return m;
@@ -199,25 +234,35 @@ MeshData cylinder(float radius, float halfHeight, int segments) {
 
 MeshData capsule(float radius, float halfHeight, int segments, int rings) {
     MeshData m;
-
-    // Top hemisphere: rings/2 bands from pole to equator
-    // Cylinder body: 1 band
-    // Bottom hemisphere: rings/2 bands from equator to pole
     int halfRings = rings / 2;
+    if (halfRings < 1 || segments < 3) return m;
 
-    // Total rings of latitude: halfRings (top) + 1 (body top/bottom) + halfRings (bottom)
-    // But we build it as a continuous strip
+    // Pole topology: as in sphere(), each pole is a single vertex — no
+    // (segments+1) duplicates that break topology-aware consumers and
+    // inflate vertex counts. Interior ring rows are:
+    //   top hemi  rings r=1..halfRings     (halfRings rows, each seg+1 verts)
+    //   bottom equator                     (1 row, seg+1 verts, at -halfH)
+    //   bottom hemi interior r=1..halfRings-1  (halfRings-1 rows)
+    // Plus 1 top pole vert and 1 bottom pole vert. 2*halfRings interior
+    // ring rows total, plus 2 poles.
+    const int interiorRows = 2 * halfRings;
+    const int vertCount = 2 + interiorRows * (segments + 1);
+    const int triCount = 2 * segments + (interiorRows - 1) * 2 * segments;
+    m.reserve(vertCount, triCount * 3);
 
-    // We'll build top hemisphere, cylinder sides, then bottom hemisphere
-    // Each section shares edge vertices with the next
+    const float vDenom = (float)(2 * halfRings + 1);
 
-    // Top hemisphere (from pole down to equator at y = halfHeight)
-    for (int r = 0; r <= halfRings; r++) {
-        float phi = (float)r / halfRings * ((float)M_PI * 0.5f); // 0 to PI/2
+    // Top pole
+    pushVert(m, 0.0f, halfHeight + radius, 0.0f,
+             0.0f, 1.0f, 0.0f, 0.5f, 0.0f);
+
+    // Top hemisphere interior rings (r = 1..halfRings). The last is the top
+    // equator (phi = pi/2), which the cylinder section connects to below.
+    for (int r = 1; r <= halfRings; r++) {
+        float phi = (float)r / halfRings * ((float)M_PI * 0.5f);
         float sinPhi = std::sin(phi);
         float cosPhi = std::cos(phi);
         float y = halfHeight + cosPhi * radius;
-
         for (int s = 0; s <= segments; s++) {
             float u = (float)s / segments;
             float theta = u * 2.0f * (float)M_PI;
@@ -225,35 +270,27 @@ MeshData capsule(float radius, float halfHeight, int segments, int rings) {
             float nz = sinPhi * std::sin(theta);
             float ny = cosPhi;
             pushVert(m, nx * radius, y, nz * radius, nx, ny, nz,
-                     u, (float)r / (2 * halfRings + 1));
+                     u, (float)r / vDenom);
         }
     }
 
-    // Bottom hemisphere (from equator at y = -halfHeight down to pole)
-    // Start from r=1 to avoid duplicating the equator ring shared with cylinder
-    // Actually, let's add the bottom equator ring and bottom pole
-    // The cylinder body connects top hemi equator to bottom hemi equator
-
-    // Bottom equator at y = -halfHeight (same normals as equator = horizontal)
-    {
-        int r = halfRings + 1;
-        for (int s = 0; s <= segments; s++) {
-            float u = (float)s / segments;
-            float theta = u * 2.0f * (float)M_PI;
-            float nx = std::cos(theta);
-            float nz = std::sin(theta);
-            pushVert(m, nx * radius, -halfHeight, nz * radius, nx, 0, nz,
-                     u, (float)r / (2 * halfRings + 1));
-        }
+    // Bottom equator at y = -halfHeight (row halfRings+1); horizontal normals
+    for (int s = 0; s <= segments; s++) {
+        float u = (float)s / segments;
+        float theta = u * 2.0f * (float)M_PI;
+        float nx = std::cos(theta);
+        float nz = std::sin(theta);
+        pushVert(m, nx * radius, -halfHeight, nz * radius, nx, 0.0f, nz,
+                 u, (float)(halfRings + 1) / vDenom);
     }
 
-    // Bottom hemisphere below -halfHeight
-    for (int r = 1; r <= halfRings; r++) {
+    // Bottom hemisphere interior rings (r = 1..halfRings-1). The final
+    // pole ring of the old layout is replaced by a single pole vertex below.
+    for (int r = 1; r < halfRings; r++) {
         float phi = (float)M_PI * 0.5f + (float)r / halfRings * ((float)M_PI * 0.5f);
         float sinPhi = std::sin(phi);
         float cosPhi = std::cos(phi);
         float y = -halfHeight + cosPhi * radius;
-
         int row = halfRings + 1 + r;
         for (int s = 0; s <= segments; s++) {
             float u = (float)s / segments;
@@ -262,20 +299,54 @@ MeshData capsule(float radius, float halfHeight, int segments, int rings) {
             float nz = sinPhi * std::sin(theta);
             float ny = cosPhi;
             pushVert(m, nx * radius, y, nz * radius, nx, ny, nz,
-                     u, (float)row / (2 * halfRings + 1));
+                     u, (float)row / vDenom);
         }
     }
 
-    // Index all rows as a continuous strip
-    int totalRows = 2 * halfRings + 1; // top hemi rows + cylinder + bottom hemi rows
-    for (int r = 0; r < totalRows; r++) {
+    // Bottom pole
+    pushVert(m, 0.0f, -halfHeight - radius, 0.0f,
+             0.0f, -1.0f, 0.0f, 0.5f, 1.0f);
+
+    const uint32_t topPole    = 0;
+    const uint32_t ring1Start = 1;
+    const uint32_t bottomPole = (uint32_t)m.vertexCount() - 1;
+
+    // Start index of interior row r (r in 1..interiorRows).
+    auto rowStart = [&](int r) -> uint32_t {
+        return ring1Start + (r - 1) * (segments + 1);
+    };
+
+    // Top fan: top pole -> ring 1
+    {
+        uint32_t ring1 = rowStart(1);
         for (int s = 0; s < segments; s++) {
-            uint32_t a = r * (segments + 1) + s;
-            uint32_t b = a + (segments + 1);
+            uint32_t b = ring1 + s;
+            uint32_t c = ring1 + s + 1;
+            pushTri(m, topPole, c, b);
+        }
+    }
+
+    // Interior strips between consecutive interior rows
+    for (int r = 1; r < interiorRows; r++) {
+        uint32_t aBase = rowStart(r);
+        uint32_t bBase = rowStart(r + 1);
+        for (int s = 0; s < segments; s++) {
+            uint32_t a = aBase + s;
+            uint32_t b = bBase + s;
             uint32_t c = a + 1;
             uint32_t d = b + 1;
             pushTri(m, a, c, b);
             pushTri(m, c, d, b);
+        }
+    }
+
+    // Bottom fan: last interior ring -> bottom pole
+    {
+        uint32_t lastRing = rowStart(interiorRows);
+        for (int s = 0; s < segments; s++) {
+            uint32_t a = lastRing + s;
+            uint32_t c = a + 1;
+            pushTri(m, a, c, bottomPole);
         }
     }
 
