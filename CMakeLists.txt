@@ -199,6 +199,7 @@ add_library(bromesh STATIC
     src/manipulation/skin_transfer.cpp
     src/manipulation/shrinkwrap.cpp
     src/manipulation/transform.cpp
+    src/manipulation/polygon.cpp
 
     # Analysis
     src/analysis/bbox.cpp
