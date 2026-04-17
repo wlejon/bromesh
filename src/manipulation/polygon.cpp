@@ -1,6 +1,9 @@
 #include "bromesh/manipulation/polygon.h"
 
+#include <algorithm>
 #include <cmath>
+#include <utility>
+#include <vector>
 
 #if BROMESH_HAS_MANIFOLD
 #include <manifold/polygon.h>
@@ -180,10 +183,61 @@ MeshData triangulatePolygon3D(
         holes2d.push_back(std::move(h2d));
     }
 
+    // Manifold's Triangulate expects the outer contour CCW and holes CW.
+    // Our projection basis may orient the caller's CCW-in-world input as CW
+    // in (u, v) — in which case we reverse both contours (swapping tri
+    // indices post-triangulation to restore world winding). Without this,
+    // non-convex inputs come back with mixed tri winding.
+    const bool reversed = signedArea(outer2d) < 0.0;
+    if (reversed) {
+        std::reverse(outer2d.begin(), outer2d.end());
+        // `outer2d` is a flat [x0,y0, x1,y1, ...]; the reverse above flipped
+        // into [..., y1,x1, y0,x0]. Re-pair the coords.
+        for (size_t i = 0; i + 1 < outer2d.size(); i += 2) {
+            std::swap(outer2d[i], outer2d[i+1]);
+        }
+        for (auto& h2d : holes2d) {
+            std::reverse(h2d.begin(), h2d.end());
+            for (size_t i = 0; i + 1 < h2d.size(); i += 2) {
+                std::swap(h2d[i], h2d[i+1]);
+            }
+        }
+    }
+
     // Run through the 2D core, then rewrite positions with the original
     // 3D coordinates and swap normals to the caller-supplied vector.
     MeshData mesh2d = triangulatePolygon2D(outer2d, holes2d, 0.0f);
     if (mesh2d.indices.empty()) return {};
+
+    // If we reversed the 2D input, manifold's tri indices point into the
+    // reversed vertex order — remap back to original 3D index order. For
+    // the outer contour, index i in the reversed layout corresponds to
+    // (outerN - 1 - i) in the original. Holes follow the outer block.
+    if (reversed) {
+        std::vector<uint32_t> segStart = { 0, static_cast<uint32_t>(outerN) };
+        std::vector<uint32_t> segLen   = { static_cast<uint32_t>(outerN) };
+        for (const auto& h : holes) {
+            if (h.size() < 9 || (h.size() % 3) != 0) continue;
+            const uint32_t hn = static_cast<uint32_t>(h.size() / 3);
+            segLen.push_back(hn);
+            segStart.push_back(segStart.back() + hn);
+        }
+        auto remap = [&](uint32_t idx) -> uint32_t {
+            for (size_t s = 0; s < segLen.size(); ++s) {
+                const uint32_t base = segStart[s];
+                const uint32_t len  = segLen[s];
+                if (idx >= base && idx < base + len) {
+                    return base + (len - 1 - (idx - base));
+                }
+            }
+            return idx;
+        };
+        for (uint32_t& i : mesh2d.indices) i = remap(i);
+        // Reversing the input also flipped tri winding; swap to restore it.
+        for (size_t t = 0; t + 2 < mesh2d.indices.size(); t += 3) {
+            std::swap(mesh2d.indices[t + 1], mesh2d.indices[t + 2]);
+        }
+    }
 
     const size_t vCount = mesh2d.vertexCount();
 
