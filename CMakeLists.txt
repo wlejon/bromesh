@@ -200,6 +200,7 @@ add_library(bromesh STATIC
     src/manipulation/shrinkwrap.cpp
     src/manipulation/transform.cpp
     src/manipulation/polygon.cpp
+    src/manipulation/poly_mesh.cpp
 
     # Analysis
     src/analysis/bbox.cpp
