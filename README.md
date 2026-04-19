@@ -375,4 +375,4 @@ All public headers are under `include/bromesh/`.
 
 ## License
 
-MIT
+[MIT](LICENSE)
