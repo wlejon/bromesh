@@ -21,4 +21,8 @@ MeshData computeCreaseNormals(const MeshData& mesh, float angleThresholdDeg = 30
 /// Returns tangents as a separate array: 4 floats per vertex (xyz + handedness w).
 std::vector<float> computeTangents(const MeshData& mesh);
 
+/// Compute tangents in-place and store them on mesh.tangents (stride 4).
+/// No-op if the mesh lacks UVs or normals.
+void generateTangents(MeshData& mesh);
+
 } // namespace bromesh

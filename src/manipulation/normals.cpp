@@ -313,4 +313,9 @@ std::vector<float> computeTangents(const MeshData& mesh) {
     return tangents;
 }
 
+void generateTangents(MeshData& mesh) {
+    if (!mesh.hasUVs() || !mesh.hasNormals()) return;
+    mesh.tangents = computeTangents(mesh);
+}
+
 } // namespace bromesh

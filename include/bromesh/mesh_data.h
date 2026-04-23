@@ -14,6 +14,7 @@ struct MeshData {
     std::vector<float> normals;      // xyz, stride 3
     std::vector<float> uvs;          // uv,  stride 2 (optional)
     std::vector<float> colors;       // rgba, stride 4 (optional)
+    std::vector<float> tangents;     // xyz + handedness w, stride 4 (optional)
     std::vector<uint32_t> indices;
 
     size_t vertexCount() const { return positions.size() / 3; }
@@ -21,6 +22,7 @@ struct MeshData {
     bool hasNormals() const { return normals.size() == positions.size(); }
     bool hasUVs() const { return uvs.size() / 2 == vertexCount(); }
     bool hasColors() const { return colors.size() / 4 == vertexCount(); }
+    bool hasTangents() const { return tangents.size() / 4 == vertexCount(); }
     bool empty() const { return positions.empty(); }
 
     void clear() {
@@ -28,6 +30,7 @@ struct MeshData {
         normals.clear();
         uvs.clear();
         colors.clear();
+        tangents.clear();
         indices.clear();
     }
 
