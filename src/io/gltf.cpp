@@ -436,6 +436,15 @@ GltfScene loadGLTF(const std::string& path) {
     // underlying image index (via model.textures[tex].source) so consumers
     // don't have to know about the glTF texture indirection.
     scene.materials.reserve(model.materials.size());
+    // glTF has an extra indirection layer (Texture -> Image); the out-facing
+    // Material carries image indices directly, so consumers don't have to
+    // walk that table themselves.
+    auto resolveImage = [&](int texIdx) -> int {
+        if (texIdx < 0 || texIdx >= (int)model.textures.size()) return -1;
+        int src = model.textures[texIdx].source;
+        if (src < 0 || src >= (int)scene.images.size()) return -1;
+        return src;
+    };
     for (const auto& gm : model.materials) {
         Material mat;
         mat.name = gm.name;
@@ -446,13 +455,18 @@ GltfScene loadGLTF(const std::string& path) {
             mat.baseColorFactor[2] = (float)pbr.baseColorFactor[2];
             mat.baseColorFactor[3] = (float)pbr.baseColorFactor[3];
         }
-        int texIdx = pbr.baseColorTexture.index;
-        if (texIdx >= 0 && texIdx < (int)model.textures.size()) {
-            int src = model.textures[texIdx].source;
-            if (src >= 0 && src < (int)scene.images.size()) {
-                mat.baseColorTexture = src;
-            }
+        mat.metallicFactor  = (float)pbr.metallicFactor;
+        mat.roughnessFactor = (float)pbr.roughnessFactor;
+        if (gm.emissiveFactor.size() == 3) {
+            mat.emissiveFactor[0] = (float)gm.emissiveFactor[0];
+            mat.emissiveFactor[1] = (float)gm.emissiveFactor[1];
+            mat.emissiveFactor[2] = (float)gm.emissiveFactor[2];
         }
+        mat.baseColorTexture         = resolveImage(pbr.baseColorTexture.index);
+        mat.metallicRoughnessTexture = resolveImage(pbr.metallicRoughnessTexture.index);
+        mat.normalTexture            = resolveImage(gm.normalTexture.index);
+        mat.occlusionTexture         = resolveImage(gm.occlusionTexture.index);
+        mat.emissiveTexture          = resolveImage(gm.emissiveTexture.index);
         scene.materials.push_back(std::move(mat));
     }
 

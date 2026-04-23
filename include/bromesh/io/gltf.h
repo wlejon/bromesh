@@ -17,12 +17,25 @@ struct Image {
     std::vector<uint8_t> data;       ///< RGBA8, size = width * height * 4
 };
 
-/// Flat PBR material subset — enough for the baseColor texture + tint that
-/// MeshyAI and similar exports produce. Indexes refer to GltfScene::images.
+/// Flat PBR material subset (glTF metallic-roughness model). Texture indices
+/// refer to entries in GltfScene::images; -1 means no texture.
+///
+/// Packing follows the glTF 2.0 spec:
+///   - metallicRoughnessTexture: G = roughness, B = metallic.
+///   - occlusionTexture:         R channel used.
+///   - normalTexture:            tangent-space RGB (xyz = sampled directly).
+///   - emissiveTexture:          RGB, multiplied by emissiveFactor.
 struct Material {
     std::string name;
     float baseColorFactor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-    int   baseColorTexture   = -1;   ///< index into GltfScene::images, -1 if none
+    float metallicFactor     = 1.0f;
+    float roughnessFactor    = 1.0f;
+    float emissiveFactor[3]  = {0.0f, 0.0f, 0.0f};
+    int   baseColorTexture         = -1;
+    int   metallicRoughnessTexture = -1;
+    int   normalTexture            = -1;
+    int   occlusionTexture         = -1;
+    int   emissiveTexture          = -1;
 };
 
 /// Result of loading a glTF/GLB file.
