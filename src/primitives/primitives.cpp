@@ -433,8 +433,15 @@ MeshData torus(float majorRadius, float minorRadius, int majorSegments, int mino
 
 // ─── heightmapGrid ─────────────────────────────────────────────────────────────
 
-MeshData heightmapGrid(const float* heights, int gridW, int gridH, float cellSize) {
-    if (!heights || gridW < 2 || gridH < 2) return {};
+MeshData heightmapGrid(const float* heights, int gridW, int gridH,
+                       float cellSize, int border) {
+    if (!heights || gridW < 2 || gridH < 2 || border < 0) return {};
+
+    // Stride through the padded source array.
+    int paddedW = gridW + 2 * border;
+    auto H = [&](int x, int z) -> float {
+        return heights[(z + border) * paddedW + (x + border)];
+    };
 
     MeshData m;
     int vertCount = gridW * gridH;
@@ -448,7 +455,7 @@ MeshData heightmapGrid(const float* heights, int gridW, int gridH, float cellSiz
     for (int z = 0; z < gridH; z++) {
         for (int x = 0; x < gridW; x++) {
             float px = originX + x * cellSize;
-            float py = heights[z * gridW + x];
+            float py = H(x, z);
             float pz = originZ + z * cellSize;
             float u = (float)x / (gridW - 1);
             float v = (float)z / (gridH - 1);
@@ -461,17 +468,25 @@ MeshData heightmapGrid(const float* heights, int gridW, int gridH, float cellSiz
         }
     }
 
-    // Compute normals via central differences
+    // Central-difference normals. With `border >= 1`, the skirt provides the
+    // neighbour sample on every side so boundary vertices use the same formula
+    // as interior vertices, producing seam-free normals across chunk edges.
+    // Without a border we fall back to one-sided differences at the edges.
     m.normals.resize(vertCount * 3, 0.0f);
     for (int z = 0; z < gridH; z++) {
         for (int x = 0; x < gridW; x++) {
-            float hL = heights[z * gridW + (x > 0 ? x - 1 : x)];
-            float hR = heights[z * gridW + (x < gridW - 1 ? x + 1 : x)];
-            float hD = heights[(z > 0 ? z - 1 : z) * gridW + x];
-            float hU = heights[(z < gridH - 1 ? z + 1 : z) * gridW + x];
+            bool hasL = (x > 0) || (border > 0);
+            bool hasR = (x < gridW - 1) || (border > 0);
+            bool hasD = (z > 0) || (border > 0);
+            bool hasU = (z < gridH - 1) || (border > 0);
 
-            float dx = (hR - hL) / ((x > 0 && x < gridW - 1) ? (2.0f * cellSize) : cellSize);
-            float dz = (hU - hD) / ((z > 0 && z < gridH - 1) ? (2.0f * cellSize) : cellSize);
+            float hL = hasL ? H(x - 1, z) : H(x, z);
+            float hR = hasR ? H(x + 1, z) : H(x, z);
+            float hD = hasD ? H(x, z - 1) : H(x, z);
+            float hU = hasU ? H(x, z + 1) : H(x, z);
+
+            float dx = (hR - hL) / ((hasL && hasR) ? (2.0f * cellSize) : cellSize);
+            float dz = (hU - hD) / ((hasD && hasU) ? (2.0f * cellSize) : cellSize);
 
             // Normal = normalize(-dh/dx, 1, -dh/dz)
             float nx = -dx;

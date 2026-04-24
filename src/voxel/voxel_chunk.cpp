@@ -26,9 +26,11 @@ void VoxelChunk::fill(uint8_t value) {
     dirty_ = true;
 }
 
-MeshData VoxelChunk::buildMesh(const float* palette, int paletteCount) const {
+MeshData VoxelChunk::buildMesh(const float* palette, int paletteCount,
+                               int borderX, int borderY, int borderZ) const {
     return greedyMesh(voxels_.data(), sizeX_, sizeY_, sizeZ_, cellSize_,
-                      palette, paletteCount, /*filterMaterial=*/-1);
+                      palette, paletteCount, /*filterMaterial=*/-1,
+                      borderX, borderY, borderZ);
 }
 
 } // namespace bromesh

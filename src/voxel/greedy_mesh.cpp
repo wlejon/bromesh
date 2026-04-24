@@ -7,9 +7,13 @@ namespace bromesh {
 
 MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
                     float cellSize, const float* palette, int paletteCount,
-                    int filterMaterial) {
+                    int filterMaterial,
+                    int borderX, int borderY, int borderZ) {
     MeshData mesh;
     if (!voxels || gridX <= 0 || gridY <= 0 || gridZ <= 0) return mesh;
+    if (borderX < 0 || borderY < 0 || borderZ < 0) return mesh;
+    if (gridX <= 2 * borderX || gridY <= 2 * borderY || gridZ <= 2 * borderZ)
+        return mesh;
 
     // Helper to sample voxel safely (returns 0 for out-of-bounds)
     auto voxelAt = [&](int x, int y, int z) -> uint8_t {
@@ -70,53 +74,64 @@ MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
     };
 
     // For each axis (0=X, 1=Y, 2=Z) and direction (0=negative, 1=positive)
+    int dims[3]    = { gridX, gridY, gridZ };
+    int borders[3] = { borderX, borderY, borderZ };
+
     for (int axis = 0; axis < 3; ++axis) {
         // u and v are the two axes perpendicular to the sweep axis
         int u = (axis + 1) % 3;
         int v = (axis + 2) % 3;
 
-        int dims[3] = { gridX, gridY, gridZ };
-        int dimAxis = dims[axis];
-        int dimU = dims[u];
-        int dimV = dims[v];
+        // Interior extents — halo voxels contribute to visibility but
+        // don't produce faces and don't shift the output origin.
+        int axisStart = borders[axis];
+        int axisEnd   = dims[axis] - borders[axis];
+        int uStart    = borders[u];
+        int uEnd      = dims[u] - borders[u];
+        int vStart    = borders[v];
+        int vEnd      = dims[v] - borders[v];
+
+        int maskU = uEnd - uStart;
+        int maskV = vEnd - vStart;
 
         for (int dir = 0; dir < 2; ++dir) {
             // Normal: points in +axis or -axis direction
             float normal[3] = { 0, 0, 0 };
             normal[axis] = (dir == 1) ? 1.0f : -1.0f;
 
-            // Sweep slices perpendicular to axis
-            std::vector<uint8_t> mask(static_cast<size_t>(dimU) * dimV, 0);
+            // Sweep slices perpendicular to axis across interior only
+            std::vector<uint8_t> mask(static_cast<size_t>(maskU) * maskV, 0);
 
-            for (int slice = 0; slice < dimAxis; ++slice) {
+            for (int slice = axisStart; slice < axisEnd; ++slice) {
                 // Build mask for this slice
                 std::memset(mask.data(), 0, mask.size());
 
-                for (int iv = 0; iv < dimV; ++iv) {
-                    for (int iu = 0; iu < dimU; ++iu) {
+                for (int iv = 0; iv < maskV; ++iv) {
+                    for (int iu = 0; iu < maskU; ++iu) {
                         int pos[3] = { 0, 0, 0 };
                         pos[axis] = slice;
-                        pos[u] = iu;
-                        pos[v] = iv;
+                        pos[u] = iu + uStart;
+                        pos[v] = iv + vStart;
 
                         uint8_t cur = voxelAt(pos[0], pos[1], pos[2]);
 
-                        // Neighbor in the direction we're checking
+                        // Neighbor in the direction we're checking — may land
+                        // in the halo, which is exactly the point.
                         int npos[3] = { pos[0], pos[1], pos[2] };
                         npos[axis] += (dir == 1) ? 1 : -1;
                         uint8_t neighbor = voxelAt(npos[0], npos[1], npos[2]);
 
                         // Face is exposed if current is solid and neighbor is empty
                         if (cur != 0 && neighbor == 0) {
-                            mask[static_cast<size_t>(iv) * dimU + iu] = cur;
+                            mask[static_cast<size_t>(iv) * maskU + iu] = cur;
                         }
                     }
                 }
 
                 // Greedy merge the mask into quads
-                for (int iv = 0; iv < dimV; ++iv) {
-                    for (int iu = 0; iu < dimU; ) {
-                        uint8_t mat = mask[static_cast<size_t>(iv) * dimU + iu];
+                for (int iv = 0; iv < maskV; ++iv) {
+                    for (int iu = 0; iu < maskU; ) {
+                        uint8_t mat = mask[static_cast<size_t>(iv) * maskU + iu];
                         if (mat == 0) {
                             ++iu;
                             continue;
@@ -124,17 +139,17 @@ MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
 
                         // Find width (run in U direction)
                         int w = 1;
-                        while (iu + w < dimU &&
-                               mask[static_cast<size_t>(iv) * dimU + iu + w] == mat) {
+                        while (iu + w < maskU &&
+                               mask[static_cast<size_t>(iv) * maskU + iu + w] == mat) {
                             ++w;
                         }
 
                         // Find height (extend in V direction)
                         int h = 1;
                         bool done = false;
-                        while (iv + h < dimV && !done) {
+                        while (iv + h < maskV && !done) {
                             for (int k = 0; k < w; ++k) {
-                                if (mask[static_cast<size_t>(iv + h) * dimU + iu + k] != mat) {
+                                if (mask[static_cast<size_t>(iv + h) * maskU + iu + k] != mat) {
                                     done = true;
                                     break;
                                 }
@@ -145,18 +160,22 @@ MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
                         // Clear mask for merged region
                         for (int jj = 0; jj < h; ++jj) {
                             for (int ii = 0; ii < w; ++ii) {
-                                mask[static_cast<size_t>(iv + jj) * dimU + iu + ii] = 0;
+                                mask[static_cast<size_t>(iv + jj) * maskU + iu + ii] = 0;
                             }
                         }
 
-                        // Emit quad
-                        // The quad spans [iu, iu+w] x [iv, iv+h] on the slice plane
-                        // Position along the axis:
-                        // For positive face (dir==1): the face is at slice+1
-                        // For negative face (dir==0): the face is at slice
-                        float slicePos = (dir == 1) ? (slice + 1.0f) : (float)slice;
+                        // Emit quad — positions are in *interior* space, so the
+                        // first interior voxel sits at local (0,0,0).
+                        // For positive face (dir==1): face is at (slice+1) in
+                        // grid space → (slice+1 - axisStart) in interior space.
+                        // For negative face (dir==0): face is at slice in grid
+                        // space → (slice - axisStart) in interior space.
+                        float slicePos = (dir == 1)
+                            ? (float)(slice + 1 - axisStart)
+                            : (float)(slice - axisStart);
 
-                        // Build 4 corner positions
+                        // Build 4 corner positions — (iu, iv) are already
+                        // interior-relative since the mask is interior-sized.
                         float p[4][3];
                         for (int c = 0; c < 4; ++c) {
                             float cu = (c & 1) ? (float)(iu + w) : (float)iu;

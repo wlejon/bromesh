@@ -40,8 +40,13 @@ public:
     /// Build a greedy mesh with per-vertex colors from palette.
     /// All materials in one pass (filterMaterial = -1).
     /// palette: RGBA floats, 4 per material ID. Index 0 unused (air).
+    /// borderX/Y/Z: halo voxels on each side that participate in visibility
+    /// checks but don't produce faces. Output positions are expressed in
+    /// interior coordinates (first interior voxel at local origin). See
+    /// `greedyMesh` for the full semantics.
     /// Returns empty MeshData if chunk has no solid voxels.
-    MeshData buildMesh(const float* palette = nullptr, int paletteCount = 0) const;
+    MeshData buildMesh(const float* palette = nullptr, int paletteCount = 0,
+                       int borderX = 0, int borderY = 0, int borderZ = 0) const;
 
 private:
     bool inBounds(int x, int y, int z) const {
