@@ -13,6 +13,7 @@ PlantResult buildGrassTuft(const GrassTuftParams& params) {
     using namespace plant_internal;
 
     const int blades = std::max(1, params.bladeCount);
+    const float age01 = std::clamp(params.age01, 0.05f, 1.0f);
     std::mt19937_64 rng(params.seed);
     std::uniform_real_distribution<float> uni(0.0f, 1.0f);
 
@@ -25,7 +26,7 @@ PlantResult buildGrassTuft(const GrassTuftParams& params) {
         float br = params.baseRadius * (0.4f + 0.6f * uni(rng));
         Vec3 base{ std::cos(ang) * br, 0.0f, std::sin(ang) * br };
 
-        float bladeH = params.height * (0.7f + 0.6f * uni(rng));
+        float bladeH = params.height * age01 * (0.7f + 0.6f * uni(rng));
         float tipBend = params.bend * (0.6f + 0.8f * uni(rng));
         Vec3 outDir{ std::cos(ang), 0.0f, std::sin(ang) };
 

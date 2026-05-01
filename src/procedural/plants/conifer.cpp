@@ -12,10 +12,16 @@ PlantResult buildConifer(const ConiferParams& params) {
     PlantResult result;
     using namespace plant_internal;
 
-    const float age = std::clamp(params.age01, 0.05f, 1.0f);
-    const float H = params.height * age;
+    // Mature structure is fixed; age01 trims whorls from the top down so
+    // the same seed yields the same skeleton at every age.
+    const float age01 = std::clamp(params.age01, 0.0f, 1.0f);
+    const float H = params.height;
     const int whorls = std::max(2, params.whorlCount);
     const int perWhorl = std::max(3, params.branchesPerWhorl);
+    // How much of the trunk and how many whorls are present at this age.
+    // Whorls live at fractional heights; only those whose base height is
+    // <= age01 * H survive.
+    const float trunkVisFrac = std::max(0.05f, age01);
 
     std::mt19937_64 rng(params.seed);
     std::uniform_real_distribution<float> uni(0.0f, 1.0f);
@@ -25,12 +31,16 @@ PlantResult buildConifer(const ConiferParams& params) {
     const int trunkSamples = 16;
     for (int i = 0; i <= trunkSamples; ++i) {
         float t = static_cast<float>(i) / static_cast<float>(trunkSamples);
-        Vec3 p{
-            (uni(rng) - 0.5f) * 0.04f * H,
-            t * H,
-            (uni(rng) - 0.5f) * 0.04f * H
-        };
+        // Generate the mature path deterministically, then truncate to the
+        // age-visible range so seeds stay stable across ages.
+        float jx = (uni(rng) - 0.5f) * 0.04f * H;
+        float jz = (uni(rng) - 0.5f) * 0.04f * H;
+        if (t > trunkVisFrac) continue;
+        Vec3 p{ jx, t * H, jz };
         trunkPath.push_back(p);
+    }
+    if (trunkPath.size() < 2) {
+        trunkPath = { {0,0,0}, {0, std::max(0.01f, trunkVisFrac * H), 0} };
     }
     auto trunkProfile = circleProfile(10, 1.0f);
     SweepOptions trunkOpts;
@@ -54,6 +64,15 @@ PlantResult buildConifer(const ConiferParams& params) {
     const float two_pi = 6.28318530717958647692f;
     for (int w = 0; w < whorls; ++w) {
         float tWhorl = (static_cast<float>(w) + 0.5f) / static_cast<float>(whorls);
+        // Skip whorls whose attachment is above the visible trunk height.
+        // Note: tWhorl is normalized 0..1 over mature trunk; compare to age.
+        if (tWhorl > trunkVisFrac) {
+            // Still consume rng calls below to keep determinism stable
+            // across ages would be ideal, but the simpler invariant we
+            // promise is "same seed -> same mature tree". Drop and move on.
+            (void)uni(rng);
+            continue;
+        }
         float yBase = tWhorl * H * 0.95f + H * 0.05f;
         float trunkR = params.baseRadius * (1.0f - 0.85f * tWhorl);
         // Branches taper from long at the bottom to short at the top.

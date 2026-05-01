@@ -13,6 +13,9 @@ PlantResult buildFern(const FernParams& params) {
     using namespace plant_internal;
 
     const int pairs = std::max(2, params.leafletPairs);
+    // Same seed -> same mature frond. age01 truncates the rachis from the
+    // tip by scaling total length; the L-system structure is fixed.
+    const float age01 = std::clamp(params.age01, 0.05f, 1.0f);
 
     // L-system: A is a frond unit. After N iterations the rachis is a
     // chain of F segments interspersed with paired leaflet markers L+ / L-.
@@ -42,7 +45,7 @@ PlantResult buildFern(const FernParams& params) {
     // Walk modules to lay down a curved rachis path and place leaflets.
     Vec3 cur{0, 0, 0};
     Vec3 dir{0, 1, 0};
-    const float total = params.length;
+    const float total = params.length * age01;
     // Step length so the F count along the rachis spans `total`.
     int fCount = 0;
     for (const auto& m : modules) if (m.symbol == 'F') ++fCount;

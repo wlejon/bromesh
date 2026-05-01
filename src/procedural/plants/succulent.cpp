@@ -13,6 +13,7 @@ PlantResult buildSucculent(const SucculentParams& params) {
     using namespace plant_internal;
 
     const int leaves = std::max(3, params.leafCount);
+    const float age01 = std::clamp(params.age01, 0.05f, 1.0f);
     std::mt19937_64 rng(params.seed);
     std::uniform_real_distribution<float> uni(0.0f, 1.0f);
 
@@ -27,7 +28,7 @@ PlantResult buildSucculent(const SucculentParams& params) {
         // Outer leaves slightly tilted up; inner leaves more vertical.
         float t = static_cast<float>(i) / static_cast<float>(leaves);
         float tilt = params.tilt * (0.4f + 0.7f * t);
-        float length = params.leafLength * (0.7f + 0.4f * t + uni(rng) * 0.1f);
+        float length = params.leafLength * age01 * (0.7f + 0.4f * t + uni(rng) * 0.1f);
 
         Vec3 outDir{ std::cos(a) * std::cos(tilt), std::sin(tilt), std::sin(a) * std::cos(tilt) };
         outDir = vnorm(outDir);

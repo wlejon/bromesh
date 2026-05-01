@@ -15,7 +15,10 @@ PlantResult buildVine(const VineParams& params) {
     std::mt19937_64 rng(params.seed);
     std::uniform_real_distribution<float> uni(-1.0f, 1.0f);
 
-    const int samples = std::max(16, static_cast<int>(params.length * 12.0f));
+    // age01 truncates the path; helix winding is preserved up to the cut.
+    const float age01 = std::clamp(params.age01, 0.0f, 1.0f);
+    const float effLength = params.length * std::max(0.05f, age01);
+    const int samples = std::max(16, static_cast<int>(effLength * 12.0f));
     const float two_pi = 6.28318530717958647692f;
     std::vector<Vec3> path;
     path.reserve(samples + 1);
@@ -24,7 +27,7 @@ PlantResult buildVine(const VineParams& params) {
         float a = t * params.turns * two_pi;
         Vec3 p{
             std::cos(a) * params.helixRadius + uni(rng) * 0.04f,
-            t * params.length,
+            t * effLength,
             std::sin(a) * params.helixRadius + uni(rng) * 0.04f
         };
         path.push_back(p);
@@ -40,7 +43,7 @@ PlantResult buildVine(const VineParams& params) {
     result.branchMesh = sweep(profile, path, opts);
 
     // Periodic leaves along the path.
-    const int leafCount = std::max(1, static_cast<int>(params.length * params.leafDensity));
+    const int leafCount = std::max(1, static_cast<int>(effLength * params.leafDensity));
     for (int i = 0; i < leafCount; ++i) {
         float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(leafCount);
         size_t idx = static_cast<size_t>(t * (path.size() - 1));
@@ -57,7 +60,7 @@ PlantResult buildVine(const VineParams& params) {
 
     if (!result.branchMesh.empty())
         aabbFromMesh(result.branchMesh, result.aabbMin, result.aabbMax);
-    else { result.aabbMin = {0,0,0}; result.aabbMax = {0,params.length,0}; }
+    else { result.aabbMin = {0,0,0}; result.aabbMax = {0,effLength,0}; }
     for (const auto& L : result.leaves) {
         Vec3 r{L.scale, L.scale, L.scale};
         updateAabb(result.aabbMin, result.aabbMax, L.position - r);

@@ -18,6 +18,9 @@ struct FernParams {
     float leafletLength = 0.35f;
     /// Curvature of the frond (radians of arc total).
     float curvature = 0.8f;
+    /// 0..1 frond length fraction. Pinnae count is fixed by leafletPairs;
+    /// age trims the rachis from the tip.
+    float age01 = 1.0f;
 };
 
 /// Single fern frond: an L-system drives a curved central rachis with

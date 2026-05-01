@@ -12,11 +12,13 @@ PlantResult buildShrub(const ShrubParams& params) {
     PlantResult result;
     using namespace plant_internal;
 
-    const float age = std::clamp(params.age01, 0.05f, 1.0f);
-    const float H = params.height * age;
-    const float R = params.radius * age;
+    // Mature structure is fixed; age01 trims by depth so the same seed
+    // produces a consistent skeleton growing outward.
+    const float age01 = std::clamp(params.age01, 0.0f, 1.0f);
+    const float H = params.height;
+    const float R = params.radius;
     const int stems = std::max(1, params.stemCount);
-    const int attractorCount = std::max(8, static_cast<int>(params.attractorCount * age));
+    const int attractorCount = std::max(8, params.attractorCount);
 
     std::mt19937_64 rng(params.seed);
     std::uniform_real_distribution<float> uni(0.0f, 1.0f);
@@ -53,20 +55,55 @@ PlantResult buildShrub(const ShrubParams& params) {
     auto segs = spaceColonize(attractors, seeds, {0, 1, 0}, opts);
     thickenBranches(segs, 0.012f, 2.5f);
 
-    result.branchMesh = meshBranches(segs, 6);
-
-    // Leaves: terminals + a fraction of interior tips.
-    std::vector<int> childCount(segs.size(), 0);
-    for (const auto& s : segs) if (s.parent >= 0) ++childCount[s.parent];
+    // Filter by depth-based birth time. Same seed -> same mature skeleton
+    // for all ages; age01 just trims descendants beyond the current front.
+    int maxDepth = 1;
+    for (const auto& s : segs) if (s.depth > maxDepth) maxDepth = s.depth;
+    auto h01 = [&](int idx)->float {
+        uint64_t x = params.seed ^ (uint64_t)(uint32_t)idx * 0x9E3779B97F4A7C15ull;
+        x ^= x >> 33; x *= 0xff51afd7ed558ccdull;
+        x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ull;
+        x ^= x >> 33;
+        return static_cast<float>((x >> 40) & 0xFFFFFFu) / static_cast<float>(0x1000000u);
+    };
+    std::vector<bool> alive(segs.size(), true);
+    if (age01 < 1.0f) {
+        for (size_t i = 0; i < segs.size(); ++i) {
+            float dt = static_cast<float>(segs[i].depth) / static_cast<float>(maxDepth);
+            float jitter = (h01(static_cast<int>(i)) - 0.5f) * 0.05f;
+            alive[i] = std::clamp(dt + jitter, 0.0f, 1.0f) <= age01;
+        }
+        for (size_t i = 0; i < segs.size(); ++i) {
+            int p = segs[i].parent;
+            if (p >= 0 && !alive[p]) alive[i] = false;
+        }
+    }
+    std::vector<int> remap(segs.size(), -1);
+    std::vector<BranchSegment> kept;
+    kept.reserve(segs.size());
     for (size_t i = 0; i < segs.size(); ++i) {
+        if (!alive[i]) continue;
+        BranchSegment s = segs[i];
+        s.parent = (s.parent >= 0) ? remap[s.parent] : -1;
+        remap[i] = static_cast<int>(kept.size());
+        kept.push_back(s);
+    }
+
+    result.branchMesh = meshBranches(kept, 6);
+
+    // Leaves on terminals of the surviving structure.
+    std::vector<int> childCount(kept.size(), 0);
+    for (const auto& s : kept) if (s.parent >= 0) ++childCount[s.parent];
+    for (size_t i = 0; i < kept.size(); ++i) {
         if (childCount[i] != 0) continue;
-        if (segs[i].parent == -1) continue;
+        if (kept[i].parent == -1) continue;
         LeafInstance L;
-        L.position = segs[i].to;
-        Vec3 fwd = vnormOr(segs[i].to - segs[i].from, {0, 1, 0});
+        L.position = kept[i].to;
+        Vec3 fwd = vnormOr(kept[i].to - kept[i].from, {0, 1, 0});
         L.orientation = quatLookDir(fwd);
-        L.scale = 0.07f * (0.7f + uni(rng) * 0.6f);
-        L.variantIndex = static_cast<int>(rng() & 3);
+        L.scale = 0.07f * (0.7f + h01(static_cast<int>(i) ^ 0x55) * 0.6f);
+        L.variantIndex = static_cast<int>(
+            (uint32_t)(h01(static_cast<int>(i) ^ 0xAA) * 4.0f)) & 3;
         result.leaves.push_back(L);
     }
 

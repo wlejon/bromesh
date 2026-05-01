@@ -247,6 +247,22 @@ TEST(plant_tree_smoke) {
     ASSERT(r.aabbMin.z < r.aabbMax.z, "aabb z sane");
 }
 
+TEST(plant_tree_age_monotonic) {
+    // Same seed at different ages must produce a structurally consistent
+    // tree: more segments / taller AABB as age increases.
+    TreeParams p; p.seed = 42; p.height = 6.0f; p.attractorCount = 400;
+    p.age01 = 0.3f; PlantResult r03 = buildTree(p);
+    p.age01 = 0.6f; PlantResult r06 = buildTree(p);
+    p.age01 = 1.0f; PlantResult r10 = buildTree(p);
+    ASSERT(!r10.branchMesh.empty(), "mature tree non-empty");
+    ASSERT(r10.branchMesh.vertexCount() >= r06.branchMesh.vertexCount(),
+           "mature tree has >= verts than mid-age");
+    ASSERT(r06.branchMesh.vertexCount() >= r03.branchMesh.vertexCount(),
+           "mid-age tree has >= verts than young");
+    ASSERT(r10.aabbMax.y >= r03.aabbMax.y * 0.95f,
+           "mature aabb top >= young aabb top");
+}
+
 TEST(plant_conifer_smoke) {
     ConiferParams p; p.seed = 2;
     PlantResult r = buildConifer(p);

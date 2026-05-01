@@ -18,6 +18,9 @@ struct SucculentParams {
     float leafThickness = 0.04f;
     /// Tilt of leaves away from horizontal, radians.
     float tilt = 0.6f;
+    /// 0..1 uniform scale of leaf length. A rosette doesn't really branch,
+    /// so age is a simple uniform scale rather than a structural trim.
+    float age01 = 1.0f;
 };
 
 /// Rosette-form succulent: thick tapered leaves arranged in a phyllotactic

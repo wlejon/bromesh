@@ -15,6 +15,9 @@ struct GrassTuftParams {
     float bladeWidth = 0.015f;
     /// Bend angle at the tip, in radians.
     float bend = 0.6f;
+    /// 0..1 uniform scale of blade length. Blade count and base radius are
+    /// fixed by the seed; age just makes the existing blades shorter.
+    float age01 = 1.0f;
 };
 
 /// A clump of curved grass blades. Each blade is a tapered sweep of a thin
