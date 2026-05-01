@@ -118,7 +118,11 @@ PlantResult buildConifer(const ConiferParams& params) {
                 p.z += (uni(rng) - 0.5f) * 0.05f;
                 L.position = p;
                 L.orientation = quatLookDir(dir);
-                L.scale = 0.05f * (1.0f - t * 0.5f);
+                // Each "leaf" stands in for a needle cluster on a real
+                // conifer, so scale relative to branch length rather than
+                // a fixed tiny value — small needles render sub-pixel and
+                // disappear at any normal viewing distance.
+                L.scale = std::max(0.12f, branchLen * 0.18f) * (1.0f - t * 0.4f);
                 L.variantIndex = 0;
                 result.leaves.push_back(L);
             }
