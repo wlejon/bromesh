@@ -145,16 +145,18 @@ PlantResult buildTree(const TreeParams& params) {
     // Leaves: terminal-after-trim segments only.
     std::vector<int> childCount(kept.size(), 0);
     for (const auto& s : kept) if (s.parent >= 0) ++childCount[s.parent];
-    // Leaf scale scaled with tree size — large enough that the alpha-cutout
-    // atlas survives mipmap LOD averaging at typical viewing distances.
-    const float leafScaleBase = std::max(0.15f, H * 0.10f);
+    // Leaf scale relative to tree height. Real leaves are ~1% of a tree's
+    // height which renders sub-pixel at typical viewing distances even
+    // with coverage-preserving mipmaps; ~7% is a reasonable stylised
+    // default that stays visible without looking cartoonish.
+    const float leafScaleBase = std::max(0.08f, H * 0.07f);
     // Dedupe terminal positions: space-colonization can leave multiple
     // near-coincident terminal segments converging on the same attractor.
     // Drop near-duplicates so we don't stack 10 leaf quads on one point.
-    // Light-touch dedup: only collapse leaves that are essentially
-    // coincident (well under killRadius). Aggressive dedup empties the
-    // canopy because terminal density is what makes a tree look full.
-    const float dedupeR = std::max(0.001f, opts.killRadius * 0.15f);
+    // Drop only essentially-coincident terminals. Space colonization can
+    // emit several segments converging on the same attractor; without
+    // dedup the same world position gets ~10 stacked leaf quads.
+    const float dedupeR = std::max(0.001f, opts.killRadius * 0.1f);
     const float dedupeR2 = dedupeR * dedupeR;
     std::vector<Vec3> placedPositions;
     placedPositions.reserve(kept.size());
