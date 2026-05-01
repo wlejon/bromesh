@@ -242,13 +242,7 @@ add_library(bromesh STATIC
     # Procedural
     src/procedural/lsystem.cpp
     src/procedural/space_colonization.cpp
-    src/procedural/plants/tree.cpp
-    src/procedural/plants/conifer.cpp
-    src/procedural/plants/shrub.cpp
-    src/procedural/plants/grass_tuft.cpp
-    src/procedural/plants/vine.cpp
-    src/procedural/plants/fern.cpp
-    src/procedural/plants/succulent.cpp
+    src/procedural/branches.cpp
 
     # I/O
     src/io/obj.cpp

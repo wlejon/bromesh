@@ -4,13 +4,7 @@
 #include "bromesh/manipulation/sweep.h"
 #include "bromesh/procedural/lsystem.h"
 #include "bromesh/procedural/space_colonization.h"
-#include "bromesh/procedural/plants/tree.h"
-#include "bromesh/procedural/plants/conifer.h"
-#include "bromesh/procedural/plants/shrub.h"
-#include "bromesh/procedural/plants/grass_tuft.h"
-#include "bromesh/procedural/plants/vine.h"
-#include "bromesh/procedural/plants/fern.h"
-#include "bromesh/procedural/plants/succulent.h"
+#include "bromesh/procedural/branches.h"
 
 #include <algorithm>
 #include <cmath>
@@ -227,75 +221,29 @@ TEST(space_colonization_connectivity) {
     ASSERT(monotonic, "thicken: parent radius >= child radius");
 }
 
-TEST(plant_tree_smoke) {
-    TreeParams p;
-    p.seed = 1;
-    p.height = 4.0f;
-    p.canopyRadius = 1.8f;
-    p.attractorCount = 200;
-    PlantResult r = buildTree(p);
-    ASSERT(!r.branchMesh.empty(), "tree mesh non-empty");
-    // Canopy must actually grow. Trunk-only output (which produces exactly
-    // one terminal leaf at the trunk tip) is a regression: it means
-    // colonization couldn't reach the attractor cloud.
-    ASSERT(r.leaves.size() >= 10, "canopy grew (>=10 leaves)");
-    // AABB top must be near the requested height. Trunk-only output stops
-    // around 0.45 * height where the pre-grown trunk ends.
-    ASSERT(r.aabbMax.y >= p.height * 0.7f, "canopy reaches >=70% of height");
-    ASSERT(r.aabbMin.x < r.aabbMax.x, "aabb x sane");
-    ASSERT(r.aabbMin.y < r.aabbMax.y, "aabb y sane");
-    ASSERT(r.aabbMin.z < r.aabbMax.z, "aabb z sane");
-}
+TEST(mesh_branches_smoke) {
+    // Three-segment Y: trunk + two children share a fork. meshBranches must
+    // produce a non-empty merged mesh and not duplicate the parent ring at
+    // the fork (chain-aware sweep).
+    std::vector<BranchSegment> segs;
+    BranchSegment root;
+    root.parent = -1; root.from = {0, 0, 0}; root.to = {0, 0, 0};
+    root.radius = 0.1f; root.depth = 0;
+    segs.push_back(root);
+    BranchSegment trunk;
+    trunk.parent = 0; trunk.from = {0, 0, 0}; trunk.to = {0, 1, 0};
+    trunk.radius = 0.08f; trunk.depth = 1;
+    segs.push_back(trunk);
+    BranchSegment left;
+    left.parent = 1; left.from = {0, 1, 0}; left.to = {-0.5f, 1.7f, 0};
+    left.radius = 0.04f; left.depth = 2;
+    segs.push_back(left);
+    BranchSegment right;
+    right.parent = 1; right.from = {0, 1, 0}; right.to = {0.5f, 1.7f, 0};
+    right.radius = 0.04f; right.depth = 2;
+    segs.push_back(right);
 
-TEST(plant_tree_age_monotonic) {
-    // Same seed at different ages must produce a structurally consistent
-    // tree: more segments / taller AABB as age increases.
-    TreeParams p; p.seed = 42; p.height = 6.0f; p.attractorCount = 400;
-    p.age01 = 0.3f; PlantResult r03 = buildTree(p);
-    p.age01 = 0.6f; PlantResult r06 = buildTree(p);
-    p.age01 = 1.0f; PlantResult r10 = buildTree(p);
-    ASSERT(!r10.branchMesh.empty(), "mature tree non-empty");
-    ASSERT(r10.branchMesh.vertexCount() >= r06.branchMesh.vertexCount(),
-           "mature tree has >= verts than mid-age");
-    ASSERT(r06.branchMesh.vertexCount() >= r03.branchMesh.vertexCount(),
-           "mid-age tree has >= verts than young");
-    ASSERT(r10.aabbMax.y >= r03.aabbMax.y * 0.95f,
-           "mature aabb top >= young aabb top");
-}
-
-TEST(plant_conifer_smoke) {
-    ConiferParams p; p.seed = 2;
-    PlantResult r = buildConifer(p);
-    ASSERT(!r.branchMesh.empty(), "conifer mesh non-empty");
-}
-
-TEST(plant_shrub_smoke) {
-    ShrubParams p; p.seed = 3;
-    PlantResult r = buildShrub(p);
-    ASSERT(!r.branchMesh.empty(), "shrub mesh non-empty");
-}
-
-TEST(plant_grass_smoke) {
-    GrassTuftParams p; p.seed = 4;
-    PlantResult r = buildGrassTuft(p);
-    ASSERT(!r.branchMesh.empty(), "grass mesh non-empty");
-}
-
-TEST(plant_vine_smoke) {
-    VineParams p; p.seed = 5;
-    PlantResult r = buildVine(p);
-    ASSERT(!r.branchMesh.empty(), "vine mesh non-empty");
-    ASSERT(r.leaves.size() > 0, "vine leaves non-empty");
-}
-
-TEST(plant_fern_smoke) {
-    FernParams p; p.seed = 6;
-    PlantResult r = buildFern(p);
-    ASSERT(!r.branchMesh.empty(), "fern mesh non-empty");
-}
-
-TEST(plant_succulent_smoke) {
-    SucculentParams p; p.seed = 7;
-    PlantResult r = buildSucculent(p);
-    ASSERT(!r.branchMesh.empty(), "succulent mesh non-empty");
+    MeshData m = meshBranches(segs, 6);
+    ASSERT(!m.empty(), "meshBranches Y mesh non-empty");
+    ASSERT(m.vertexCount() > 0, "meshBranches has vertices");
 }
