@@ -231,9 +231,24 @@ add_library(bromesh STATIC
     src/optimization/meshlets.cpp
     src/optimization/analyze.cpp
     src/optimization/spatial.cpp
+    src/optimization/spatial_hash.cpp
     src/optimization/encode.cpp
     src/optimization/strips.cpp
     src/optimization/progressive.cpp
+
+    # Manipulation (sweep)
+    src/manipulation/sweep.cpp
+
+    # Procedural
+    src/procedural/lsystem.cpp
+    src/procedural/space_colonization.cpp
+    src/procedural/plants/tree.cpp
+    src/procedural/plants/conifer.cpp
+    src/procedural/plants/shrub.cpp
+    src/procedural/plants/grass_tuft.cpp
+    src/procedural/plants/vine.cpp
+    src/procedural/plants/fern.cpp
+    src/procedural/plants/succulent.cpp
 
     # I/O
     src/io/obj.cpp
