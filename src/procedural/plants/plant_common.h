@@ -3,6 +3,7 @@
 // Internal helpers shared by plant builders. Not part of the public API.
 
 #include "bromesh/manipulation/merge.h"
+#include "bromesh/manipulation/normals.h"
 #include "bromesh/manipulation/sweep.h"
 #include "bromesh/mesh_data.h"
 #include "bromesh/procedural/plants/plant_result.h"
@@ -37,34 +38,50 @@ inline std::vector<Vec2> diamondProfile(float halfWidth, float halfThickness) {
 }
 
 /// Mesh a single tapered branch segment as a 2-ring sweep.
-inline MeshData meshBranchSweep(Vec3 a, Vec3 b, float ra, float rb, int sides) {
+inline MeshData meshBranchSweep(Vec3 a, Vec3 b, float ra, float rb, int sides,
+                                bool capStart, bool capEnd) {
     MeshData m;
     if (vdist2(a, b) < 1e-12f) return m;
     auto profile = circleProfile(sides, 1.0f);
     SweepOptions opts;
     opts.closeProfile = true;
-    opts.capStart = false;
-    opts.capEnd = false;
+    opts.capStart = capStart;
+    opts.capEnd = capEnd;
     opts.miterJoints = false;
     opts.profileScale = { ra, rb };
     return sweep(profile, { a, b }, opts);
 }
 
-/// Mesh an entire branch tree as one merged mesh. Each segment is a small
-/// 2-ring tube; vertex welding between siblings is left to the caller.
+/// Mesh an entire branch tree as one merged mesh. Adjacent segments share
+/// joint radii (child's start radius == parent's end radius == parent's
+/// stored radius), so siblings meet exactly at their common parent. Terminal
+/// segments are capped; interior joints are left open since their successors
+/// fill the gap.
 inline MeshData meshBranches(const std::vector<BranchSegment>& segs, int sides) {
+    std::vector<int> childCount(segs.size(), 0);
+    for (const auto& s : segs) {
+        if (s.parent >= 0 && static_cast<size_t>(s.parent) < childCount.size())
+            ++childCount[s.parent];
+    }
     std::vector<MeshData> parts;
     parts.reserve(segs.size());
-    for (const BranchSegment& s : segs) {
+    for (size_t i = 0; i < segs.size(); ++i) {
+        const BranchSegment& s = segs[i];
         if (vdist2(s.from, s.to) < 1e-12f) continue;
-        // Parent's outgoing radius for a smoother taper.
-        float ra = s.radius > 0.0f ? s.radius : 0.02f;
-        float rb = ra * 0.85f;
-        MeshData part = meshBranchSweep(s.from, s.to, ra, rb, sides);
+        float pr = (s.parent >= 0 && static_cast<size_t>(s.parent) < segs.size())
+                 ? segs[s.parent].radius : 0.0f;
+        float ra = pr > 0.0f ? pr : (s.radius > 0.0f ? s.radius : 0.02f);
+        float rb = s.radius > 0.0f ? s.radius : ra;
+        bool terminal = (childCount[i] == 0);
+        MeshData part = meshBranchSweep(s.from, s.to, ra, rb, sides,
+                                        /*capStart*/ false,
+                                        /*capEnd*/ terminal);
         if (!part.empty()) parts.push_back(std::move(part));
     }
     if (parts.empty()) return {};
-    return mergeMeshes(parts);
+    MeshData merged = mergeMeshes(parts);
+    bromesh::computeNormals(merged);
+    return merged;
 }
 
 inline void updateAabb(Vec3& mn, Vec3& mx, Vec3 p) {
