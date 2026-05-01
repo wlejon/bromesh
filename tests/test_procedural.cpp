@@ -235,7 +235,13 @@ TEST(plant_tree_smoke) {
     p.attractorCount = 200;
     PlantResult r = buildTree(p);
     ASSERT(!r.branchMesh.empty(), "tree mesh non-empty");
-    ASSERT(r.leaves.size() >= 1, "at least one leaf");
+    // Canopy must actually grow. Trunk-only output (which produces exactly
+    // one terminal leaf at the trunk tip) is a regression: it means
+    // colonization couldn't reach the attractor cloud.
+    ASSERT(r.leaves.size() >= 10, "canopy grew (>=10 leaves)");
+    // AABB top must be near the requested height. Trunk-only output stops
+    // around 0.45 * height where the pre-grown trunk ends.
+    ASSERT(r.aabbMax.y >= p.height * 0.7f, "canopy reaches >=70% of height");
     ASSERT(r.aabbMin.x < r.aabbMax.x, "aabb x sane");
     ASSERT(r.aabbMin.y < r.aabbMax.y, "aabb y sane");
     ASSERT(r.aabbMin.z < r.aabbMax.z, "aabb z sane");

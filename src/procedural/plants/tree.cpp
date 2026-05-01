@@ -35,7 +35,7 @@ PlantResult buildTree(const TreeParams& params) {
         } while (vdot(p, p) > 1.0f);
         Vec3 a = {
             p.x * CR,
-            canopyBase + (uni(rng) * 0.5f + 0.5f) * (canopyTop - canopyBase),
+            canopyBase + uni(rng) * (canopyTop - canopyBase),
             p.z * CR
         };
         attractors.push_back(a);
