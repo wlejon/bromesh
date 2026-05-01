@@ -145,10 +145,31 @@ PlantResult buildTree(const TreeParams& params) {
     // Leaves: terminal-after-trim segments only.
     std::vector<int> childCount(kept.size(), 0);
     for (const auto& s : kept) if (s.parent >= 0) ++childCount[s.parent];
-    const float leafScaleBase = std::max(0.05f, H * 0.04f);
+    // Leaf scale scaled with tree size — large enough that the alpha-cutout
+    // atlas survives mipmap LOD averaging at typical viewing distances.
+    const float leafScaleBase = std::max(0.15f, H * 0.10f);
+    // Dedupe terminal positions: space-colonization can leave multiple
+    // near-coincident terminal segments converging on the same attractor.
+    // Drop near-duplicates so we don't stack 10 leaf quads on one point.
+    // Light-touch dedup: only collapse leaves that are essentially
+    // coincident (well under killRadius). Aggressive dedup empties the
+    // canopy because terminal density is what makes a tree look full.
+    const float dedupeR = std::max(0.001f, opts.killRadius * 0.15f);
+    const float dedupeR2 = dedupeR * dedupeR;
+    std::vector<Vec3> placedPositions;
+    placedPositions.reserve(kept.size());
     for (size_t i = 0; i < kept.size(); ++i) {
         if (childCount[i] != 0) continue;
         if (kept[i].parent == -1) continue;
+        // Skip degenerate (zero-length) terminals — they produce a leaf at
+        // their parent's tip with no orientation information.
+        if (vdist2(kept[i].from, kept[i].to) < 1e-8f) continue;
+        bool dup = false;
+        for (const Vec3& q : placedPositions) {
+            if (vdist2(q, kept[i].to) < dedupeR2) { dup = true; break; }
+        }
+        if (dup) continue;
+        placedPositions.push_back(kept[i].to);
         LeafInstance L;
         L.position = kept[i].to;
         Vec3 fwd = vnormOr(kept[i].to - kept[i].from, {0, 1, 0});
