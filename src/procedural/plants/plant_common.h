@@ -52,32 +52,76 @@ inline MeshData meshBranchSweep(Vec3 a, Vec3 b, float ra, float rb, int sides,
     return sweep(profile, { a, b }, opts);
 }
 
-/// Mesh an entire branch tree as one merged mesh. Adjacent segments share
-/// joint radii (child's start radius == parent's end radius == parent's
-/// stored radius), so siblings meet exactly at their common parent. Terminal
-/// segments are capped; interior joints are left open since their successors
-/// fill the gap.
+/// Mesh an entire branch tree as one merged mesh. Each maximal chain of
+/// single-child segments is meshed as one multi-ring sweep so consecutive
+/// rings share parallel-transport orientation and vertex positions — no
+/// per-segment ring discontinuities. New chains begin at roots and forks;
+/// chain endpoints are capped only when terminal (leaf), so forks blend via
+/// the parent's continuing radius rather than a flat disc.
 inline MeshData meshBranches(const std::vector<BranchSegment>& segs, int sides) {
-    std::vector<int> childCount(segs.size(), 0);
-    for (const auto& s : segs) {
-        if (s.parent >= 0 && static_cast<size_t>(s.parent) < childCount.size())
-            ++childCount[s.parent];
+    if (segs.empty()) return {};
+
+    std::vector<std::vector<int>> children(segs.size());
+    for (size_t i = 0; i < segs.size(); ++i) {
+        int p = segs[i].parent;
+        if (p >= 0 && static_cast<size_t>(p) < segs.size()) {
+            children[p].push_back(static_cast<int>(i));
+        }
     }
+
+    // A segment starts a new chain iff its parent is a root or a fork (i.e.
+    // does not have exactly one child). Otherwise it continues the parent's
+    // chain.
+    auto isChainStart = [&](int i) -> bool {
+        int p = segs[i].parent;
+        if (p < 0) return true;
+        return children[p].size() != 1;
+    };
+
+    auto profile = circleProfile(sides, 1.0f);
     std::vector<MeshData> parts;
     parts.reserve(segs.size());
+
     for (size_t i = 0; i < segs.size(); ++i) {
-        const BranchSegment& s = segs[i];
-        if (vdist2(s.from, s.to) < 1e-12f) continue;
-        float pr = (s.parent >= 0 && static_cast<size_t>(s.parent) < segs.size())
-                 ? segs[s.parent].radius : 0.0f;
-        float ra = pr > 0.0f ? pr : (s.radius > 0.0f ? s.radius : 0.02f);
-        float rb = s.radius > 0.0f ? s.radius : ra;
-        bool terminal = (childCount[i] == 0);
-        MeshData part = meshBranchSweep(s.from, s.to, ra, rb, sides,
-                                        /*capStart*/ false,
-                                        /*capEnd*/ terminal);
+        if (!isChainStart(static_cast<int>(i))) continue;
+
+        std::vector<Vec3> path;
+        std::vector<float> radii;
+
+        // Initial ring sits at the chain's start point with the parent's
+        // stored end radius (so a child cylinder begins exactly where the
+        // parent's continuing radius leaves off). Falls back to the chain's
+        // own first radius for true roots.
+        int p0 = segs[i].parent;
+        float r0 = (p0 >= 0 && segs[p0].radius > 0.0f) ? segs[p0].radius
+                  : (segs[i].radius > 0.0f ? segs[i].radius : 0.02f);
+        path.push_back(segs[i].from);
+        radii.push_back(r0);
+
+        int cur = static_cast<int>(i);
+        while (true) {
+            const BranchSegment& s = segs[cur];
+            if (vdist2(s.from, s.to) > 1e-12f) {
+                path.push_back(s.to);
+                radii.push_back(s.radius > 0.0f ? s.radius : radii.back());
+            }
+            if (children[cur].size() != 1) break;
+            cur = children[cur][0];
+        }
+
+        if (path.size() < 2) continue;
+
+        SweepOptions opts;
+        opts.closeProfile = true;
+        opts.capStart = (segs[i].parent < 0);
+        opts.capEnd   = children[cur].empty();
+        opts.miterJoints = false;
+        opts.profileScale = radii;
+
+        MeshData part = sweep(profile, path, opts);
         if (!part.empty()) parts.push_back(std::move(part));
     }
+
     if (parts.empty()) return {};
     MeshData merged = mergeMeshes(parts);
     bromesh::computeNormals(merged);
@@ -103,9 +147,28 @@ inline void aabbFromMesh(const MeshData& m, Vec3& mn, Vec3& mx) {
     }
 }
 
+/// Build a leaf orientation from the branch direction at the leaf's
+/// attachment. The leaf mesh is assumed to lie in the local XZ plane with
+/// its surface normal as local +Y (the plane primitive convention). We want:
+///   - leaf surface facing up-and-outward (catching sun), not edge-on
+///   - leaf "stem" axis (local +Z) aligned with the branch tangent
+/// so the resulting normal is the bisector of branch-direction and world-up.
+/// `quatFromTo({0,1,0}, fwd)` (the prior behaviour) instead pointed the
+/// surface normal *along* the branch — leaves on horizontal branches went
+/// edge-on to any horizontal viewer and effectively disappeared.
 inline Quat quatLookDir(Vec3 forward) {
     Vec3 f = vnormOr(forward, {0, 1, 0});
-    return quatFromTo({0, 1, 0}, f);
+    Vec3 up{0, 1, 0};
+    // Surface normal: bisector of branch direction and world up. Falls back
+    // to up when branch is straight up (degenerate bisector).
+    Vec3 n = vnormOr(f + up, up);
+    // First, rotate local +Y to the desired normal.
+    Quat qN = quatFromTo(up, n);
+    // Now spin around the new normal so local +Z aligns with branch tangent.
+    Vec3 zAfter = quatRotate(qN, {0, 0, 1});
+    Vec3 stemTarget = vnormOr(f - n * vdot(f, n), zAfter);
+    Quat qS = quatFromTo(zAfter, stemTarget);
+    return quatMul(qS, qN);
 }
 
 } // namespace plant_internal
