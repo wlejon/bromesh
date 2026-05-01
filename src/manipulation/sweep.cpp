@@ -139,11 +139,11 @@ MeshData sweep(const std::vector<Vec2>& profile,
             uint32_t c = sideIdx(i + 1, p);
             uint32_t d = sideIdx(i + 1, pNext);
             out.indices.push_back(a);
-            out.indices.push_back(c);
-            out.indices.push_back(b);
             out.indices.push_back(b);
             out.indices.push_back(c);
+            out.indices.push_back(b);
             out.indices.push_back(d);
+            out.indices.push_back(c);
         }
     }
 
