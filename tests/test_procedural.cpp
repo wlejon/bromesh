@@ -6,6 +6,7 @@
 #include "bromesh/procedural/lsystem.h"
 #include "bromesh/procedural/space_colonization.h"
 #include "bromesh/procedural/branches.h"
+#include "bromesh/procedural/leaf_scatter.h"
 #include "bromesh/procedural/plants.h"
 
 #include <algorithm>
@@ -350,4 +351,183 @@ TEST(bezier_sweep_rejects_bad_input) {
     std::vector<Vec3> bad5 = {{0,0,0},{0,1,0},{0,2,0},{0,3,0},{0,4,0}};
     MeshData m2 = bezierSweep(bad5, profile);
     ASSERT(m2.empty(), "bezier rejects malformed segment count");
+}
+
+// --- Leaf scatter ----------------------------------------------------------
+
+static std::vector<BranchSegment> yForkSegments() {
+    // Same shape as mesh_branches_smoke: root marker, trunk, two children.
+    std::vector<BranchSegment> segs;
+    BranchSegment root;
+    root.parent = -1; root.from = {0, 0, 0}; root.to = {0, 0, 0};
+    root.radius = 0.10f; root.depth = 0;
+    segs.push_back(root);
+    BranchSegment trunk;
+    trunk.parent = 0; trunk.from = {0, 0, 0}; trunk.to = {0, 1, 0};
+    trunk.radius = 0.08f; trunk.depth = 1;
+    segs.push_back(trunk);
+    BranchSegment left;
+    left.parent = 1; left.from = {0, 1, 0}; left.to = {-0.5f, 1.7f, 0};
+    left.radius = 0.02f; left.depth = 2;
+    segs.push_back(left);
+    BranchSegment right;
+    right.parent = 1; right.from = {0, 1, 0}; right.to = {0.5f, 1.7f, 0};
+    right.radius = 0.02f; right.depth = 2;
+    segs.push_back(right);
+    return segs;
+}
+
+TEST(leaf_scatter_filters_by_radius_and_depth) {
+    auto segs = yForkSegments();
+    LeafPlacementOptions o;
+    o.maxRadius = 0.05f;   // excludes trunk (0.08), root marker (0.10)
+    o.minDepth  = 1;        // excludes root marker (depth 0)
+    o.perUnitLength = 50.0f;
+    o.seed = 1;
+    LeafPlacements pl = placeLeavesOnBranches(segs, o);
+    ASSERT(pl.count() > 0, "produced leaves on twigs");
+    // Every accepted leaf must be on a thin enough branch.
+    bool ok = true;
+    for (size_t i = 0; i < pl.count(); ++i) {
+        if (pl.branchRadius[i] > 0.05f + 1e-6f) { ok = false; break; }
+        if (pl.branchDepth[i] < 1) { ok = false; break; }
+    }
+    ASSERT(ok, "all accepted leaves respect filters");
+
+    // With a tighter maxRadius excluding the twigs too, count -> 0.
+    o.maxRadius = 0.01f;
+    LeafPlacements none = placeLeavesOnBranches(segs, o);
+    ASSERT(none.count() == 0, "no leaves when nothing passes the filter");
+}
+
+TEST(leaf_scatter_density_scales_with_length) {
+    // Single segment, depth 1, thin enough to pass default filter.
+    auto makeSeg = [](float length) {
+        std::vector<BranchSegment> segs;
+        BranchSegment root;
+        root.parent = -1; root.from = {0,0,0}; root.to = {0,0,0};
+        root.radius = 0.0f; root.depth = 0;
+        segs.push_back(root);
+        BranchSegment s;
+        s.parent = 0; s.from = {0,0,0}; s.to = {0, length, 0};
+        s.radius = 0.02f; s.depth = 1;
+        segs.push_back(s);
+        return segs;
+    };
+    LeafPlacementOptions o;
+    o.perUnitLength = 100.0f;
+    o.seed = 7;
+    o.dedupRadius = 0.0f;
+    o.tiltJitter = 0.0f;
+    o.rollJitter = 0.0f;
+    o.scaleJitter = 0.0f;
+
+    auto a = placeLeavesOnBranches(makeSeg(1.0f), o);
+    auto b = placeLeavesOnBranches(makeSeg(2.0f), o);
+    ASSERT(a.count() > 0 && b.count() > 0, "both produced leaves");
+    // Allow ±20% slop from stochastic rounding.
+    float ratio = static_cast<float>(b.count()) / static_cast<float>(a.count());
+    ASSERT(ratio > 1.6f && ratio < 2.4f, "doubling length roughly doubles leaf count");
+}
+
+TEST(leaf_scatter_deterministic) {
+    auto segs = yForkSegments();
+    LeafPlacementOptions o;
+    o.maxRadius = 0.05f;
+    o.perUnitLength = 30.0f;
+    o.seed = 123;
+    LeafPlacements a = placeLeavesOnBranches(segs, o);
+    LeafPlacements b = placeLeavesOnBranches(segs, o);
+    ASSERT(a.count() == b.count(), "same seed: same leaf count");
+    bool same = (a.transforms.size() == b.transforms.size());
+    if (same) {
+        for (size_t i = 0; i < a.transforms.size(); ++i) {
+            if (a.transforms[i] != b.transforms[i]) { same = false; break; }
+        }
+    }
+    ASSERT(same, "same seed: identical transforms");
+
+    o.seed = 456;
+    LeafPlacements c = placeLeavesOnBranches(segs, o);
+    bool different = (c.transforms.size() != a.transforms.size());
+    if (!different && !a.transforms.empty()) {
+        for (size_t i = 0; i < a.transforms.size(); ++i) {
+            if (std::fabs(c.transforms[i] - a.transforms[i]) > 1e-5f) {
+                different = true; break;
+            }
+        }
+    }
+    ASSERT(different, "different seed: diverges");
+}
+
+TEST(leaf_scatter_dedup_enforces_spacing) {
+    // One thin segment, packed densely, with dedup on. Origins must respect spacing.
+    std::vector<BranchSegment> segs;
+    BranchSegment root;
+    root.parent = -1; root.from = {0,0,0}; root.to = {0,0,0};
+    root.radius = 0.0f; root.depth = 0;
+    segs.push_back(root);
+    BranchSegment s;
+    s.parent = 0; s.from = {0,0,0}; s.to = {0, 1.0f, 0};
+    s.radius = 0.02f; s.depth = 1;
+    segs.push_back(s);
+
+    LeafPlacementOptions o;
+    o.perUnitLength = 200.0f;
+    o.dedupRadius = 0.05f;
+    o.seed = 99;
+    LeafPlacements pl = placeLeavesOnBranches(segs, o);
+    ASSERT(pl.count() > 0, "dedup leaves something behind");
+    // Brute-force check spacing.
+    bool ok = true;
+    for (size_t i = 0; i < pl.count() && ok; ++i) {
+        Vec3 pi{pl.transforms[i*16+12], pl.transforms[i*16+13], pl.transforms[i*16+14]};
+        for (size_t j = i + 1; j < pl.count(); ++j) {
+            Vec3 pj{pl.transforms[j*16+12], pl.transforms[j*16+13], pl.transforms[j*16+14]};
+            if (vdist(pi, pj) < o.dedupRadius - 1e-5f) { ok = false; break; }
+        }
+    }
+    ASSERT(ok, "all leaf origins respect dedupRadius");
+}
+
+TEST(leaf_scatter_smoke_y_fork) {
+    auto segs = yForkSegments();
+    MeshData leaf = leafCard(LeafShape::Oval, {});
+    LeafPlacementOptions o;
+    o.maxRadius = 0.05f;
+    o.perUnitLength = 20.0f;
+    o.baseScale = 0.3f;
+    o.seed = 42;
+    MeshData m = scatterLeaves(segs, leaf, o);
+    ASSERT(!m.empty(), "scatterLeaves non-empty");
+    ASSERT(m.hasNormals(), "scattered leaves have normals");
+    ASSERT(m.hasUVs(), "scattered leaves have UVs");
+    ASSERT(m.hasColors(), "scattered leaves have colors (windBend)");
+    ASSERT(allFinite(m.positions), "positions finite");
+    ASSERT(allFinite(m.normals), "normals finite");
+    // Every triangle is a unique-vertex triangle.
+    bool degen = false;
+    for (size_t t = 0; t < m.triangleCount(); ++t) {
+        uint32_t a = m.indices[t*3], b = m.indices[t*3+1], c = m.indices[t*3+2];
+        if (a == b || b == c || a == c) { degen = true; break; }
+    }
+    ASSERT(!degen, "no degenerate triangles in scattered output");
+}
+
+TEST(leaf_scatter_terminal_only) {
+    auto segs = yForkSegments();
+    LeafPlacementOptions o;
+    o.maxRadius = 1.0f;     // pass everything by radius
+    o.minDepth = 0;          // and by depth
+    o.terminalOnly = true;   // only chain tips
+    o.perUnitLength = 30.0f;
+    o.seed = 5;
+    LeafPlacements pl = placeLeavesOnBranches(segs, o);
+    ASSERT(pl.count() > 0, "terminal-only still produces leaves on the two tips");
+    bool ok = true;
+    for (size_t i = 0; i < pl.count(); ++i) {
+        // Tips are at depth 2 in our Y-fork.
+        if (pl.branchDepth[i] != 2) { ok = false; break; }
+    }
+    ASSERT(ok, "terminalOnly selects only the Y-fork tips");
 }
