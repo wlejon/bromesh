@@ -36,7 +36,11 @@ MeshData leafCard(LeafShape shape, const LeafCardOptions& opts) {
     int lcount = lseg + 1;
 
     float u0, v0, u1, v1;
-    atlasCell(shape, u0, v0, u1, v1);
+    if (opts.fullUV) {
+        u0 = 0.0f; v0 = 0.0f; u1 = 1.0f; v1 = 1.0f;
+    } else {
+        atlasCell(shape, u0, v0, u1, v1);
+    }
 
     MeshData m;
     m.positions.reserve(wcount * lcount * 3);

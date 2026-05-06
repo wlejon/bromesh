@@ -40,6 +40,11 @@ struct LeafCardOptions {
     int widthSegments = 4;
     /// Number of segments along length (>= 1). Bend looks smooth at >= 8.
     int lengthSegments = 8;
+    /// If true, UVs span the full [0,1] range instead of selecting a sub-cell
+    /// of the 4x4 atlas. Use when the consumer binds a per-leaf texture
+    /// (procedural petal/leaf with built-in alpha mask) rather than a packed
+    /// atlas. The `shape` parameter is ignored when this is true.
+    bool fullUV = false;
 };
 
 /// Build a low-poly leaf or petal card with UVs sampled from a 4x4 atlas.
