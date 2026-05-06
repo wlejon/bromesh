@@ -221,6 +221,18 @@ MeshData flower(const FlowerOptions& opts) {
             float angle = twist + 2.0f * 3.14159265358979323846f
                 * static_cast<float>(p) / static_cast<float>(petalCount);
             MeshData petal = leafCard(opts.petalShape, lo);
+            // leafCard curls the tip toward +Y for positive bend, which
+            // puts its +Y normal on the INSIDE of the curl. A flower
+            // viewed from outside should show the OUTSIDE (convex side)
+            // of each petal, so reverse triangle winding and negate every
+            // normal. The petal silhouette is unchanged; only which face
+            // is "front" flips.
+            for (size_t k = 0; k < petal.normals.size(); ++k) {
+                petal.normals[k] = -petal.normals[k];
+            }
+            for (size_t t = 0; t < petal.triangleCount(); ++t) {
+                std::swap(petal.indices[t * 3 + 1], petal.indices[t * 3 + 2]);
+            }
             // Rotate so the petal radiates outward in XZ around the Y axis,
             // pointed slightly upward via a small pre-tilt around X.
             // Pre-tilt: rotate around X so the petal lifts off the ground.
