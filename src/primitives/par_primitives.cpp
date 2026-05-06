@@ -143,7 +143,27 @@ MeshData cone(float radius, float height, int slices, int stacks, bool capBase) 
 
 MeshData disc(float radius, int slices) {
 #ifdef BROMESH_HAS_PAR_SHAPES
-    return fromParShapes(par_shapes_create_parametric_disk(slices, 1), radius);
+    // par_shapes emits the disk in the XY plane with normal +Z. Bro
+    // convention is Y-up: leafCard, cone-base disc, etc. all live in the
+    // XZ plane with normal +Y. Swap Y/Z so callers don't have to rotate.
+    MeshData m = fromParShapes(par_shapes_create_parametric_disk(slices, 1), radius);
+    if (m.empty()) return m;
+    for (size_t i = 0; i < m.vertexCount(); ++i) {
+        std::swap(m.positions[i * 3 + 1], m.positions[i * 3 + 2]);
+    }
+    if (!m.normals.empty()) {
+        for (size_t i = 0; i < m.vertexCount(); ++i) {
+            m.normals[i * 3 + 0] = 0.0f;
+            m.normals[i * 3 + 1] = 1.0f;
+            m.normals[i * 3 + 2] = 0.0f;
+        }
+    }
+    // Swapping Y/Z flips the triangle winding from +Z facing to -Y facing.
+    // Reverse each triangle so it faces +Y (matching the new normal).
+    for (size_t t = 0; t < m.triangleCount(); ++t) {
+        std::swap(m.indices[t * 3 + 1], m.indices[t * 3 + 2]);
+    }
+    return m;
 #else
     (void)radius; (void)slices;
     return {};

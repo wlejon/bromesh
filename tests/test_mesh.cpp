@@ -1737,6 +1737,22 @@ TEST(par_disc) {
     auto mesh = bromesh::disc(1.5f, 16);
     ASSERT(!mesh.empty(), "par_disc: should be non-empty");
     ASSERT(mesh.vertexCount() > 0, "par_disc: should have vertices");
+    // Disc lies in the XZ plane (Y is the normal — bro's Y-up convention).
+    float maxAbsY = 0.0f, maxAbsX = 0.0f, maxAbsZ = 0.0f;
+    for (size_t i = 0; i < mesh.vertexCount(); ++i) {
+        maxAbsX = std::max(maxAbsX, std::fabs(mesh.positions[i * 3 + 0]));
+        maxAbsY = std::max(maxAbsY, std::fabs(mesh.positions[i * 3 + 1]));
+        maxAbsZ = std::max(maxAbsZ, std::fabs(mesh.positions[i * 3 + 2]));
+    }
+    ASSERT(maxAbsY < 1e-5f, "par_disc: every vertex sits in the XZ plane");
+    ASSERT(std::fabs(maxAbsX - 1.5f) < 1e-4f, "par_disc: X extent matches radius");
+    ASSERT(std::fabs(maxAbsZ - 1.5f) < 1e-4f, "par_disc: Z extent matches radius");
+    if (mesh.hasNormals()) {
+        for (size_t i = 0; i < mesh.vertexCount(); ++i) {
+            ASSERT(mesh.normals[i * 3 + 1] > 0.99f,
+                   "par_disc: normals point +Y");
+        }
+    }
 }
 
 TEST(par_rock) {
