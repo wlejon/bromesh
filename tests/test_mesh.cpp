@@ -1701,10 +1701,28 @@ TEST(par_geodesic_sphere) {
 }
 
 TEST(par_cone) {
-    auto mesh = bromesh::cone(1.0f, 2.0f, 16, 4);
+    const float r = 1.0f, h = 2.0f;
+    auto mesh = bromesh::cone(r, h, 16, 4);
     ASSERT(!mesh.empty(), "par_cone: should be non-empty");
     ASSERT(mesh.vertexCount() > 10, "par_cone: should have vertices");
     ASSERT(mesh.triangleCount() > 10, "par_cone: should have triangles");
+
+    // Canonical layout: base disc at Y=0 with radius `r`, apex at Y=`h`.
+    float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f, minZ = 1e9f, maxZ = -1e9f;
+    for (size_t i = 0; i < mesh.vertexCount(); ++i) {
+        float x = mesh.positions[i * 3 + 0];
+        float y = mesh.positions[i * 3 + 1];
+        float z = mesh.positions[i * 3 + 2];
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    ASSERT(std::fabs(minY) < 1e-4f, "par_cone: base sits at Y=0");
+    ASSERT(std::fabs(maxY - h) < 1e-4f, "par_cone: apex sits at Y=height");
+    ASSERT(std::fabs(maxX - r) < 1e-4f && std::fabs(minX + r) < 1e-4f,
+           "par_cone: X spans [-radius, radius]");
+    ASSERT(std::fabs(maxZ - r) < 1e-4f && std::fabs(minZ + r) < 1e-4f,
+           "par_cone: Z spans [-radius, radius]");
 }
 
 TEST(par_disc) {

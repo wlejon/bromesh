@@ -14,7 +14,9 @@ MeshData dodecahedron();
 MeshData octahedron();
 MeshData tetrahedron();
 
-/// Generate a cone along the Y axis.
+/// Generate a cone along the Y axis. The base disc sits at Y=0 with radius
+/// `radius`; the apex sits at Y=`height`. Lateral surface only — there is
+/// no base cap.
 /// slices: number of radial divisions. stacks: number of vertical divisions.
 MeshData cone(float radius, float height, int slices = 16, int stacks = 4);
 
@@ -24,6 +26,24 @@ MeshData disc(float radius, int slices = 16);
 /// Generate a procedural rock shape.
 /// seed: random seed. nsubdivisions: detail level (0-3).
 MeshData rock(float radius, int seed = 42, int nsubdivisions = 2);
+
+/// Noise-displaced sphere with non-uniform scale and an optional translation
+/// baked into the geometry — saves a `.scale().translate()` round-trip when
+/// stamping many "canopy blob"-style shapes. Equivalent to:
+///   rock(radius, seed, nsubdivisions)
+///     .scale(scaleX, scaleY, scaleZ)
+///     .translate(centerX, centerY, centerZ)
+/// but normals are recomputed once at the end and the intermediate copies
+/// are skipped.
+MeshData blob(float radius,
+              int   seed           = 42,
+              int   nsubdivisions  = 2,
+              float scaleX         = 1.0f,
+              float scaleY         = 1.0f,
+              float scaleZ         = 1.0f,
+              float centerX        = 0.0f,
+              float centerY        = 0.0f,
+              float centerZ        = 0.0f);
 
 /// Generate a trefoil knot.
 MeshData trefoilKnot(float radius, int slices = 64, int stacks = 16);

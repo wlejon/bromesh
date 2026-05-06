@@ -1,4 +1,5 @@
 #include "bromesh/primitives/par_primitives.h"
+#include "bromesh/manipulation/normals.h"
 
 #ifdef BROMESH_HAS_PAR_SHAPES
 #include <par_shapes.h>
@@ -87,15 +88,17 @@ MeshData cone(float radius, float height, int slices, int stacks) {
     auto* pm = par_shapes_create_cone(slices, stacks);
     if (!pm) return {};
 
-    // par_shapes cone is unit-sized: radius 1, height 1 along Z.
-    // Scale and orient to our convention (along Y axis).
+    // par_shapes cone: X,Y are radial in [-1,1], Z is height in [0,1].
+    // Remap to bro convention: base disc at Y=0 with `radius`, apex at
+    // Y=`height`. par_shapes' radial pair (X,Y) maps to (X,Z); par_shapes'
+    // Z (height) maps to Y.
     for (int i = 0; i < pm->npoints; ++i) {
-        float x = pm->points[i * 3 + 0] * radius;
-        float z_orig = pm->points[i * 3 + 2] * radius;
-        float y = pm->points[i * 3 + 1] * height;
-        pm->points[i * 3 + 0] = x;
-        pm->points[i * 3 + 1] = y;
-        pm->points[i * 3 + 2] = z_orig;
+        float pX = pm->points[i * 3 + 0]; // radial
+        float pY = pm->points[i * 3 + 1]; // radial
+        float pZ = pm->points[i * 3 + 2]; // height [0,1]
+        pm->points[i * 3 + 0] = pX * radius;
+        pm->points[i * 3 + 1] = pZ * height;
+        pm->points[i * 3 + 2] = pY * radius;
     }
 
     // Recompute normals after transform
@@ -124,6 +127,24 @@ MeshData rock(float radius, int seed, int nsubdivisions) {
     (void)radius; (void)seed; (void)nsubdivisions;
     return {};
 #endif
+}
+
+MeshData blob(float radius, int seed, int nsubdivisions,
+              float scaleX, float scaleY, float scaleZ,
+              float centerX, float centerY, float centerZ) {
+    MeshData m = rock(radius, seed, nsubdivisions);
+    if (m.empty()) return m;
+    const bool nonUniform =
+        scaleX != 1.0f || scaleY != 1.0f || scaleZ != 1.0f;
+    for (size_t i = 0; i < m.vertexCount(); ++i) {
+        m.positions[i * 3 + 0] = m.positions[i * 3 + 0] * scaleX + centerX;
+        m.positions[i * 3 + 1] = m.positions[i * 3 + 1] * scaleY + centerY;
+        m.positions[i * 3 + 2] = m.positions[i * 3 + 2] * scaleZ + centerZ;
+    }
+    // Non-uniform scale invalidates incoming normals; uniform scale + pure
+    // translation preserve them.
+    if (nonUniform) computeNormals(m);
+    return m;
 }
 
 MeshData trefoilKnot(float radius, int slices, int stacks) {
