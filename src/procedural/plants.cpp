@@ -4,10 +4,12 @@
 #include "bromesh/manipulation/sweep.h"
 #include "bromesh/manipulation/transform.h"
 #include "bromesh/primitives/primitives.h"
+#include "bromesh/procedural/branches.h"
 #include "bromesh/procedural/vec_math.h"
 
 #include <algorithm>
 #include <cmath>
+#include <random>
 
 namespace bromesh {
 
@@ -281,6 +283,35 @@ MeshData bladeStrip(const std::vector<Vec3>& path,
     sopts.profileScale = opts.profileScale;
     sopts.twist        = opts.twist;
     return sweep(profile, path, sopts);
+}
+
+TreeResult tree(const TreeOptions& opts) {
+    TreeResult out;
+    if (opts.attractorCount <= 0 || opts.canopyRadius <= 0.0f) return out;
+
+    // Uniformly sample attractors inside the canopy sphere via rejection.
+    std::mt19937 rng((uint32_t)opts.seed);
+    std::uniform_real_distribution<float> uni(-1.0f, 1.0f);
+    std::vector<Vec3> attractors;
+    attractors.reserve((size_t)opts.attractorCount);
+    while ((int)attractors.size() < opts.attractorCount) {
+        float x = uni(rng), y = uni(rng), z = uni(rng);
+        if (x*x + y*y + z*z > 1.0f) continue;
+        attractors.push_back({
+            opts.canopyCenter.x + x * opts.canopyRadius,
+            opts.canopyCenter.y + y * opts.canopyRadius,
+            opts.canopyCenter.z + z * opts.canopyRadius,
+        });
+    }
+
+    std::vector<Vec3> seeds = { opts.base };
+    Vec3 initDir = vnormOr(opts.canopyCenter - opts.base, Vec3{0.0f, 1.0f, 0.0f});
+    out.segments = spaceColonize(attractors, seeds, initDir, opts.colonize);
+    if (out.segments.empty()) return out;
+
+    thickenBranches(out.segments, opts.leafRadius, opts.pipeExp);
+    out.branches = meshBranches(out.segments, opts.sides);
+    return out;
 }
 
 std::vector<Vec3> bladePath(const BladePathOptions& opts) {

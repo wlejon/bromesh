@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bromesh/mesh_data.h"
+#include "bromesh/procedural/space_colonization.h"
 #include "bromesh/procedural/vec_math.h"
 
 #include <string>
@@ -114,5 +115,37 @@ struct BladePathOptions {
 /// quadratic Bezier whose control point is offset by `bend` on the lateral
 /// axis and `lift` on world +Y. Returns segments+1 points.
 std::vector<Vec3> bladePath(const BladePathOptions& opts = {});
+
+struct TreeOptions {
+    /// Trunk root (single seed point passed to spaceColonize).
+    Vec3 base = {0.0f, 0.0f, 0.0f};
+    /// Centre of the spherical attractor cloud (world space).
+    Vec3 canopyCenter = {0.0f, 4.0f, 0.0f};
+    /// Radius of the spherical attractor cloud.
+    float canopyRadius = 3.0f;
+    /// Attractors sampled uniformly inside the sphere.
+    int attractorCount = 200;
+    /// Cross-section ring resolution for branch tubes.
+    int sides = 8;
+    /// thickenBranches: tip radius assigned to terminal segments.
+    float leafRadius = 0.05f;
+    /// thickenBranches: pipe-model exponent.
+    float pipeExp = 2.5f;
+    /// Forwarded to spaceColonize. Default initialDirection is (0,1,0).
+    SpaceColonizationOptions colonize = {};
+    /// Deterministic seed for the attractor distribution.
+    int seed = 1;
+};
+
+struct TreeResult {
+    std::vector<BranchSegment> segments;
+    MeshData branches;
+};
+
+/// High-level archetype: sample attractors inside a sphere, run space
+/// colonization from `base` toward them, thicken via the pipe model, mesh
+/// the resulting branch tree as one merged tube. Foliage is the caller's
+/// responsibility — pass `result.segments` to `scatterLeaves` if desired.
+TreeResult tree(const TreeOptions& opts);
 
 } // namespace bromesh

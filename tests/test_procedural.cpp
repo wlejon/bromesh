@@ -615,6 +615,56 @@ TEST(blade_path_endpoints) {
     ASSERT(vdist(pts.back(), expectedTip) < 1e-5f, "ends at base + tipDir·length");
 }
 
+TEST(tree_archetype_smoke) {
+    TreeOptions opts;
+    opts.base = {0.0f, 0.0f, 0.0f};
+    opts.canopyCenter = {0.0f, 4.0f, 0.0f};
+    opts.canopyRadius = 2.0f;
+    opts.attractorCount = 80;
+    opts.sides = 6;
+    opts.leafRadius = 0.04f;
+    opts.pipeExp = 2.5f;
+    opts.colonize.attractionRadius = 6.0f;   // base must see canopy attractors
+    opts.colonize.killRadius = 0.3f;
+    opts.colonize.segmentLength = 0.25f;
+    opts.colonize.maxIterations = 300;
+    opts.colonize.tropism = {0.0f, 1.0f, 0.0f};
+    opts.colonize.tropismWeight = 0.4f;
+    opts.seed = 42;
+
+    TreeResult r = tree(opts);
+    ASSERT(!r.segments.empty(), "tree produced segments");
+    ASSERT(!r.branches.empty(), "tree produced a branch mesh");
+    ASSERT(r.branches.hasNormals(), "branch mesh has normals");
+    // First (root) segment should originate at base.
+    ASSERT(vdist(r.segments.front().from, opts.base) < 1e-3f,
+           "root segment starts at base");
+    // Some branch should reach near the canopy.
+    bool reachedCanopy = false;
+    for (const auto& s : r.segments) {
+        if (vdist(s.to, opts.canopyCenter) < opts.canopyRadius * 1.2f) {
+            reachedCanopy = true;
+            break;
+        }
+    }
+    ASSERT(reachedCanopy, "at least one segment reaches the canopy region");
+    ASSERT(allFinite(r.branches.positions), "branch positions finite");
+    ASSERT(allFinite(r.branches.normals), "branch normals finite");
+}
+
+TEST(tree_archetype_deterministic) {
+    TreeOptions opts;
+    opts.canopyCenter = {0.0f, 4.0f, 0.0f};
+    opts.canopyRadius = 2.0f;
+    opts.attractorCount = 50;
+    opts.seed = 7;
+    auto a = tree(opts);
+    auto b = tree(opts);
+    ASSERT(a.segments.size() == b.segments.size(), "deterministic segment count");
+    ASSERT(a.branches.vertexCount() == b.branches.vertexCount(),
+           "deterministic mesh vertex count");
+}
+
 TEST(blade_path_bend_offsets_midpoint) {
     BladePathOptions opts;
     opts.base = {0.0f, 0.0f, 0.0f};
