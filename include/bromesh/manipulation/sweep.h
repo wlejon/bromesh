@@ -32,4 +32,20 @@ MeshData sweep(const std::vector<Vec2>& profile,
                const std::vector<Vec3>& path,
                const SweepOptions& opts = {});
 
+struct TubeOptions {
+    /// Cross-section ring resolution (>= 3).
+    int sides = 8;
+    bool capStart = true;
+    bool capEnd = true;
+    bool miterJoints = true;
+};
+
+/// Sweep a unit circle of `sides` vertices along `path`, scaled per-ring
+/// by `radii`. `radii.size()` must be 0 or 1 (constant) or `path.size()`.
+/// Convenience wrapper over `sweep` for the circular-cross-section case
+/// — branches, vines, stems.
+MeshData tube(const std::vector<Vec3>& path,
+              const std::vector<float>& radii,
+              const TubeOptions& opts = {});
+
 } // namespace bromesh

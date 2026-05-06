@@ -243,4 +243,27 @@ MeshData sweep(const std::vector<Vec2>& profile,
     return out;
 }
 
+MeshData tube(const std::vector<Vec3>& path,
+              const std::vector<float>& radii,
+              const TubeOptions& opts) {
+    if (path.size() < 2) return {};
+    int sides = opts.sides < 3 ? 3 : opts.sides;
+
+    std::vector<Vec2> profile;
+    profile.reserve((size_t)sides);
+    constexpr float kTwoPi = 6.28318530717958647692f;
+    for (int i = 0; i < sides; ++i) {
+        float a = kTwoPi * (float)i / (float)sides;
+        profile.push_back({std::cos(a), std::sin(a)});
+    }
+
+    SweepOptions sopts;
+    sopts.closeProfile = true;
+    sopts.capStart     = opts.capStart;
+    sopts.capEnd       = opts.capEnd;
+    sopts.miterJoints  = opts.miterJoints;
+    sopts.profileScale = radii;
+    return sweep(profile, path, sopts);
+}
+
 } // namespace bromesh
