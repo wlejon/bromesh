@@ -1731,6 +1731,45 @@ TEST(par_cone) {
            "par_cone: capBase adds `slices` fan triangles");
     ASSERT(capped.vertexCount() == open.vertexCount() + 17,
            "par_cone: capBase adds 1 center + `slices` ring vertices");
+
+    // Lateral surface must face outward. Sample any side vertex (not the
+    // apex, which has |x|+|z|≈0): its normal should point away from the
+    // central Y axis. Triangle winding should also be outward — cross of
+    // edges should point away from the centroid's lateral component.
+    bool anyOutwardN = false;
+    for (size_t i = 0; i < open.vertexCount(); ++i) {
+        float x = open.positions[i * 3 + 0];
+        float z = open.positions[i * 3 + 2];
+        float r2 = x*x + z*z;
+        if (r2 < 1e-3f) continue;
+        float nx = open.normals[i * 3 + 0];
+        float nz = open.normals[i * 3 + 2];
+        float dot = nx * x + nz * z;
+        ASSERT(dot >= -1e-4f, "par_cone: side normal not inward");
+        if (dot > 1e-3f) anyOutwardN = true;
+    }
+    ASSERT(anyOutwardN, "par_cone: at least one side normal points outward");
+
+    bool anyOutwardW = false;
+    for (size_t t = 0; t < open.triangleCount(); ++t) {
+        uint32_t ai = open.indices[t * 3 + 0];
+        uint32_t bi = open.indices[t * 3 + 1];
+        uint32_t ci = open.indices[t * 3 + 2];
+        float ax = open.positions[ai * 3 + 0], ay = open.positions[ai * 3 + 1], az = open.positions[ai * 3 + 2];
+        float bx = open.positions[bi * 3 + 0], by = open.positions[bi * 3 + 1], bz = open.positions[bi * 3 + 2];
+        float cx = open.positions[ci * 3 + 0], cy = open.positions[ci * 3 + 1], cz = open.positions[ci * 3 + 2];
+        float ux = bx - ax, uy = by - ay, uz = bz - az;
+        float vx = cx - ax, vy = cy - ay, vz = cz - az;
+        float crx = uy * vz - uz * vy;
+        float crz = ux * vy - uy * vx;
+        float ccx = (ax + bx + cx) / 3.0f;
+        float ccz = (az + bz + cz) / 3.0f;
+        float r2c = ccx * ccx + ccz * ccz;
+        if (r2c < 1e-3f) continue;
+        float dot = crx * ccx + crz * ccz;
+        if (dot > 0.0f) anyOutwardW = true;
+    }
+    ASSERT(anyOutwardW, "par_cone: triangle winding is outward");
 }
 
 TEST(par_disc) {

@@ -101,6 +101,14 @@ MeshData cone(float radius, float height, int slices, int stacks, bool capBase) 
         pm->points[i * 3 + 2] = pY * radius;
     }
 
+    // The (X,Y,Z)->(X,Z,Y) permutation flips chirality, which inverts
+    // par_shapes' outward-facing winding to inward. Reverse each triangle
+    // before recomputing normals so both winding and normals end up
+    // outward-facing in bro's Y-up frame.
+    for (int t = 0; t < pm->ntriangles; ++t) {
+        std::swap(pm->triangles[t * 3 + 1], pm->triangles[t * 3 + 2]);
+    }
+
     // Recompute normals after transform
     par_shapes_compute_normals(pm);
 
