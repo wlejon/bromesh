@@ -109,10 +109,27 @@ MeshData cone(float radius, float height, int slices, int stacks, bool capBase) 
         std::swap(pm->triangles[t * 3 + 1], pm->triangles[t * 3 + 2]);
     }
 
-    // Recompute normals after transform
-    par_shapes_compute_normals(pm);
-
+    // par_shapes_compute_normals would give per-vertex averaged normals,
+    // but par_shapes duplicates seam vertices (same position, different
+    // UV) and only the triangles on one side of the seam contribute to
+    // each duplicate's average — leaving a hard normal-discontinuity line
+    // running up the cone. Use the analytical surface normal instead:
+    //   n = vnorm(cosθ, r/h, sinθ)   (any non-apex lateral vertex)
+    par_shapes_compute_normals(pm);  // initialize buffer
     MeshData m = fromParShapes(pm, 1.0f);
+    if (!m.normals.empty()) {
+        const float ny = (height > 1e-6f) ? (radius / height) : 0.0f;
+        for (size_t i = 0; i < m.vertexCount(); ++i) {
+            float x = m.positions[i * 3 + 0];
+            float z = m.positions[i * 3 + 2];
+            float r2 = std::sqrt(x * x + z * z);
+            if (r2 < 1e-5f) continue;  // apex: leave par_shapes' per-face avg
+            float invL = 1.0f / std::sqrt(1.0f + ny * ny);
+            m.normals[i * 3 + 0] = (x / r2) * invL;
+            m.normals[i * 3 + 1] = ny * invL;
+            m.normals[i * 3 + 2] = (z / r2) * invL;
+        }
+    }
     if (!capBase || m.empty()) return m;
 
     // Append a fan cap at Y=0: one center vertex + `slices` ring vertices,

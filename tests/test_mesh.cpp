@@ -1770,6 +1770,30 @@ TEST(par_cone) {
         if (dot > 0.0f) anyOutwardW = true;
     }
     ASSERT(anyOutwardW, "par_cone: triangle winding is outward");
+
+    // Seam vertices (duplicate positions emitted by par_shapes for UV
+    // unwrapping) must share the same normal on the lateral surface, so
+    // the seam line is invisible under smooth shading. The apex is a
+    // singularity — all (slices+1) apex copies share position (0,h,0)
+    // and intentionally retain par_shapes' per-face normals to keep the
+    // silhouette pointed.
+    for (size_t i = 0; i < open.vertexCount(); ++i) {
+        float xi = open.positions[i * 3 + 0];
+        float zi = open.positions[i * 3 + 2];
+        float ri = std::sqrt(xi * xi + zi * zi);
+        if (ri < 1e-4f) continue;
+        for (size_t j = i + 1; j < open.vertexCount(); ++j) {
+            float dx = open.positions[j * 3 + 0] - xi;
+            float dy = open.positions[j * 3 + 1] - open.positions[i * 3 + 1];
+            float dz = open.positions[j * 3 + 2] - zi;
+            if (dx*dx + dy*dy + dz*dz > 1e-8f) continue;
+            float nd0 = open.normals[i * 3 + 0] - open.normals[j * 3 + 0];
+            float nd1 = open.normals[i * 3 + 1] - open.normals[j * 3 + 1];
+            float nd2 = open.normals[i * 3 + 2] - open.normals[j * 3 + 2];
+            ASSERT(std::sqrt(nd0*nd0 + nd1*nd1 + nd2*nd2) < 1e-4f,
+                   "par_cone: lateral seam normals match across duplicates");
+        }
+    }
 }
 
 TEST(par_disc) {
