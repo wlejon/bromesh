@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bromesh/mesh_data.h"
+#include "bromesh/procedural/vec_math.h"
 
 #include <string>
 #include <vector>
@@ -72,5 +73,46 @@ struct FlowerOptions {
 /// rotated by `layerTwist`. Returns a single merged MeshData (positions,
 /// normals, UVs, colors).
 MeshData flower(const FlowerOptions& opts = {});
+
+struct BladeStripOptions {
+    /// Half-extent of the diamond cross-section along profile-X.
+    float width = 0.05f;
+    /// Half-extent along profile-Y. 0 collapses the diamond to a flat strip
+    /// (still a 4-vertex profile internally).
+    float thickness = 0.0f;
+    /// Per-ring scale of the profile. Length 0 or 1 = constant; otherwise
+    /// must equal `path.size()`. Same contract as SweepOptions::profileScale.
+    std::vector<float> profileScale;
+    /// Per-ring twist (radians) around the path tangent.
+    std::vector<float> twist;
+    bool capStart = false;
+    bool capEnd = true;
+    bool miterJoints = true;
+};
+
+/// Sweep a 4-vertex diamond profile along `path`, producing a thin tapered
+/// blade-like ribbon with optional thickness. Convenience wrapper over
+/// `sweep()` for grass blades, fern leaflets, succulent leaves.
+MeshData bladeStrip(const std::vector<Vec3>& path,
+                    const BladeStripOptions& opts = {});
+
+struct BladePathOptions {
+    Vec3  base    = {0.0f, 0.0f, 0.0f};
+    /// Direction from base toward tip. Normalized internally.
+    Vec3  tipDir  = {0.0f, 1.0f, 0.0f};
+    float length  = 1.0f;
+    /// Lateral tip offset, perpendicular to tipDir. The lateral axis is
+    /// chosen as the world +X projected perpendicular to tipDir, falling
+    /// back to +Z if tipDir is colinear with +X.
+    float bend    = 0.0f;
+    /// Bow upward (along world +Y), independent of bend.
+    float lift    = 0.0f;
+    int   segments = 8;
+};
+
+/// Build a smooth path from `base` to `base + tipDir·length` using a
+/// quadratic Bezier whose control point is offset by `bend` on the lateral
+/// axis and `lift` on world +Y. Returns segments+1 points.
+std::vector<Vec3> bladePath(const BladePathOptions& opts = {});
 
 } // namespace bromesh

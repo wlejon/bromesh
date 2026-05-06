@@ -531,3 +531,101 @@ TEST(leaf_scatter_terminal_only) {
     }
     ASSERT(ok, "terminalOnly selects only the Y-fork tips");
 }
+
+TEST(blade_strip_explicit_path) {
+    // Straight upright path of 9 points (segs=8). Default opts: capStart
+    // off, capEnd on, miterJoints on. Expect (segs+1)·4 ring vertices plus
+    // a single capEnd centroid (since the diamond profile has 4 verts the
+    // cap is a 4-tri fan from the centroid).
+    std::vector<Vec3> path;
+    const int segs = 8;
+    for (int i = 0; i <= segs; ++i) {
+        path.push_back({0.0f, 0.1f * i, 0.0f});
+    }
+    BladeStripOptions opts;
+    opts.width = 0.05f;
+    opts.thickness = 0.01f;
+    MeshData m = bladeStrip(path, opts);
+    ASSERT(!m.empty(), "bladeStrip produced output");
+    ASSERT(m.vertexCount() == (size_t)((segs + 1) * 4 + 1),
+           "ring verts + 1 cap centroid");
+    ASSERT(m.hasNormals(), "bladeStrip has normals");
+    ASSERT(allFinite(m.positions), "positions finite");
+    ASSERT(allFinite(m.normals), "normals finite");
+}
+
+TEST(blade_strip_linear_taper_tip_radius) {
+    // Linear taper from 1.0 at base to 0.1 at tip. The last ring's vertex
+    // along profile-X should sit at width · 0.1.
+    std::vector<Vec3> path;
+    const int segs = 8;
+    for (int i = 0; i <= segs; ++i) {
+        path.push_back({0.0f, 0.1f * i, 0.0f});
+    }
+    BladeStripOptions opts;
+    opts.width = 0.05f;
+    opts.thickness = 0.0f;
+    opts.profileScale.resize(path.size());
+    for (size_t i = 0; i < path.size(); ++i) {
+        float t = (float)i / (float)(path.size() - 1);
+        opts.profileScale[i] = 1.0f - 0.9f * t;
+    }
+    MeshData m = bladeStrip(path, opts);
+    ASSERT(!m.empty(), "tapered bladeStrip non-empty");
+    // Last ring starts at index segs · 4. Profile vertex 0 is (+width, 0)
+    // in profile-XY → first vertex of every ring lands on the lateral axis
+    // at distance width · scaleAt(ring). For a vertical path, the lateral
+    // axis lands on world +X (sweep's anyPerpendicular fallback).
+    size_t lastRingFirst = (size_t)segs * 4;
+    float x = m.positions[lastRingFirst * 3 + 0];
+    float z = m.positions[lastRingFirst * 3 + 2];
+    float r = std::sqrt(x*x + z*z);
+    float expected = 0.05f * 0.1f;
+    ASSERT(std::fabs(r - expected) < 1e-5f,
+           "tip ring radius matches profileScale.back() · width");
+}
+
+TEST(blade_strip_zero_thickness) {
+    std::vector<Vec3> path;
+    const int segs = 6;
+    for (int i = 0; i <= segs; ++i) {
+        path.push_back({0.0f, 0.1f * i, 0.0f});
+    }
+    BladeStripOptions opts;
+    opts.width = 0.05f;
+    opts.thickness = 0.0f;
+    MeshData m = bladeStrip(path, opts);
+    ASSERT(!m.empty(), "zero-thickness bladeStrip non-empty");
+    ASSERT(allFinite(m.positions), "zero-thickness positions finite");
+    ASSERT(allFinite(m.normals), "zero-thickness normals finite");
+}
+
+TEST(blade_path_endpoints) {
+    BladePathOptions opts;
+    opts.base = {1.0f, 2.0f, 3.0f};
+    opts.tipDir = {0.0f, 1.0f, 0.0f};
+    opts.length = 5.0f;
+    opts.bend = 0.0f;
+    opts.lift = 0.0f;
+    opts.segments = 8;
+    auto pts = bladePath(opts);
+    ASSERT(pts.size() == 9u, "segments+1 points");
+    ASSERT(vdist(pts.front(), opts.base) < 1e-5f, "starts at base");
+    Vec3 expectedTip = {1.0f, 7.0f, 3.0f};
+    ASSERT(vdist(pts.back(), expectedTip) < 1e-5f, "ends at base + tipDir·length");
+}
+
+TEST(blade_path_bend_offsets_midpoint) {
+    BladePathOptions opts;
+    opts.base = {0.0f, 0.0f, 0.0f};
+    opts.tipDir = {0.0f, 1.0f, 0.0f};
+    opts.length = 1.0f;
+    opts.bend = 0.5f;
+    opts.lift = 0.0f;
+    opts.segments = 8;
+    auto pts = bladePath(opts);
+    // Midpoint (index 4 of 9) should have positive x (lateral axis falls
+    // on world +X for a +Y tipDir).
+    ASSERT(pts[4].x > 0.1f, "bend pulls midpoint laterally");
+}
+

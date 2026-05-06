@@ -1,6 +1,7 @@
 #include "bromesh/procedural/plants.h"
 
 #include "bromesh/manipulation/merge.h"
+#include "bromesh/manipulation/sweep.h"
 #include "bromesh/manipulation/transform.h"
 #include "bromesh/primitives/primitives.h"
 #include "bromesh/procedural/vec_math.h"
@@ -257,6 +258,64 @@ MeshData flower(const FlowerOptions& opts) {
     }
 
     return mergeMeshes(parts);
+}
+
+MeshData bladeStrip(const std::vector<Vec3>& path,
+                    const BladeStripOptions& opts) {
+    if (path.size() < 2) return {};
+    // 4-vertex diamond in profile XY: width along X, thickness along Y. A
+    // zero thickness collapses the diamond's Y vertices to the centerline,
+    // which `sweep` handles fine — it just produces a degenerate ribbon
+    // with two coincident edges, which the consumer can render single-sided.
+    const std::vector<Vec2> profile = {
+        { opts.width,        0.0f },
+        { 0.0f,              opts.thickness },
+        { -opts.width,       0.0f },
+        { 0.0f,              -opts.thickness },
+    };
+    SweepOptions sopts;
+    sopts.closeProfile = true;
+    sopts.capStart     = opts.capStart;
+    sopts.capEnd       = opts.capEnd;
+    sopts.miterJoints  = opts.miterJoints;
+    sopts.profileScale = opts.profileScale;
+    sopts.twist        = opts.twist;
+    return sweep(profile, path, sopts);
+}
+
+std::vector<Vec3> bladePath(const BladePathOptions& opts) {
+    int segs = std::max(1, opts.segments);
+    Vec3 dir = vnormOr(opts.tipDir, Vec3{0.0f, 1.0f, 0.0f});
+    Vec3 tip = opts.base + dir * opts.length;
+
+    // Lateral axis: project world +X perpendicular to dir; fall back to +Z
+    // if dir is colinear with +X. Both candidates are then renormalized.
+    Vec3 lateral;
+    {
+        Vec3 ax{1.0f, 0.0f, 0.0f};
+        Vec3 candidate = ax - dir * vdot(ax, dir);
+        if (vdot(candidate, candidate) < 1e-8f) {
+            ax = Vec3{0.0f, 0.0f, 1.0f};
+            candidate = ax - dir * vdot(ax, dir);
+        }
+        lateral = vnormOr(candidate, Vec3{1.0f, 0.0f, 0.0f});
+    }
+
+    // Quadratic Bezier control point: midpoint between base and tip, then
+    // offset by `bend` on the lateral axis and `lift` along world +Y.
+    Vec3 mid = opts.base + (tip - opts.base) * 0.5f;
+    Vec3 ctrl = mid + lateral * opts.bend + Vec3{0.0f, opts.lift, 0.0f};
+
+    std::vector<Vec3> out;
+    out.reserve((size_t)segs + 1);
+    for (int i = 0; i <= segs; ++i) {
+        float t = (float)i / (float)segs;
+        float u = 1.0f - t;
+        // B(t) = (1-t)^2 P0 + 2(1-t)t P1 + t^2 P2
+        Vec3 p = opts.base * (u * u) + ctrl * (2.0f * u * t) + tip * (t * t);
+        out.push_back(p);
+    }
+    return out;
 }
 
 } // namespace bromesh
