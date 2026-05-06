@@ -15,10 +15,11 @@ MeshData octahedron();
 MeshData tetrahedron();
 
 /// Generate a cone along the Y axis. The base disc sits at Y=0 with radius
-/// `radius`; the apex sits at Y=`height`. Lateral surface only — there is
-/// no base cap.
+/// `radius`; the apex sits at Y=`height`. With `capBase=true` a fan cap is
+/// added at Y=0 with normals pointing -Y; otherwise the bottom is open.
 /// slices: number of radial divisions. stacks: number of vertical divisions.
-MeshData cone(float radius, float height, int slices = 16, int stacks = 4);
+MeshData cone(float radius, float height, int slices = 16, int stacks = 4,
+              bool capBase = false);
 
 /// Generate a disc (filled circle) in the XZ plane.
 MeshData disc(float radius, int slices = 16);

@@ -83,7 +83,7 @@ MeshData tetrahedron() {
 #endif
 }
 
-MeshData cone(float radius, float height, int slices, int stacks) {
+MeshData cone(float radius, float height, int slices, int stacks, bool capBase) {
 #ifdef BROMESH_HAS_PAR_SHAPES
     auto* pm = par_shapes_create_cone(slices, stacks);
     if (!pm) return {};
@@ -104,9 +104,39 @@ MeshData cone(float radius, float height, int slices, int stacks) {
     // Recompute normals after transform
     par_shapes_compute_normals(pm);
 
-    return fromParShapes(pm, 1.0f);
+    MeshData m = fromParShapes(pm, 1.0f);
+    if (!capBase || m.empty()) return m;
+
+    // Append a fan cap at Y=0: one center vertex + `slices` ring vertices,
+    // wound so triangle normals point -Y. Cap UVs trace the unit disc
+    // (cos*0.5+0.5, sin*0.5+0.5). The seam at the lateral/base corner is
+    // intentional — we don't want a smooth normal across the crease.
+    const bool hasN = !m.normals.empty();
+    const bool hasU = !m.uvs.empty();
+    const uint32_t centerIdx = (uint32_t)m.vertexCount();
+
+    m.positions.insert(m.positions.end(), { 0.0f, 0.0f, 0.0f });
+    if (hasN) m.normals.insert(m.normals.end(), { 0.0f, -1.0f, 0.0f });
+    if (hasU) m.uvs.insert(m.uvs.end(), { 0.5f, 0.5f });
+
+    constexpr float kTwoPi = 6.28318530717958647692f;
+    for (int i = 0; i < slices; ++i) {
+        float a = kTwoPi * (float)i / (float)slices;
+        float c = std::cos(a), s = std::sin(a);
+        m.positions.insert(m.positions.end(), { c * radius, 0.0f, s * radius });
+        if (hasN) m.normals.insert(m.normals.end(), { 0.0f, -1.0f, 0.0f });
+        if (hasU) m.uvs.insert(m.uvs.end(), { 0.5f + c * 0.5f, 0.5f + s * 0.5f });
+    }
+    for (int i = 0; i < slices; ++i) {
+        uint32_t a = centerIdx + 1 + (uint32_t)i;
+        uint32_t b = centerIdx + 1 + (uint32_t)((i + 1) % slices);
+        m.indices.push_back(centerIdx);
+        m.indices.push_back(a);
+        m.indices.push_back(b);
+    }
+    return m;
 #else
-    (void)radius; (void)height; (void)slices; (void)stacks;
+    (void)radius; (void)height; (void)slices; (void)stacks; (void)capBase;
     return {};
 #endif
 }

@@ -1723,6 +1723,14 @@ TEST(par_cone) {
            "par_cone: X spans [-radius, radius]");
     ASSERT(std::fabs(maxZ - r) < 1e-4f && std::fabs(minZ + r) < 1e-4f,
            "par_cone: Z spans [-radius, radius]");
+
+    // Capped variant: triangle count grows by `slices` (one per fan slice).
+    auto open   = bromesh::cone(r, h, 16, 4, false);
+    auto capped = bromesh::cone(r, h, 16, 4, true);
+    ASSERT(capped.triangleCount() == open.triangleCount() + 16,
+           "par_cone: capBase adds `slices` fan triangles");
+    ASSERT(capped.vertexCount() == open.vertexCount() + 17,
+           "par_cone: capBase adds 1 center + `slices` ring vertices");
 }
 
 TEST(par_disc) {
