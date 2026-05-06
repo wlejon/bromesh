@@ -2,9 +2,11 @@
 
 #include "bromesh/optimization/spatial_hash.h"
 #include "bromesh/manipulation/sweep.h"
+#include "bromesh/manipulation/bezier_sweep.h"
 #include "bromesh/procedural/lsystem.h"
 #include "bromesh/procedural/space_colonization.h"
 #include "bromesh/procedural/branches.h"
+#include "bromesh/procedural/plants.h"
 
 #include <algorithm>
 #include <cmath>
@@ -246,4 +248,106 @@ TEST(mesh_branches_smoke) {
     MeshData m = meshBranches(segs, 6);
     ASSERT(!m.empty(), "meshBranches Y mesh non-empty");
     ASSERT(m.vertexCount() > 0, "meshBranches has vertices");
+}
+
+static bool allFinite(const std::vector<float>& v) {
+    for (float x : v) if (!std::isfinite(x)) return false;
+    return true;
+}
+
+TEST(leaf_card_basic_grid) {
+    LeafCardOptions o;
+    o.widthSegments = 4;
+    o.lengthSegments = 8;
+    MeshData m = leafCard(LeafShape::Oval, o);
+    ASSERT(!m.empty(), "leafCard non-empty");
+    ASSERT(m.vertexCount() == 5u * 9u, "leafCard vertex count = (w+1)*(l+1)");
+    ASSERT(m.triangleCount() == 4u * 8u * 2u, "leafCard tri count = w*l*2");
+    ASSERT(m.hasNormals(), "leafCard has normals");
+    ASSERT(m.hasUVs(), "leafCard has uvs");
+    ASSERT(m.hasColors(), "leafCard has colors (windBend)");
+    ASSERT(allFinite(m.positions), "leafCard positions finite");
+    ASSERT(allFinite(m.normals), "leafCard normals finite");
+    // Normals roughly unit length.
+    bool unit = true;
+    for (size_t i = 0; i < m.normals.size(); i += 3) {
+        float L = std::sqrt(m.normals[i]*m.normals[i] + m.normals[i+1]*m.normals[i+1] + m.normals[i+2]*m.normals[i+2]);
+        if (L < 0.9f || L > 1.1f) { unit = false; break; }
+    }
+    ASSERT(unit, "leafCard normals unit length");
+    // Color R goes 0..1 along length.
+    bool baseZero = m.colors[0] < 0.01f;
+    size_t tipBase = (m.vertexCount() - 1u) * 4u;
+    bool tipOne = m.colors[tipBase] > 0.99f;
+    ASSERT(baseZero, "leafCard base windBend == 0");
+    ASSERT(tipOne, "leafCard tip windBend == 1");
+}
+
+TEST(leaf_card_bend_curls_forward) {
+    LeafCardOptions o;
+    o.bend = 1.0f;
+    MeshData straight = leafCard(LeafShape::Pointed, {});
+    MeshData bent     = leafCard(LeafShape::Pointed, o);
+    ASSERT(straight.vertexCount() == bent.vertexCount(), "bend preserves topology");
+    // The bent mesh should have positive Y at the tip; the straight one stays at y=0.
+    size_t tipIdx = (bent.vertexCount() - 1u) * 3u;
+    ASSERT(bent.positions[tipIdx + 1] > 0.05f, "bent tip lifts in +Y");
+    ASSERT(std::fabs(straight.positions[tipIdx + 1]) < 1e-5f, "straight tip at y=0");
+}
+
+TEST(flower_merges_petals_and_center) {
+    FlowerOptions f;
+    f.petalCount = 6;
+    f.layers = 2;
+    MeshData m = flower(f);
+    ASSERT(!m.empty(), "flower non-empty");
+    ASSERT(m.hasNormals(), "flower has normals");
+    ASSERT(m.hasUVs(), "flower has uvs");
+    ASSERT(m.hasColors(), "flower has colors");
+    ASSERT(allFinite(m.positions), "flower positions finite");
+    // 12 petals + 1 center; should be > 100 verts.
+    ASSERT(m.vertexCount() > 100u, "flower has nontrivial vertex count");
+    ASSERT(m.triangleCount() > 0u, "flower has triangles");
+}
+
+TEST(bezier_sweep_single_segment) {
+    std::vector<Vec3> ctrl = {
+        {0, 0, 0}, {0, 1, 0}, {0, 1, 1}, {0, 0, 1}
+    };
+    std::vector<Vec2> profile = {{0.05f, 0}, {0, 0.05f}, {-0.05f, 0}, {0, -0.05f}};
+    BezierSweepOptions o;
+    o.samples = 16;
+    MeshData m = bezierSweep(ctrl, profile, o);
+    ASSERT(!m.empty(), "bezier sweep non-empty");
+    ASSERT(m.hasNormals(), "bezier sweep normals");
+    // 4 verts/ring * 16 rings + 2 cap centroids
+    ASSERT(m.vertexCount() == 4u * 16u + 2u, "bezier sweep vertex count");
+    ASSERT(allFinite(m.positions), "bezier sweep positions finite");
+}
+
+TEST(bezier_sweep_multi_segment) {
+    // Two cubic segments sharing endpoint: 7 control points.
+    std::vector<Vec3> ctrl = {
+        {0, 0, 0}, {0.2f, 0.5f, 0}, {0.8f, 0.5f, 0}, {1.0f, 0.0f, 0},
+        {1.2f, -0.5f, 0}, {1.8f, -0.5f, 0}, {2.0f, 0.0f, 0}
+    };
+    std::vector<Vec2> profile = {{0.04f, 0}, {0, 0.04f}, {-0.04f, 0}, {0, -0.04f}};
+    BezierSweepOptions o;
+    o.samples = 24;
+    o.profileScale = {1.0f, 0.5f}; // taper
+    MeshData m = bezierSweep(ctrl, profile, o);
+    ASSERT(!m.empty(), "multi-segment bezier non-empty");
+    ASSERT(m.vertexCount() == 4u * 24u + 2u, "multi-segment vertex count");
+}
+
+TEST(bezier_sweep_rejects_bad_input) {
+    std::vector<Vec2> profile = {{0.1f, 0}, {0, 0.1f}, {-0.1f, 0}};
+    // 3 control points -> not enough for a cubic.
+    std::vector<Vec3> bad3 = {{0,0,0}, {0,1,0}, {0,2,0}};
+    MeshData m1 = bezierSweep(bad3, profile);
+    ASSERT(m1.empty(), "bezier rejects N<4");
+    // 5 points -> (5-1)%3 != 0
+    std::vector<Vec3> bad5 = {{0,0,0},{0,1,0},{0,2,0},{0,3,0},{0,4,0}};
+    MeshData m2 = bezierSweep(bad5, profile);
+    ASSERT(m2.empty(), "bezier rejects malformed segment count");
 }

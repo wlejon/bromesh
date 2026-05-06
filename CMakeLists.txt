@@ -238,11 +238,13 @@ add_library(bromesh STATIC
 
     # Manipulation (sweep)
     src/manipulation/sweep.cpp
+    src/manipulation/bezier_sweep.cpp
 
     # Procedural
     src/procedural/lsystem.cpp
     src/procedural/space_colonization.cpp
     src/procedural/branches.cpp
+    src/procedural/plants.cpp
 
     # I/O
     src/io/obj.cpp
