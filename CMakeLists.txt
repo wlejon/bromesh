@@ -242,6 +242,7 @@ add_library(bromesh STATIC
 
     # Procedural
     src/procedural/lsystem.cpp
+    src/procedural/lsystem_turtle.cpp
     src/procedural/space_colonization.cpp
     src/procedural/branches.cpp
     src/procedural/plants.cpp

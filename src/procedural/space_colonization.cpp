@@ -1,6 +1,7 @@
 #include "bromesh/procedural/space_colonization.h"
 
 #include "bromesh/optimization/spatial_hash.h"
+#include "bromesh/procedural/obstacle_field.h"
 
 #include <algorithm>
 #include <cmath>
@@ -81,6 +82,69 @@ std::vector<BranchSegment> spaceColonize(
             }
             (void)initDir;
             Vec3 newPos = nodes[i].pos + dir * opts.segmentLength;
+
+            // Obstacle test on the candidate growth step. Re-aim along the
+            // surface tangent up to `obstacleSteer` radians; if still
+            // colliding, drop the step (attractor remains live for the next
+            // iteration so growth can resume from a different parent).
+            if (opts.obstacles != nullptr && !opts.obstacles->empty()) {
+                if (opts.obstacles->tooClose(newPos, opts.obstacleClearance)) {
+                    if (opts.obstacleSteer > 0.0f) {
+                        auto hit = opts.obstacles->nearest(newPos);
+                        Vec3 n = hit.normal;
+                        // Tangent component of dir along the obstacle surface.
+                        Vec3 tangentRaw = dir - n * vdot(dir, n);
+                        float tlen = vlen(tangentRaw);
+                        Vec3 tangent;
+                        if (tlen > 1e-6f) {
+                            tangent = tangentRaw * (1.0f / tlen);
+                        } else {
+                            // dir is collinear with n (head-on into the
+                            // surface). Pick any unit vector perpendicular
+                            // to n — bias toward world up so the tree
+                            // tends to climb past the obstacle.
+                            Vec3 alt = (std::fabs(n.y) < 0.9f) ? Vec3{0, 1, 0}
+                                                                : Vec3{1, 0, 0};
+                            tangent = vnorm(vcross(n, alt));
+                        }
+                        // Pick the tangent (or its mirror) that better
+                        // preserves attractor pull.
+                        Vec3 tNeg = {-tangent.x, -tangent.y, -tangent.z};
+                        if (vdot(tangent, dir) < vdot(tNeg, dir)) tangent = tNeg;
+
+                        // Limit rotation to obstacleSteer radians.
+                        float dotDT = vdot(dir, tangent);
+                        if (dotDT > 1.0f) dotDT = 1.0f;
+                        if (dotDT < -1.0f) dotDT = -1.0f;
+                        float ang = std::acos(dotDT);
+                        Vec3 newDir;
+                        if (ang <= opts.obstacleSteer) {
+                            newDir = tangent;
+                        } else {
+                            // Slerp dir toward tangent by `obstacleSteer`.
+                            Vec3 axis = vnormOr(vcross(dir, tangent), n);
+                            newDir = vnorm(quatRotate(
+                                quatAxisAngle(axis, opts.obstacleSteer), dir));
+                        }
+                        Vec3 steered = nodes[i].pos + newDir * opts.segmentLength;
+                        // If the slerped step still grazes the surface,
+                        // project it outward along the local normal — the
+                        // wall pushes the growing tip away rather than
+                        // stalling growth altogether.
+                        auto hit2 = opts.obstacles->nearest(steered);
+                        if (hit2.distance < opts.obstacleClearance) {
+                            float push = (opts.obstacleClearance - hit2.distance) + 1e-3f;
+                            steered = steered + hit2.normal * push;
+                            if (opts.obstacles->tooClose(steered, opts.obstacleClearance)) {
+                                continue;   // genuinely stuck
+                            }
+                        }
+                        newPos = steered;
+                    } else {
+                        continue;   // hard reject
+                    }
+                }
+            }
 
             BranchSegment seg;
             // The segment ending at the parent node also identifies the

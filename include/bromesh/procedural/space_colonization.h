@@ -6,6 +6,8 @@
 
 namespace bromesh {
 
+class CapsuleField;   // procedural/obstacle_field.h
+
 struct SpaceColonizationOptions {
     /// Radius within which an attractor influences the nearest tree node.
     float attractionRadius = 5.0f;
@@ -19,6 +21,17 @@ struct SpaceColonizationOptions {
     /// with the attractor-derived direction, weighted by `tropismWeight`.
     Vec3 tropism = {0, 0, 0};
     float tropismWeight = 0.0f;
+
+    /// Optional obstacle field. New nodes are not placed where
+    /// `obstacles->tooClose(newPos, obstacleClearance)` is true. With
+    /// `obstacleSteer > 0` the rejected step instead rotates the growth
+    /// direction up to that many radians toward the obstacle's local
+    /// surface tangent and re-tests; on still-too-close, the step is
+    /// dropped and the attractor stays alive for a future iteration.
+    /// `nullptr` (default) preserves the prior behavior exactly.
+    const CapsuleField* obstacles = nullptr;
+    float obstacleClearance       = 0.0f;
+    float obstacleSteer           = 0.0f;   // radians; 0 = hard reject
 };
 
 /// One segment of a generated branch tree. Segments index their parent;

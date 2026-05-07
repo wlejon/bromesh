@@ -4,6 +4,7 @@
 #include "bromesh/manipulation/sweep.h"
 #include "bromesh/manipulation/bezier_sweep.h"
 #include "bromesh/procedural/lsystem.h"
+#include "bromesh/procedural/lsystem_turtle.h"
 #include "bromesh/procedural/space_colonization.h"
 #include "bromesh/procedural/branches.h"
 #include "bromesh/procedural/leaf_scatter.h"
@@ -932,5 +933,187 @@ TEST(pack_anchors_avoid_obstacle) {
     }
     ASSERT(ok, "no accepted anchor lies inside obstacle");
     ASSERT(idx.size() > 0, "some anchors survive outside the obstacle");
+}
+
+// ── Obstacle-aware spaceColonize ──────────────────────────────────────────
+
+TEST(space_colonize_obstacle_blocks_growth) {
+    // Single attractor on +X axis; an obstacle capsule blocks the direct
+    // path. With hard reject (no steer) the tree cannot reach the
+    // attractor — no segment crosses the obstacle.
+    std::vector<Vec3> attractors{{2.0f, 0.0f, 0.0f}};
+    std::vector<Vec3> seeds{{0.0f, 0.0f, 0.0f}};
+
+    Capsule blocker;
+    blocker.a = {1.0f, -2.0f, 0.0f};
+    blocker.b = {1.0f,  2.0f, 0.0f};
+    blocker.radius = 0.3f;
+    blocker.tag = -1;
+    CapsuleField field({blocker});
+
+    SpaceColonizationOptions opts;
+    opts.attractionRadius = 5.0f;
+    opts.killRadius       = 0.2f;
+    opts.segmentLength    = 0.2f;
+    opts.maxIterations    = 60;
+    opts.obstacles        = &field;
+    opts.obstacleClearance = 0.0f;
+    opts.obstacleSteer     = 0.0f;   // hard reject
+
+    auto segs = spaceColonize(attractors, seeds, {1, 0, 0}, opts);
+    bool anyCross = false;
+    for (const BranchSegment& s : segs) {
+        if (vdist2(s.from, s.to) < 1e-12f) continue;
+        Vec3 mid = (s.from + s.to) * 0.5f;
+        if (field.tooClose(mid, 0.0f)) { anyCross = true; break; }
+        if (field.tooClose(s.to, 0.0f))  { anyCross = true; break; }
+    }
+    ASSERT(!anyCross, "no segment lies inside the obstacle");
+}
+
+TEST(space_colonize_obstacle_steer_around) {
+    // Same setup, but with steering. Tree should bend around the obstacle
+    // and produce more segments than the hard-reject case.
+    std::vector<Vec3> attractors{{2.0f, 0.0f, 0.0f}};
+    std::vector<Vec3> seeds{{0.0f, 0.0f, 0.0f}};
+
+    Capsule blocker;
+    blocker.a = {1.0f, -2.0f, 0.0f};
+    blocker.b = {1.0f,  2.0f, 0.0f};
+    blocker.radius = 0.3f;
+    CapsuleField field({blocker});
+
+    SpaceColonizationOptions opts;
+    opts.attractionRadius = 5.0f;
+    opts.killRadius       = 0.2f;
+    opts.segmentLength    = 0.2f;
+    opts.maxIterations    = 100;
+    opts.obstacles        = &field;
+    opts.obstacleSteer    = 0.8f;   // ~46°
+
+    auto segs = spaceColonize(attractors, seeds, {1, 0, 0}, opts);
+
+    // No segment ends inside the obstacle.
+    bool anyInside = false;
+    for (const BranchSegment& s : segs) {
+        if (vdist2(s.from, s.to) < 1e-12f) continue;
+        if (field.tooClose(s.to, 0.0f)) { anyInside = true; break; }
+    }
+    ASSERT(!anyInside, "steering keeps every endpoint outside obstacle");
+
+    // And the tree managed to grow past the obstacle (some endpoint with
+    // x > 1.4 — past the blocker's outer surface).
+    bool reached = false;
+    for (const BranchSegment& s : segs) {
+        if (s.to.x > 1.4f) { reached = true; break; }
+    }
+    ASSERT(reached, "steering let the tree grow past the obstacle");
+}
+
+TEST(space_colonize_obstacle_null_is_noop) {
+    // Identical inputs, no obstacles: result must match the prior
+    // behavior bit-exact (regression guard so the obstacle plumb-through
+    // doesn't perturb the deterministic output).
+    std::vector<Vec3> attractors{
+        {1, 1, 0}, {-1, 1, 0}, {0, 1.5f, 1}, {0, 1.5f, -1}, {0, 2, 0}};
+    std::vector<Vec3> seeds{{0, 0, 0}};
+    SpaceColonizationOptions opts;
+    opts.attractionRadius = 1.5f;
+    opts.killRadius       = 0.2f;
+    opts.segmentLength    = 0.2f;
+    opts.maxIterations    = 50;
+
+    auto a = spaceColonize(attractors, seeds, {0, 1, 0}, opts);
+
+    opts.obstacles = nullptr;
+    auto b = spaceColonize(attractors, seeds, {0, 1, 0}, opts);
+    ASSERT(a.size() == b.size(), "null obstacles: same segment count");
+    bool same = true;
+    for (size_t i = 0; i < a.size() && same; ++i) {
+        if (vdist2(a[i].from, b[i].from) > 1e-10f) same = false;
+        if (vdist2(a[i].to,   b[i].to)   > 1e-10f) same = false;
+        if (a[i].parent != b[i].parent) same = false;
+    }
+    ASSERT(same, "null obstacles: identical segments");
+}
+
+// ── L-system turtle ───────────────────────────────────────────────────────
+
+TEST(lsystem_turtle_straight_line) {
+    auto mods = parseModules("FFFF");
+    TurtleOptions to;
+    to.stepLength = 1.0f;
+    auto segs = lsystemToBranches(mods, to);
+    // Synthetic root + 4 forward segments.
+    ASSERT(segs.size() == 5, "1 root + 4 F segments");
+    ASSERT(segs[0].parent == -1, "root parent = -1");
+    // Each F endpoint advances by 1 along +Y (default heading).
+    for (int i = 1; i <= 4; ++i) {
+        ASSERT(std::fabs(segs[i].to.y - static_cast<float>(i)) < 1e-4f, "F advances along +Y");
+        ASSERT(segs[i].parent == i - 1, "chain parents");
+    }
+}
+
+TEST(lsystem_turtle_branching) {
+    // F[+F]F → main F, branch +F off the tip, then continue with F.
+    auto mods = parseModules("F[+F]F");
+    TurtleOptions to;
+    to.stepLength = 1.0f;
+    to.angle = 3.14159265358979323846f / 4.0f;   // 45°
+    auto segs = lsystemToBranches(mods, to);
+
+    // 1 root + 3 F segments.
+    ASSERT(segs.size() == 4, "1 root + 3 F segments");
+
+    // Find the bracketed +F. It must parent off segment index 1 (the first
+    // F's endpoint) and not lie along +Y.
+    int branchIdx = -1;
+    for (size_t i = 1; i < segs.size(); ++i) {
+        if (segs[i].parent == 1 && std::fabs(segs[i].to.x) > 0.1f) {
+            branchIdx = static_cast<int>(i);
+            break;
+        }
+    }
+    ASSERT(branchIdx >= 0, "branch parents off first F's tip");
+
+    // The post-bracket F continues from the first F's tip too, going
+    // straight up (still along +Y after the [..] pop).
+    int continuationIdx = -1;
+    for (size_t i = 1; i < segs.size(); ++i) {
+        if (static_cast<int>(i) == branchIdx) continue;
+        if (segs[i].parent == 1) { continuationIdx = static_cast<int>(i); break; }
+    }
+    ASSERT(continuationIdx >= 0, "continuation parents off first F too");
+    ASSERT(std::fabs(segs[continuationIdx].to.x) < 1e-4f, "continuation stays on Y axis");
+    ASSERT(segs[continuationIdx].to.y > 1.5f, "continuation moves further up");
+}
+
+TEST(lsystem_turtle_param_overrides) {
+    // F(0.5)+(45)F(0.5) — half-step, 45° yaw, half-step.
+    auto mods = parseModules("F(0.5)+(45)F(0.5)");
+    TurtleOptions to;
+    to.stepLength = 1.0f;   // overridden by params
+    auto segs = lsystemToBranches(mods, to);
+    ASSERT(segs.size() == 3, "1 root + 2 F");
+    ASSERT(std::fabs(segs[1].to.y - 0.5f) < 1e-4f, "first F is 0.5 long");
+    // After F(0.5) heading is +Y; +(45) yaws +45° around `up` (=+Z by default).
+    // Right-hand rule: +Y rotates toward -X. So heading becomes
+    // (-sin45, cos45, 0). The second F lands at the first F's tip plus
+    // 0.5·heading.
+    float c45 = std::cos(3.14159265358979323846f / 4.0f);
+    float s45 = std::sin(3.14159265358979323846f / 4.0f);
+    Vec3 expected{-0.5f * s45, 0.5f + 0.5f * c45, 0.0f};
+    ASSERT(vdist(segs[2].to, expected) < 1e-3f, "second F lands at 45° offset");
+}
+
+TEST(lsystem_turtle_radius_command) {
+    auto mods = parseModules("!(0.05)F!(0.02)F");
+    TurtleOptions to;
+    to.stepLength = 1.0f;
+    to.radius = 0.10f;
+    auto segs = lsystemToBranches(mods, to);
+    ASSERT(segs.size() == 3, "1 root + 2 F");
+    ASSERT(std::fabs(segs[1].radius - 0.05f) < 1e-6f, "first F uses ! radius 0.05");
+    ASSERT(std::fabs(segs[2].radius - 0.02f) < 1e-6f, "second F uses ! radius 0.02");
 }
 
