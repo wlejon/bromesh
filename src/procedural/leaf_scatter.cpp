@@ -2,10 +2,12 @@
 
 #include "bromesh/manipulation/merge.h"
 #include "bromesh/optimization/spatial_hash.h"
+#include "bromesh/procedural/obstacle_field.h"
 #include "bromesh/procedural/vec_math.h"
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <random>
 
 namespace bromesh {
@@ -98,12 +100,43 @@ LeafPlacements placeLeavesOnBranches(
         }
         if (sampleCount <= 0) continue;
 
+        const int selfTag = static_cast<int>(i);
+
         for (int s = 0; s < sampleCount; ++s) {
             float u = uni01(rng);
             float t = (opts.densityFalloff > 0.0f)
                 ? 1.0f - std::pow(1.0f - u, 1.0f + opts.densityFalloff)
                 : u;
             Vec3 P = seg.from + d * t;
+
+            // Obstacle test on the candidate origin. Excludes the
+            // candidate's own segment via tag. With pushout, slide outward
+            // along the nearest surface normal once and re-test; otherwise
+            // hard-reject. Keep-out spheres are always tested (no exclusion).
+            if (opts.avoid != nullptr && !opts.avoid->empty()) {
+                if (opts.avoid->tooClose(P, opts.obstacleClearance, selfTag)) {
+                    if (opts.obstaclePushout > 0.0f) {
+                        auto n = opts.avoid->nearest(P, selfTag);
+                        if (n.tag != -1 || std::isfinite(n.distance)) {
+                            P = n.point + n.normal * (opts.obstacleClearance + opts.obstaclePushout);
+                        }
+                        if (opts.avoid->tooClose(P, opts.obstacleClearance, selfTag)) {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+            }
+            if (!opts.keepOut.empty()) {
+                bool blocked = false;
+                for (const Sphere& sp : opts.keepOut) {
+                    Vec3 dv = P - sp.center;
+                    float r = sp.radius + opts.obstacleClearance;
+                    if (vdot(dv, dv) <= r * r) { blocked = true; break; }
+                }
+                if (blocked) continue;
+            }
 
             // Azimuth around the branch.
             float phi = uni01(rng) * kTwoPi;
@@ -218,6 +251,60 @@ MeshData scatterLeaves(
         parts.push_back(stamped);
     }
     return mergeMeshes(parts);
+}
+
+std::vector<int> packAnchors(
+    const std::vector<Vec3>& candidates,
+    const CapsuleField* avoid,
+    const std::vector<Sphere>& reservedKeepOut,
+    const AnchorPackOptions& opts) {
+    std::vector<int> accepted;
+    if (candidates.empty()) return accepted;
+
+    // Visit candidates in a seeded shuffled order for variety; without the
+    // shuffle the greedy pass would always favour the lowest-index candidate
+    // in any clash, which biases toward whichever order the caller built the
+    // list in.
+    std::vector<int> order(candidates.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::mt19937_64 rng(opts.seed);
+    std::shuffle(order.begin(), order.end(), rng);
+
+    // Spacing hash: cell size = minSpacing so a single neighbouring cell
+    // sweep covers the rejection radius. When minSpacing == 0 we skip the
+    // hash entirely.
+    const bool useSpacing = opts.minSpacing > 0.0f;
+    SpatialHash3D spacingHash(useSpacing ? opts.minSpacing : 1.0f);
+    std::vector<int32_t> nearby;
+
+    const int cap = (opts.maxCount > 0) ? opts.maxCount : -1;
+
+    for (int idx : order) {
+        if (cap >= 0 && static_cast<int>(accepted.size()) >= cap) break;
+        Vec3 p = candidates[static_cast<size_t>(idx)];
+
+        if (avoid != nullptr && !avoid->empty()) {
+            if (avoid->tooClose(p, opts.minObstacleDistance, -1)) continue;
+        }
+        if (!reservedKeepOut.empty()) {
+            bool blocked = false;
+            for (const Sphere& sp : reservedKeepOut) {
+                Vec3 dv = p - sp.center;
+                float r = sp.radius;
+                if (vdot(dv, dv) <= r * r) { blocked = true; break; }
+            }
+            if (blocked) continue;
+        }
+        if (useSpacing) {
+            nearby.clear();
+            spacingHash.radiusQuery(p, opts.minSpacing, nearby);
+            if (!nearby.empty()) continue;
+            spacingHash.insert(p, static_cast<int32_t>(accepted.size()));
+        }
+
+        accepted.push_back(idx);
+    }
+    return accepted;
 }
 
 } // namespace bromesh

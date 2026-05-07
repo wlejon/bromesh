@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bromesh/mesh_data.h"
+#include "bromesh/procedural/obstacle_field.h"
 #include "bromesh/procedural/space_colonization.h"
 
 #include <cstdint>
@@ -42,6 +43,26 @@ struct LeafPlacementOptions {
     /// Minimum distance between accepted leaf origins. 0 disables.
     float dedupRadius = 0.0f;
 
+    /// Optional obstacle field. Candidate leaves whose *origin* is within
+    /// `obstacleClearance` of any non-self capsule/sphere are rejected.
+    /// "Self" exclusion uses the candidate's segment index as the tag, so
+    /// callers should build the field via `CapsuleField::capsulesFromSegments(segs)`
+    /// (or assign `tag = segment-index` manually) for the exclusion to work.
+    /// `nullptr` disables obstacle testing entirely.
+    const CapsuleField* avoid = nullptr;
+    /// Extra clearance added to every avoid test (effectively inflates every
+    /// obstacle by this much). Lets you keep leaves a hair off stems.
+    float obstacleClearance = 0.0f;
+    /// If > 0, candidates that fail the avoid test are pushed outward along
+    /// the nearest surface normal by this distance and re-tested once. On
+    /// still-too-close, dropped. 0 = hard reject (default).
+    float obstaclePushout = 0.0f;
+
+    /// Optional keep-out spheres tested in addition to `avoid`. Use to
+    /// reserve volume around bloom anchors before scattering leaves through
+    /// the same skeleton.
+    std::vector<Sphere> keepOut;
+
     /// Deterministic seed.
     uint64_t seed = 0;
 };
@@ -72,5 +93,30 @@ MeshData scatterLeaves(
     const std::vector<BranchSegment>& segments,
     const MeshData& leaf,
     const LeafPlacementOptions& opts = {});
+
+/// Options for `packAnchors`.
+struct AnchorPackOptions {
+    /// Minimum spacing between accepted anchors. 0 disables.
+    float minSpacing = 0.0f;
+    /// Reject candidates whose distance to the obstacle field is below this.
+    /// Ignored when `avoid` is null.
+    float minObstacleDistance = 0.0f;
+    /// Maximum number of anchors to accept. 0 = unlimited.
+    int   maxCount = 0;
+    /// Deterministic seed for the candidate visit order.
+    uint64_t seed = 0;
+};
+
+/// Greedy anchor picker for blooms / fruits / clustered foliage. Visits
+/// candidates in a seeded shuffled order; accepts each if it (a) is at least
+/// `minSpacing` from every previously-accepted anchor, (b) clears the
+/// obstacle field by `minObstacleDistance`, and (c) lies outside every
+/// `reservedKeepOut` sphere. Returns the indices of accepted candidates in
+/// acceptance order.
+std::vector<int> packAnchors(
+    const std::vector<Vec3>& candidates,
+    const CapsuleField* avoid,
+    const std::vector<Sphere>& reservedKeepOut,
+    const AnchorPackOptions& opts = {});
 
 } // namespace bromesh

@@ -7,6 +7,7 @@
 #include "bromesh/procedural/space_colonization.h"
 #include "bromesh/procedural/branches.h"
 #include "bromesh/procedural/leaf_scatter.h"
+#include "bromesh/procedural/obstacle_field.h"
 #include "bromesh/procedural/plants.h"
 
 #include <algorithm>
@@ -677,5 +678,259 @@ TEST(blade_path_bend_offsets_midpoint) {
     // Midpoint (index 4 of 9) should have positive x (lateral axis falls
     // on world +X for a +Y tipDir).
     ASSERT(pts[4].x > 0.1f, "bend pulls midpoint laterally");
+}
+
+// ── CapsuleField ─────────────────────────────────────────────────────────
+// Occupancy primitive for obstacle-aware scatter / colonize.
+
+TEST(capsule_field_distance_basic) {
+    // Single capsule along Y from (0,0,0) to (0,1,0), radius 0.1.
+    Capsule c; c.a = {0,0,0}; c.b = {0,1,0}; c.radius = 0.1f; c.tag = 0;
+    CapsuleField f({c});
+
+    // On the axis, midway: distance = -radius.
+    float d_in = f.distance({0, 0.5f, 0});
+    ASSERT(std::fabs(d_in + 0.1f) < 1e-4f, "inside axis distance == -radius");
+
+    // 0.3 units perpendicular to the axis: distance = 0.3 - 0.1 = 0.2.
+    float d_out = f.distance({0.3f, 0.5f, 0});
+    ASSERT(std::fabs(d_out - 0.2f) < 1e-4f, "perpendicular distance correct");
+
+    // Past the cap on +Y by 0.3: distance to nearest cap point is 0.3 - 0.1.
+    float d_cap = f.distance({0, 1.3f, 0});
+    ASSERT(std::fabs(d_cap - 0.2f) < 1e-4f, "endcap distance correct");
+}
+
+TEST(capsule_field_excludes_tag) {
+    // Two overlapping capsules tagged 0 and 1, both containing the origin.
+    Capsule c0; c0.a = {-1,0,0}; c0.b = {1,0,0}; c0.radius = 0.2f; c0.tag = 0;
+    Capsule c1; c1.a = {0,-1,0}; c1.b = {0,1,0}; c1.radius = 0.2f; c1.tag = 1;
+    CapsuleField f({c0, c1});
+
+    // Without exclusion, origin is well inside.
+    ASSERT(f.distance({0,0,0}, -1) < 0.0f, "no exclude: inside");
+    // Exclude tag 0 → still inside via c1.
+    ASSERT(f.distance({0,0,0}, 0) < 0.0f, "exclude 0: still inside via 1");
+    // Exclude tag 1 → still inside via c0.
+    ASSERT(f.distance({0,0,0}, 1) < 0.0f, "exclude 1: still inside via 0");
+
+    // Point on the X axis only inside c0: excluding 0 makes it outside.
+    Vec3 p{0.5f, 0, 0};   // inside c0 (radius 0.2 around X axis), outside c1
+    ASSERT(f.distance(p, -1) < 0.0f, "p inside c0");
+    ASSERT(f.distance(p, 0) > 0.0f, "exclude 0 → outside");
+}
+
+TEST(capsule_field_intersect_sphere) {
+    Capsule c; c.a = {0,0,0}; c.b = {0,1,0}; c.radius = 0.1f;
+    CapsuleField f({c});
+
+    ASSERT(f.intersectsSphere({0, 0.5f, 0}, 0.05f),
+           "sphere centered on axis intersects");
+    ASSERT(!f.intersectsSphere({1.0f, 0.5f, 0}, 0.05f),
+           "far sphere does not intersect");
+    // Tangent: surface at x=0.1, sphere radius 0.05 at x=0.16 should not
+    // intersect (gap = 0.06 - 0.05 = 0.01).
+    ASSERT(!f.intersectsSphere({0.16f, 0.5f, 0}, 0.05f),
+           "near-tangent miss");
+    ASSERT(f.intersectsSphere({0.14f, 0.5f, 0}, 0.05f),
+           "near-tangent hit");
+}
+
+TEST(capsule_field_from_segments) {
+    // Two perpendicular branches forming an L, plus a synthetic root.
+    std::vector<BranchSegment> segs;
+    BranchSegment root; root.parent = -1; root.from = {0,0,0}; root.to = {0,0,0};
+    root.radius = 0.0f; root.depth = 0;
+    segs.push_back(root);
+    BranchSegment a; a.parent = 0; a.from = {0,0,0}; a.to = {0,1,0};
+    a.radius = 0.05f; a.depth = 1; segs.push_back(a);
+    BranchSegment b; b.parent = 1; b.from = {0,1,0}; b.to = {1,1,0};
+    b.radius = 0.04f; b.depth = 2; segs.push_back(b);
+
+    auto caps = CapsuleField::capsulesFromSegments(segs);
+    // Root's from==to and radius==0 → skipped.
+    ASSERT(caps.size() == 2, "root segment skipped");
+    ASSERT(caps[0].tag == 1 && caps[1].tag == 2, "tags equal segment indices");
+
+    CapsuleField f(std::move(caps));
+    // Point on segment a's axis sits inside that capsule.
+    ASSERT(f.distance({0, 0.5f, 0}) < 0.0f, "on a-axis: inside");
+    // Far away: positive.
+    ASSERT(f.distance({5, 5, 5}) > 0.0f, "far point: outside");
+    // Excluding the segment-a tag, that same point is outside.
+    ASSERT(f.distance({0, 0.5f, 0}, 1) > 0.0f, "exclude segment a: outside");
+}
+
+// ── Obstacle-aware scatter ───────────────────────────────────────────────
+
+TEST(leaf_scatter_avoids_capsule) {
+    // Single straight branch along Y; obstacle capsule blocks the upper half.
+    std::vector<BranchSegment> segs;
+    BranchSegment root; root.parent = -1; root.from = {0,0,0}; root.to = {0,0,0};
+    root.radius = 0.0f; root.depth = 0; segs.push_back(root);
+    BranchSegment s; s.parent = 0; s.from = {0,0,0}; s.to = {0,1,0};
+    s.radius = 0.02f; s.depth = 1; segs.push_back(s);
+
+    Capsule blocker;
+    // Cylinder centred at y=0.75 covering the upper quarter, well clear of
+    // the branch's own segment (tag = 1).
+    blocker.a = {-0.5f, 0.75f, 0};
+    blocker.b = { 0.5f, 0.75f, 0};
+    blocker.radius = 0.10f;
+    blocker.tag = 999;   // not a real segment index
+    CapsuleField field({blocker});
+
+    LeafPlacementOptions o;
+    o.maxRadius = 0.05f;
+    o.perUnitLength = 200.0f;
+    o.tiltJitter = 0; o.rollJitter = 0; o.scaleJitter = 0;
+    o.seed = 7;
+
+    LeafPlacements before = placeLeavesOnBranches(segs, o);
+    ASSERT(before.count() > 0, "baseline produced leaves");
+
+    // Without avoid, some origins land inside the blocker volume.
+    int inside_before = 0;
+    for (size_t i = 0; i < before.count(); ++i) {
+        Vec3 p{before.transforms[i*16+12], before.transforms[i*16+13], before.transforms[i*16+14]};
+        if (field.tooClose(p, 0.0f, 1)) ++inside_before;
+    }
+    ASSERT(inside_before > 0, "without avoid: collisions exist");
+
+    o.avoid = &field;
+    LeafPlacements after = placeLeavesOnBranches(segs, o);
+    int inside_after = 0;
+    for (size_t i = 0; i < after.count(); ++i) {
+        Vec3 p{after.transforms[i*16+12], after.transforms[i*16+13], after.transforms[i*16+14]};
+        if (field.tooClose(p, 0.0f, 1)) ++inside_after;
+    }
+    ASSERT(inside_after == 0, "with avoid: no collisions");
+}
+
+TEST(leaf_scatter_keepout_spheres) {
+    std::vector<BranchSegment> segs;
+    BranchSegment root; root.parent = -1; root.from = {0,0,0}; root.to = {0,0,0};
+    root.radius = 0.0f; root.depth = 0; segs.push_back(root);
+    BranchSegment s; s.parent = 0; s.from = {0,0,0}; s.to = {0,1,0};
+    s.radius = 0.02f; s.depth = 1; segs.push_back(s);
+
+    Sphere keep;
+    keep.center = {0, 0.5f, 0};
+    keep.radius = 0.15f;
+
+    LeafPlacementOptions o;
+    o.maxRadius = 0.05f;
+    o.perUnitLength = 200.0f;
+    o.seed = 7;
+    o.keepOut.push_back(keep);
+
+    LeafPlacements pl = placeLeavesOnBranches(segs, o);
+    ASSERT(pl.count() > 0, "keepOut leaves something behind");
+    bool ok = true;
+    for (size_t i = 0; i < pl.count(); ++i) {
+        Vec3 p{pl.transforms[i*16+12], pl.transforms[i*16+13], pl.transforms[i*16+14]};
+        Vec3 d = p - keep.center;
+        if (vdot(d, d) <= keep.radius * keep.radius) { ok = false; break; }
+    }
+    ASSERT(ok, "no leaf origin inside keep-out sphere");
+}
+
+TEST(leaf_scatter_pushout_recovers_some) {
+    // Without pushout we drop everything inside the obstacle. With pushout,
+    // those candidates are nudged outward and survive — so the count goes up
+    // (or at least does not go down) and no surviving placement remains
+    // inside.
+    std::vector<BranchSegment> segs;
+    BranchSegment root; root.parent = -1; root.from = {0,0,0}; root.to = {0,0,0};
+    root.radius = 0.0f; root.depth = 0; segs.push_back(root);
+    BranchSegment s; s.parent = 0; s.from = {0,0,0}; s.to = {0,1,0};
+    s.radius = 0.02f; s.depth = 1; segs.push_back(s);
+
+    Capsule blocker;
+    blocker.a = {-0.5f, 0.5f, 0};
+    blocker.b = { 0.5f, 0.5f, 0};
+    blocker.radius = 0.05f;
+    blocker.tag = 999;
+    CapsuleField field({blocker});
+
+    LeafPlacementOptions o;
+    o.maxRadius = 0.05f;
+    o.perUnitLength = 200.0f;
+    o.tiltJitter = 0; o.rollJitter = 0; o.scaleJitter = 0;
+    o.seed = 11;
+    o.avoid = &field;
+
+    LeafPlacements hard = placeLeavesOnBranches(segs, o);
+
+    o.obstaclePushout = 0.05f;
+    LeafPlacements push = placeLeavesOnBranches(segs, o);
+    ASSERT(push.count() >= hard.count(), "pushout retains at least as many");
+
+    bool ok = true;
+    for (size_t i = 0; i < push.count(); ++i) {
+        Vec3 p{push.transforms[i*16+12], push.transforms[i*16+13], push.transforms[i*16+14]};
+        if (field.tooClose(p, 0.0f, 1)) { ok = false; break; }
+    }
+    ASSERT(ok, "after pushout no placement remains inside obstacle");
+}
+
+// ── packAnchors ──────────────────────────────────────────────────────────
+
+TEST(pack_anchors_min_spacing) {
+    // 100 candidates 0.01 apart along X. With minSpacing 0.05 we expect
+    // roughly one accept per 5 candidates.
+    std::vector<Vec3> cand;
+    cand.reserve(100);
+    for (int i = 0; i < 100; ++i) cand.push_back({i * 0.01f, 0, 0});
+
+    AnchorPackOptions o;
+    o.minSpacing = 0.05f;
+    o.seed = 42;
+    auto idx = packAnchors(cand, nullptr, {}, o);
+    // 100 candidates over [0, 0.99] with minSpacing 0.05 gives a hard upper
+    // bound around 20 and (with random visit order) a lower bound around 10
+    // when an unlucky shuffle leaves gaps. Be generous on the lower side.
+    ASSERT(idx.size() >= 8 && idx.size() <= 25, "spacing keeps count in expected band");
+
+    // Verify pairwise spacing.
+    bool ok = true;
+    for (size_t i = 0; i < idx.size() && ok; ++i) {
+        for (size_t j = i + 1; j < idx.size(); ++j) {
+            float d = vdist(cand[idx[i]], cand[idx[j]]);
+            if (d < o.minSpacing - 1e-5f) { ok = false; break; }
+        }
+    }
+    ASSERT(ok, "all accepted anchors respect minSpacing");
+}
+
+TEST(pack_anchors_max_count) {
+    std::vector<Vec3> cand;
+    for (int i = 0; i < 50; ++i) cand.push_back({i * 1.0f, 0, 0});
+    AnchorPackOptions o;
+    o.maxCount = 5;
+    o.seed = 1;
+    auto idx = packAnchors(cand, nullptr, {}, o);
+    ASSERT(idx.size() == 5, "maxCount caps acceptances");
+}
+
+TEST(pack_anchors_avoid_obstacle) {
+    // Half of the candidates lie inside an obstacle capsule and should be
+    // rejected.
+    std::vector<Vec3> cand;
+    for (int i = 0; i < 20; ++i) cand.push_back({i * 0.05f, 0, 0});
+    Capsule c; c.a = {-1, 0, 0}; c.b = {0.5f, 0, 0}; c.radius = 0.05f; c.tag = 0;
+    CapsuleField field({c});
+
+    AnchorPackOptions o;
+    o.minObstacleDistance = 0.0f;
+    o.seed = 3;
+    auto idx = packAnchors(cand, &field, {}, o);
+
+    bool ok = true;
+    for (int i : idx) {
+        if (field.tooClose(cand[i], 0.0f, -1)) { ok = false; break; }
+    }
+    ASSERT(ok, "no accepted anchor lies inside obstacle");
+    ASSERT(idx.size() > 0, "some anchors survive outside the obstacle");
 }
 

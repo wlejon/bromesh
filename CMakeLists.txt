@@ -246,6 +246,7 @@ add_library(bromesh STATIC
     src/procedural/branches.cpp
     src/procedural/plants.cpp
     src/procedural/leaf_scatter.cpp
+    src/procedural/obstacle_field.cpp
 
     # I/O
     src/io/obj.cpp
