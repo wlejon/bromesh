@@ -1,6 +1,7 @@
 #include "bromesh/procedural/plants.h"
 
 #include "bromesh/manipulation/merge.h"
+#include "bromesh/manipulation/normals.h"
 #include "bromesh/manipulation/sweep.h"
 #include "bromesh/manipulation/transform.h"
 #include "bromesh/primitives/primitives.h"
@@ -28,6 +29,58 @@ void atlasCell(LeafShape shape, float& u0, float& v0, float& u1, float& v1) {
     v0 = row * dv;
     u1 = u0 + du;
     v1 = v0 + dv;
+}
+
+// Per-shape width scale at length parameter t in [0,1]. Returns 0..1; 1 is
+// the full configured width. Curves picked to match the named silhouettes:
+// Oval — symmetric ellipse-like; Pointed — taper from broad base to tip;
+// Petal — almond/ogive with peak ~78% length; etc.
+float shapeWidthAt(LeafShape shape, float t) {
+    if (t <= 0.0f) t = 0.0f;
+    if (t >= 1.0f) t = 1.0f;
+    switch (shape) {
+    case LeafShape::Oval: {
+        // sin(pi*t) — broad mid, narrow at both ends.
+        return std::sin(3.14159265358979323846f * t);
+    }
+    case LeafShape::Pointed: {
+        // Broad near base; smoothly taper to point at tip.
+        // 1 at t=0.15, 0 at t=1, gentle convex curve.
+        float x = std::max(0.0f, (t - 0.0f));
+        return std::sqrt(1.0f - x * x);
+    }
+    case LeafShape::Lobed: {
+        // Broad with a slight constriction near base. Approximate two
+        // bumps via 0.7*sin(pi*t) + 0.3*sin(2*pi*t) clamped to [0,1].
+        float a = std::sin(3.14159265358979323846f * t);
+        float b = std::sin(6.28318530717958647692f * t);
+        float v = 0.85f * a + 0.18f * b;
+        if (v < 0.0f) v = 0.0f;
+        if (v > 1.0f) v = 1.0f;
+        return v;
+    }
+    case LeafShape::Needle: {
+        // Nearly uniform thin profile, slight taper to tip.
+        return 0.85f * (1.0f - 0.5f * t * t);
+    }
+    case LeafShape::Frond: {
+        // Smooth taper from broad base to narrow tip.
+        return 1.0f - 0.65f * t;
+    }
+    case LeafShape::Petal: {
+        // Almond / ogive: narrow at base, peaks ~75% length, tapers
+        // gently to a soft tip. Uses (4t(1-t))^0.6 skewed toward tip.
+        float skewed = std::pow(t, 0.6f);
+        float bell = 4.0f * skewed * (1.0f - skewed);
+        // Lift tip a touch so it's broad-rounded, not pinched.
+        float tipLift = 0.18f * std::sin(3.14159265358979323846f * t);
+        float v = 0.85f * bell + tipLift;
+        if (v < 0.0f) v = 0.0f;
+        if (v > 1.0f) v = 1.0f;
+        return v;
+    }
+    }
+    return 1.0f;
 }
 
 } // namespace
@@ -88,9 +141,15 @@ MeshData leafCard(LeafShape shape, const LeafCardOptions& opts) {
         float cr = std::cos(roll);
         float sr = std::sin(roll);
 
+        // Per-row width scale (geometric silhouette).
+        float widthScale = opts.shapedSilhouette ? shapeWidthAt(shape, tj) : 1.0f;
+        // Cup amount engages from base (0) to tip (full).
+        float cupT = opts.cup * tj;
+
         for (int i = 0; i < wcount; ++i) {
             float ti = static_cast<float>(i) / static_cast<float>(wseg);
-            float xLocal = (ti - 0.5f) * opts.width;
+            float xUnit = (ti - 0.5f);                     // [-0.5, 0.5]
+            float xLocal = xUnit * opts.width * widthScale;
             (void)halfW;
 
             // Width direction is local +X before curl. Curl rotates around the
@@ -110,9 +169,16 @@ MeshData leafCard(LeafShape shape, const LeafCardOptions& opts) {
             float Ny = -sr * 0.0f + cr * tz;
             float Nz = -sr * 0.0f + cr * (-ty);
 
-            float px = xLocal * Bx;
-            float py = cy + xLocal * By;
-            float pz = cz + xLocal * Bz;
+            // Cup displacement: each width edge lifts along the local normal
+            // by (xUnit)^2 * cupT * width. Symmetric across the spine so the
+            // cross-section becomes a U/dish shape rather than a flat strip.
+            float cupOffset = (cupT > 0.0f)
+                ? cupT * xUnit * xUnit * opts.width
+                : 0.0f;
+
+            float px = xLocal * Bx + cupOffset * Nx;
+            float py = cy + xLocal * By + cupOffset * Ny;
+            float pz = cz + xLocal * Bz + cupOffset * Nz;
 
             m.positions.push_back(px);
             m.positions.push_back(py);
@@ -158,6 +224,12 @@ MeshData leafCard(LeafShape shape, const LeafCardOptions& opts) {
         }
     }
 
+    // The analytical normals computed above are correct for a bent + twisted
+    // strip but do not account for cup deformation or the silhouette mask.
+    // Recompute when either is in play so shading matches the actual surface.
+    if (opts.cup > 1e-6f || opts.shapedSilhouette) {
+        computeNormals(m);
+    }
     return m;
 }
 
@@ -204,15 +276,18 @@ MeshData flower(const FlowerOptions& opts) {
             ? 0.0f
             : static_cast<float>(layer) / static_cast<float>(layers - 1);
         // Inner layers smaller, outer (layer 0) full-size.
-        float scale = 1.0f - 0.4f * layerT;
+        float scale = 1.0f - opts.layerScaleFalloff * layerT;
         float twist = opts.layerTwist * layer;
-        float yLift = opts.centerHeight * (0.4f + 0.4f * layerT);
+        float yLift = opts.centerHeight *
+            (opts.outerYLift + (opts.innerYLift - opts.outerYLift) * layerT);
 
         LeafCardOptions lo;
         lo.width = opts.petalWidth * scale;
         lo.length = opts.petalLength * scale;
         lo.bend = opts.petalBend;
         lo.curl = opts.petalCurl;
+        lo.cup  = opts.petalCup;
+        lo.shapedSilhouette = opts.shapedPetals;
         lo.stemOffset = true;
         lo.widthSegments = 4;
         lo.lengthSegments = 8;
@@ -234,9 +309,9 @@ MeshData flower(const FlowerOptions& opts) {
                 std::swap(petal.indices[t * 3 + 1], petal.indices[t * 3 + 2]);
             }
             // Rotate so the petal radiates outward in XZ around the Y axis,
-            // pointed slightly upward via a small pre-tilt around X.
-            // Pre-tilt: rotate around X so the petal lifts off the ground.
-            float tilt = -0.25f - 0.15f * (1.0f - layerT);
+            // pointed slightly upward via a pre-tilt around X.
+            // Lerp between outerTilt (layer 0) and innerTilt (innermost).
+            float tilt = opts.outerTilt + (opts.innerTilt - opts.outerTilt) * layerT;
             // Build composite rotation: first tilt around X (-pitch), then
             // yaw around Y by angle.
             // Apply analytically.

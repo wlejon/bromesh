@@ -36,6 +36,12 @@ struct LeafCardOptions {
     float bend = 0.0f;
     /// Twist around the length (Z) axis, radians from base to tip.
     float curl = 0.0f;
+    /// Bilateral cupping: each width edge curls toward the local normal in
+    /// proportion to (xLocal/halfW)^2. 0 = flat strip; 1 ≈ each edge lifts
+    /// roughly halfWidth toward the normal at the tip. For rose petals try
+    /// 0.5–1.2 — gives a true U-shaped cross-section instead of a flat sheet.
+    /// The cup gradually engages from base (0) to tip (full).
+    float cup = 0.0f;
     /// If true, the card pivots at the base (z = 0). If false, pivot at center.
     bool stemOffset = true;
     /// Number of segments along width (>= 1).
@@ -47,6 +53,18 @@ struct LeafCardOptions {
     /// (procedural petal/leaf with built-in alpha mask) rather than a packed
     /// atlas. The `shape` parameter is ignored when this is true.
     bool fullUV = false;
+    /// If true, vary the geometric width along length to suggest a leaf or
+    /// petal silhouette (instead of a uniform rectangle). The shape is
+    /// determined by the `shape` parameter:
+    ///   Oval    — broad in the middle, tapered at base and tip
+    ///   Pointed — broadest near base, taper to a point at the tip
+    ///   Lobed   — broad with a slight constriction near the base
+    ///   Needle  — uniformly narrow (largely unaffected)
+    ///   Frond   — gentle taper from base to tip
+    ///   Petal   — almond/ogive: narrow at base, broadens to ~80% length, tapers to tip
+    /// When false (default) the card is a flat rectangle and the shape only
+    /// affects UV-atlas selection.
+    bool shapedSilhouette = false;
 };
 
 /// Build a low-poly leaf or petal card with UVs sampled from a 4x4 atlas.
@@ -67,6 +85,31 @@ struct FlowerOptions {
     float centerRadius = 0.08f;
     float centerHeight = 0.04f;
     float centerColor[3] = {1.0f, 0.85f, 0.2f};
+    /// Pre-tilt of petals around the radial axis, in radians. Negative
+    /// values lift the petal tip upward (rose-cup shape); 0 = horizontal
+    /// disk; positive values droop the tip downward.
+    /// `outerTilt` is applied to the outermost ring (layer 0) and
+    /// `innerTilt` to the innermost ring (layer = layers-1). Intermediate
+    /// layers interpolate linearly. For a rose-like bloom set
+    /// outerTilt ≈ -0.15 (nearly flat) and innerTilt ≈ -1.20 (near-vertical).
+    float outerTilt = -0.40f;
+    float innerTilt = -0.25f;
+    /// Per-layer scale falloff. Inner layers are scaled by
+    /// `1 - layerScaleFalloff * layerT`. Larger values make inner petals
+    /// shrink faster (creating a tighter rose bud).
+    float layerScaleFalloff = 0.40f;
+    /// Per-layer Y-lift in centerHeight units. Inner petals lift higher
+    /// than outer ones, creating a stacked-cup silhouette.
+    /// `outerYLift` applies to layer 0, `innerYLift` to the innermost.
+    float outerYLift = 0.40f;
+    float innerYLift = 0.80f;
+    /// Bilateral cup applied to each petal (see LeafCardOptions::cup).
+    /// Real rose petals strongly cup inward — try 0.6–1.0 for a rose look.
+    float petalCup = 0.0f;
+    /// If true, petals are built with a shaped silhouette (per LeafShape)
+    /// rather than rectangular cards. Recommended for natural-looking
+    /// flowers without a textured atlas.
+    bool shapedPetals = false;
 };
 
 /// Build a radial flower: a small dome center with `petalCount` leaf cards
