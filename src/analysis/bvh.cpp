@@ -169,10 +169,12 @@ MeshBVH MeshBVH::build(const MeshData& mesh, int leafSize) {
             expandPoint(centMin, centMax, t.centroid);
         }
 
-        Node& node = bvh.nodes_[w.node];
-        for (int a = 0; a < 3; ++a) {
-            node.bboxMin[a] = nodeMin[a];
-            node.bboxMax[a] = nodeMax[a];
+        {
+            Node& node = bvh.nodes_[w.node];
+            for (int a = 0; a < 3; ++a) {
+                node.bboxMin[a] = nodeMin[a];
+                node.bboxMax[a] = nodeMax[a];
+            }
         }
 
         // Leaf cutoff: few enough tris or degenerate centroid bounds
@@ -183,6 +185,7 @@ MeshBVH MeshBVH::build(const MeshData& mesh, int leafSize) {
             (centMax[1] - centMin[1] < 1e-12f) &&
             (centMax[2] - centMin[2] < 1e-12f);
         if (w.count <= (uint32_t)leafSize || degenerate) {
+            Node& node = bvh.nodes_[w.node];
             node.leftFirst = w.first;
             node.triCount  = w.count;
             continue;
@@ -212,6 +215,7 @@ MeshBVH MeshBVH::build(const MeshData& mesh, int leafSize) {
         // Safety: if nth_element produced an empty side (shouldn't happen for
         // count >= 2) fall back to a leaf.
         if (leftCount == 0 || rightCount == 0) {
+            Node& node = bvh.nodes_[w.node];
             node.leftFirst = w.first;
             node.triCount  = w.count;
             continue;
@@ -220,11 +224,12 @@ MeshBVH MeshBVH::build(const MeshData& mesh, int leafSize) {
         uint32_t leftChild = (uint32_t)bvh.nodes_.size();
         bvh.nodes_.push_back({});
         bvh.nodes_.push_back({});
-        // Re-fetch reference to `node` — the push_back calls may have
-        // reallocated the vector, invalidating the earlier reference.
-        Node& parent = bvh.nodes_[w.node];
-        parent.leftFirst = leftChild;
-        parent.triCount  = 0;
+        // Index, not reference: nodes_ was reserved to the worst-case size at
+        // the top of build(), so push_back here cannot reallocate, but writing
+        // through the index documents the intent and stays safe if that ever
+        // changes.
+        bvh.nodes_[w.node].leftFirst = leftChild;
+        bvh.nodes_[w.node].triCount  = 0;
 
         stack.push_back({ leftChild + 1, w.first + leftCount, rightCount });
         stack.push_back({ leftChild,     w.first,             leftCount  });

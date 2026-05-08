@@ -1,11 +1,8 @@
 #include "bromesh/manipulation/normals.h"
 #include <cmath>
 #include <cstring>
+#include <numbers>
 #include <vector>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 namespace bromesh {
 
@@ -67,7 +64,7 @@ void computeNormals(MeshData& mesh) {
 MeshData computeCreaseNormals(const MeshData& mesh, float angleThresholdDeg) {
     if (mesh.positions.empty() || mesh.indices.empty()) return {};
 
-    const float cosThreshold = std::cos(angleThresholdDeg * (float)M_PI / 180.0f);
+    const float cosThreshold = std::cos(angleThresholdDeg * std::numbers::pi_v<float> / 180.0f);
     size_t triCount = mesh.triangleCount();
     size_t vertCount = mesh.vertexCount();
 

@@ -139,6 +139,7 @@ std::vector<RayHit> raycastAll(const MeshData& mesh,
     float maxT = (maxDistance > 0.0f) ? maxDistance : std::numeric_limits<float>::max();
 
     const size_t triCount = mesh.triangleCount();
+    results.reserve(16);
     for (size_t tri = 0; tri < triCount; ++tri) {
         uint32_t i0 = mesh.indices[tri*3+0];
         uint32_t i1 = mesh.indices[tri*3+1];

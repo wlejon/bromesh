@@ -2,12 +2,11 @@
 
 #include <cmath>
 #include <cstring>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+#include <numbers>
 
 namespace bromesh {
+
+namespace { constexpr float kPi = std::numbers::pi_v<float>; }
 
 // Helper: push a vertex (pos + normal + uv)
 static void pushVert(MeshData& m, float px, float py, float pz,
@@ -100,13 +99,13 @@ MeshData sphere(float radius, int segments, int rings) {
     // Interior rings r = 1 .. rings-1 (between the poles)
     for (int r = 1; r < rings; r++) {
         float v = (float)r / rings;
-        float phi = v * (float)M_PI;
+        float phi = v * kPi;
         float sinPhi = std::sin(phi);
         float cosPhi = std::cos(phi);
 
         for (int s = 0; s <= segments; s++) {
             float u = (float)s / segments;
-            float theta = u * 2.0f * (float)M_PI;
+            float theta = u * 2.0f * kPi;
             float nx = sinPhi * std::cos(theta);
             float ny = cosPhi;
             float nz = sinPhi * std::sin(theta);
@@ -177,7 +176,7 @@ MeshData cylinder(float radius, float halfHeight, int segments) {
         float v = (float)i;
         for (int s = 0; s <= segments; s++) {
             float u = (float)s / segments;
-            float theta = u * 2.0f * (float)M_PI;
+            float theta = u * 2.0f * kPi;
             float nx = std::cos(theta);
             float nz = std::sin(theta);
             pushVert(m, nx * radius, y, nz * radius, nx, 0, nz, u, v);
@@ -199,7 +198,7 @@ MeshData cylinder(float radius, float halfHeight, int segments) {
         pushVert(m, 0, halfHeight, 0, 0, 1, 0, 0.5f, 0.5f);
         for (int s = 0; s <= segments; s++) {
             float u = (float)s / segments;
-            float theta = u * 2.0f * (float)M_PI;
+            float theta = u * 2.0f * kPi;
             float cx = std::cos(theta);
             float cz = std::sin(theta);
             pushVert(m, cx * radius, halfHeight, cz * radius, 0, 1, 0,
@@ -216,7 +215,7 @@ MeshData cylinder(float radius, float halfHeight, int segments) {
         pushVert(m, 0, -halfHeight, 0, 0, -1, 0, 0.5f, 0.5f);
         for (int s = 0; s <= segments; s++) {
             float u = (float)s / segments;
-            float theta = u * 2.0f * (float)M_PI;
+            float theta = u * 2.0f * kPi;
             float cx = std::cos(theta);
             float cz = std::sin(theta);
             pushVert(m, cx * radius, -halfHeight, cz * radius, 0, -1, 0,
@@ -259,13 +258,13 @@ MeshData capsule(float radius, float halfHeight, int segments, int rings) {
     // Top hemisphere interior rings (r = 1..halfRings). The last is the top
     // equator (phi = pi/2), which the cylinder section connects to below.
     for (int r = 1; r <= halfRings; r++) {
-        float phi = (float)r / halfRings * ((float)M_PI * 0.5f);
+        float phi = (float)r / halfRings * (kPi * 0.5f);
         float sinPhi = std::sin(phi);
         float cosPhi = std::cos(phi);
         float y = halfHeight + cosPhi * radius;
         for (int s = 0; s <= segments; s++) {
             float u = (float)s / segments;
-            float theta = u * 2.0f * (float)M_PI;
+            float theta = u * 2.0f * kPi;
             float nx = sinPhi * std::cos(theta);
             float nz = sinPhi * std::sin(theta);
             float ny = cosPhi;
@@ -277,7 +276,7 @@ MeshData capsule(float radius, float halfHeight, int segments, int rings) {
     // Bottom equator at y = -halfHeight (row halfRings+1); horizontal normals
     for (int s = 0; s <= segments; s++) {
         float u = (float)s / segments;
-        float theta = u * 2.0f * (float)M_PI;
+        float theta = u * 2.0f * kPi;
         float nx = std::cos(theta);
         float nz = std::sin(theta);
         pushVert(m, nx * radius, -halfHeight, nz * radius, nx, 0.0f, nz,
@@ -287,14 +286,14 @@ MeshData capsule(float radius, float halfHeight, int segments, int rings) {
     // Bottom hemisphere interior rings (r = 1..halfRings-1). The final
     // pole ring of the old layout is replaced by a single pole vertex below.
     for (int r = 1; r < halfRings; r++) {
-        float phi = (float)M_PI * 0.5f + (float)r / halfRings * ((float)M_PI * 0.5f);
+        float phi = kPi * 0.5f + (float)r / halfRings * (kPi * 0.5f);
         float sinPhi = std::sin(phi);
         float cosPhi = std::cos(phi);
         float y = -halfHeight + cosPhi * radius;
         int row = halfRings + 1 + r;
         for (int s = 0; s <= segments; s++) {
             float u = (float)s / segments;
-            float theta = u * 2.0f * (float)M_PI;
+            float theta = u * 2.0f * kPi;
             float nx = sinPhi * std::cos(theta);
             float nz = sinPhi * std::sin(theta);
             float ny = cosPhi;
@@ -395,13 +394,13 @@ MeshData torus(float majorRadius, float minorRadius, int majorSegments, int mino
 
     for (int i = 0; i <= majorSegments; i++) {
         float u = (float)i / majorSegments;
-        float theta = u * 2.0f * (float)M_PI;
+        float theta = u * 2.0f * kPi;
         float cosTheta = std::cos(theta);
         float sinTheta = std::sin(theta);
 
         for (int j = 0; j <= minorSegments; j++) {
             float v = (float)j / minorSegments;
-            float phi = v * 2.0f * (float)M_PI;
+            float phi = v * 2.0f * kPi;
             float cosPhi = std::cos(phi);
             float sinPhi = std::sin(phi);
 

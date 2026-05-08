@@ -198,19 +198,12 @@ MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
                         float cz = e1[0]*e2[1] - e1[1]*e2[0];
                         float dot = cx*normal[0] + cy*normal[1] + cz*normal[2];
                         if (dot < 0) {
-                            // Swap p1 and p2 to flip winding
+                            // Swap p1 and p2 to reverse winding; p0 and p3
+                            // (the diagonal pair) are unaffected.
                             float tmp[3];
                             tmp[0] = p[1][0]; tmp[1] = p[1][1]; tmp[2] = p[1][2];
                             p[1][0] = p[2][0]; p[1][1] = p[2][1]; p[1][2] = p[2][2];
                             p[2][0] = tmp[0]; p[2][1] = tmp[1]; p[2][2] = tmp[2];
-                            // Also swap p3 corners accordingly -- actually we need
-                            // a full re-layout. Swapping p1<->p2 means:
-                            // p0=(iu,iv), p1=(iu,iv+h), p2=(iu+w,iv), p3=(iu+w,iv+h)
-                            // But we also need p3 consistent. Let's just swap and fix p3.
-                            // Actually, the quad is p0-p1-p2-p3 where triangles are
-                            // 0-1-2 and 1-3-2. After swapping p1<->p2:
-                            // tri1: 0-p2_old-p1_old, tri2: p2_old-p3-p1_old
-                            // This should flip the normal. p3 stays the same.
                         }
 
                         emitQuad(p, normal, (float)w, (float)h, mat);
