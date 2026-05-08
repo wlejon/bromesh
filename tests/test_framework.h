@@ -25,6 +25,7 @@
 #include "bromesh/manipulation/shrinkwrap.h"
 #include "bromesh/manipulation/transform.h"
 #include "bromesh/manipulation/polygon.h"
+#include "bromesh/manipulation/poly_mesh.h"
 #include "bromesh/analysis/bbox.h"
 #include "bromesh/analysis/convex_decomposition.h"
 #include "bromesh/analysis/bake.h"

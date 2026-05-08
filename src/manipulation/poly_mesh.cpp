@@ -510,6 +510,7 @@ PolyMesh::Validation PolyMesh::validate() const {
     Validation r;
     for (size_t i = 0; i < halfEdges_.size(); ++i) {
         const HalfEdge& he = halfEdges_[i];
+        if (he.face == NONE) continue; // tombstone, skip
         if (he.origin < 0 || he.origin >= (int32_t)vertices_.size()) {
             r.valid = false;
             r.errors.push_back("he[" + std::to_string(i) + "] has invalid origin");
@@ -534,11 +535,7 @@ PolyMesh::Validation PolyMesh::validate() const {
     }
     for (size_t fi = 0; fi < faces_.size(); ++fi) {
         const Face& f = faces_[fi];
-        if (f.halfEdge == NONE) {
-            r.valid = false;
-            r.errors.push_back("face[" + std::to_string(fi) + "] has no halfEdge");
-            continue;
-        }
+        if (f.halfEdge == NONE) continue; // tombstone, skip
         // Walk and check closure + face-pointer consistency.
         int32_t cur = f.halfEdge;
         size_t guard = 0;
@@ -1014,25 +1011,441 @@ void PolyMesh::mergeFacesByGroup() {
 // Compact — drop unreferenced vertices and renumber
 // ===========================================================================
 
+bool PolyMesh::isBoundaryVertex(int32_t vi) const {
+    if (vi < 0 || vi >= (int32_t)vertices_.size()) return false;
+    for (size_t i = 0; i < halfEdges_.size(); ++i) {
+        const HalfEdge& he = halfEdges_[i];
+        if (he.face == NONE) continue;
+        if (he.twin != NONE) continue;
+        if (he.origin == vi) return true;
+        if (halfEdges_[he.next].origin == vi) return true;
+    }
+    return false;
+}
+
+int32_t PolyMesh::splitEdge(int32_t hi, const float* posOptional) {
+    if (!isLiveHalfEdge(hi)) return NONE;
+
+    // Read out the F1 ring (no references held — vector grows below).
+    const int32_t h1 = hi;
+    const int32_t h2 = halfEdges_[h1].next;
+    const int32_t h3 = halfEdges_[h2].next;
+    if (halfEdges_[h3].next != h1) return NONE; // F1 must be triangle
+    const int32_t a  = halfEdges_[h1].origin;
+    const int32_t b  = halfEdges_[h2].origin;
+    const int32_t c  = halfEdges_[h3].origin;
+    const int32_t F1 = halfEdges_[h1].face;
+
+    const int32_t t1 = halfEdges_[h1].twin;
+    const bool boundary = (t1 == NONE);
+    int32_t t2 = NONE, t3 = NONE, d = NONE, F2 = NONE;
+    if (!boundary) {
+        t2 = halfEdges_[t1].next;
+        t3 = halfEdges_[t2].next;
+        if (halfEdges_[t3].next != t1) return NONE; // F2 must be triangle
+        d  = halfEdges_[t3].origin;
+        F2 = halfEdges_[t1].face;
+    }
+
+    float mx, my, mz;
+    if (posOptional) {
+        mx = posOptional[0]; my = posOptional[1]; mz = posOptional[2];
+    } else {
+        const Vertex& va = vertices_[a];
+        const Vertex& vb = vertices_[b];
+        mx = (va.x + vb.x) * 0.5f;
+        my = (va.y + vb.y) * 0.5f;
+        mz = (va.z + vb.z) * 0.5f;
+    }
+    const int32_t M = addVertex(mx, my, mz);
+
+    // Allocate new half-edges + the F1 split's new face.
+    const int32_t h_MB      = (int32_t)halfEdges_.size(); halfEdges_.push_back({});
+    const int32_t h_AM_to_c = (int32_t)halfEdges_.size(); halfEdges_.push_back({});
+    const int32_t h_C_to_M  = (int32_t)halfEdges_.size(); halfEdges_.push_back({});
+    const int32_t F1_new    = (int32_t)faces_.size();
+    faces_.push_back(Face{ h_MB, faces_[F1].group });
+
+    // F1' (slot reused): a → M → c → a
+    halfEdges_[h1].origin = a;
+    halfEdges_[h1].next   = h_AM_to_c;
+    halfEdges_[h1].face   = F1;
+    halfEdges_[h_AM_to_c] = HalfEdge{ M, NONE, h3, F1 };
+    // h3 unchanged.
+    faces_[F1].halfEdge = h1;
+
+    // F1_new: M → b → c → M (h2 migrates from F1 to F1_new)
+    halfEdges_[h_MB]     = HalfEdge{ M, NONE, h2, F1_new };
+    halfEdges_[h2].next  = h_C_to_M;
+    halfEdges_[h2].face  = F1_new;
+    halfEdges_[h_C_to_M] = HalfEdge{ c, NONE, h_MB, F1_new };
+
+    // Diagonal twin pair inside the old F1 quad.
+    halfEdges_[h_AM_to_c].twin = h_C_to_M;
+    halfEdges_[h_C_to_M].twin  = h_AM_to_c;
+
+    if (!boundary) {
+        const int32_t h_M_to_d = (int32_t)halfEdges_.size(); halfEdges_.push_back({});
+        const int32_t h_M_to_a = (int32_t)halfEdges_.size(); halfEdges_.push_back({});
+        const int32_t h_D_to_M = (int32_t)halfEdges_.size(); halfEdges_.push_back({});
+        const int32_t F2_new   = (int32_t)faces_.size();
+        faces_.push_back(Face{ h_M_to_a, faces_[F2].group });
+
+        // F2' (slot reused): b → M → d → b
+        halfEdges_[t1].origin = b;
+        halfEdges_[t1].next   = h_M_to_d;
+        halfEdges_[t1].face   = F2;
+        halfEdges_[h_M_to_d]  = HalfEdge{ M, NONE, t3, F2 };
+        // t3 unchanged.
+        faces_[F2].halfEdge = t1;
+
+        // F2_new: M → a → d → M (t2 migrates from F2 to F2_new)
+        halfEdges_[h_M_to_a] = HalfEdge{ M, NONE, t2, F2_new };
+        halfEdges_[t2].next  = h_D_to_M;
+        halfEdges_[t2].face  = F2_new;
+        halfEdges_[h_D_to_M] = HalfEdge{ d, NONE, h_M_to_a, F2_new };
+
+        // Diagonal twin pair inside the old F2 quad.
+        halfEdges_[h_M_to_d].twin = h_D_to_M;
+        halfEdges_[h_D_to_M].twin = h_M_to_d;
+
+        // Cross-face twins along the original a-b edge (now bisected by M).
+        halfEdges_[h1].twin       = h_M_to_a;
+        halfEdges_[h_M_to_a].twin = h1;
+        halfEdges_[t1].twin       = h_MB;
+        halfEdges_[h_MB].twin     = t1;
+    } else {
+        // Boundary edge: h1 (a→M) and h_MB (M→b) stay boundary.
+        halfEdges_[h1].twin   = NONE;
+        halfEdges_[h_MB].twin = NONE;
+    }
+
+    // Reseed vertex outgoing-HE pointers to known-valid choices. (The
+    // previous pointers may have been any of the involved he's; resetting
+    // ensures invariant `halfEdges_[v.halfEdge].origin == v` regardless.)
+    vertices_[a].halfEdge = h1;
+    vertices_[b].halfEdge = h2;
+    vertices_[c].halfEdge = h3;
+    if (!boundary) vertices_[d].halfEdge = t3;
+    vertices_[M].halfEdge = h_AM_to_c;
+
+    return M;
+}
+
+bool PolyMesh::flipEdge(int32_t hi) {
+    if (!isLiveHalfEdge(hi)) return false;
+    const int32_t h1 = hi;
+    const int32_t t1 = halfEdges_[h1].twin;
+    if (t1 == NONE) return false; // boundary
+
+    // F1 = (a,b,c), F2 = (b,a,d).
+    const int32_t h2 = halfEdges_[h1].next;
+    const int32_t h3 = halfEdges_[h2].next;
+    if (halfEdges_[h3].next != h1) return false; // F1 not triangle
+
+    const int32_t t2 = halfEdges_[t1].next;
+    const int32_t t3 = halfEdges_[t2].next;
+    if (halfEdges_[t3].next != t1) return false; // F2 not triangle
+
+    const int32_t a  = halfEdges_[h1].origin;
+    const int32_t b  = halfEdges_[h2].origin;
+    const int32_t c  = halfEdges_[h3].origin;
+    const int32_t d  = halfEdges_[t3].origin;
+    if (c == d) return false; // degenerate
+
+    const int32_t F1 = halfEdges_[h1].face;
+    const int32_t F2 = halfEdges_[t1].face;
+
+    // Reject if c-d edge already exists. Linear scan over live he — O(H).
+    // TODO: ring-walk both endpoints for O(min(val(c), val(d))) once perf
+    // matters.
+    for (size_t i = 0; i < halfEdges_.size(); ++i) {
+        if (!isLiveHalfEdge((int32_t)i)) continue;
+        const HalfEdge& he = halfEdges_[i];
+        if (he.origin == c && halfEdges_[he.next].origin == d) return false;
+        if (he.origin == d && halfEdges_[he.next].origin == c) return false;
+    }
+
+    // Rewire. h1 → d→c (was a→b); t1 → c→d (was b→a). h2 migrates to F2;
+    // t2 migrates to F1. h3, t3 stay where they are.
+    halfEdges_[h1].origin = d;
+    halfEdges_[h1].next   = h3;
+    halfEdges_[h1].face   = F1;
+    // (twin h1 ↔ t1 is preserved.)
+
+    halfEdges_[t1].origin = c;
+    halfEdges_[t1].next   = t3;
+    halfEdges_[t1].face   = F2;
+
+    // F1' (a,d,c): t2 (a→d) → h1 (d→c) → h3 (c→a) → t2.
+    halfEdges_[t2].next = h1;
+    halfEdges_[t2].face = F1;
+    halfEdges_[h3].next = t2;
+    // h3.face is already F1.
+
+    // F2' (b,c,d): h2 (b→c) → t1 (c→d) → t3 (d→b) → h2.
+    halfEdges_[h2].next = t1;
+    halfEdges_[h2].face = F2;
+    halfEdges_[t3].next = h2;
+    // t3.face is already F2.
+
+    faces_[F1].halfEdge = t2;
+    faces_[F2].halfEdge = h2;
+
+    // Reseed vertex outgoing-HE pointers (h1's origin changed a→d, t1's
+    // changed b→c — anyone pointing at them with the old origin is now
+    // invariant-breaking).
+    vertices_[a].halfEdge = t2;  // origin a, in F1
+    vertices_[b].halfEdge = h2;  // origin b, in F2
+    vertices_[c].halfEdge = h3;  // origin c, in F1
+    vertices_[d].halfEdge = t3;  // origin d, in F2
+
+    return true;
+}
+
+bool PolyMesh::collapseEdge(int32_t hi, const float* posOptional) {
+    if (!isLiveHalfEdge(hi)) return false;
+
+    const int32_t h1 = hi;
+    const int32_t t1 = halfEdges_[h1].twin;
+    const bool boundary = (t1 == NONE);
+
+    // F1 ring (must be a triangle).
+    const int32_t h2 = halfEdges_[h1].next;
+    const int32_t h3 = halfEdges_[h2].next;
+    if (halfEdges_[h3].next != h1) return false;
+    const int32_t a  = halfEdges_[h1].origin;
+    const int32_t b  = halfEdges_[h2].origin;
+    const int32_t c  = halfEdges_[h3].origin;
+    const int32_t F1 = halfEdges_[h1].face;
+
+    // F2 ring (interior only).
+    int32_t t2 = NONE, t3 = NONE, d = NONE, F2 = NONE;
+    if (!boundary) {
+        t2 = halfEdges_[t1].next;
+        t3 = halfEdges_[t2].next;
+        if (halfEdges_[t3].next != t1) return false;
+        d  = halfEdges_[t3].origin;
+        F2 = halfEdges_[t1].face;
+    }
+
+    // Boundary policy: interior edge with any boundary endpoint is refused.
+    if (!boundary) {
+        if (isBoundaryVertex(a) || isBoundaryVertex(b)) return false;
+    }
+
+    // Link condition: common neighbors of a and b must be a subset of the
+    // opposite-face tips ({c} or {c, d}). O(H) — same fallback strategy as
+    // flipEdge; revisit when perf demands.
+    auto neighborSet = [&](int32_t v) {
+        std::unordered_set<int32_t> s;
+        for (size_t i = 0; i < halfEdges_.size(); ++i) {
+            if (!isLiveHalfEdge((int32_t)i)) continue;
+            if (halfEdges_[i].origin != v) continue;
+            int32_t dest = halfEdges_[halfEdges_[i].next].origin;
+            s.insert(dest);
+        }
+        return s;
+    };
+    auto nA = neighborSet(a);
+    auto nB = neighborSet(b);
+    for (int32_t n : nB) {
+        if (n == a || n == b) continue;
+        if (!nA.count(n)) continue;
+        if (n == c) continue;
+        if (!boundary && n == d) continue;
+        return false; // link condition violated
+    }
+
+    // Wing stitching: external twins of F1 (and F2 if interior) become each
+    // other's twins. Where one wing was already a boundary, the surviving
+    // side becomes boundary.
+    auto stitch = [&](int32_t wingA, int32_t wingB) {
+        int32_t extA = halfEdges_[wingA].twin;
+        int32_t extB = halfEdges_[wingB].twin;
+        if (extA != NONE) halfEdges_[extA].twin = extB;
+        if (extB != NONE) halfEdges_[extB].twin = extA;
+    };
+    stitch(h2, h3);
+    if (!boundary) stitch(t2, t3);
+
+    // Apply the collapsed-vertex position to a (b is about to die).
+    if (posOptional) {
+        vertices_[a].x = posOptional[0];
+        vertices_[a].y = posOptional[1];
+        vertices_[a].z = posOptional[2];
+    } else {
+        vertices_[a].x = 0.5f * (vertices_[a].x + vertices_[b].x);
+        vertices_[a].y = 0.5f * (vertices_[a].y + vertices_[b].y);
+        vertices_[a].z = 0.5f * (vertices_[a].z + vertices_[b].z);
+    }
+
+    // Rewrite every live he with origin == b to origin = a. Skip the he's
+    // about to be tombstoned (those in F1, F2) — their origin doesn't matter.
+    for (size_t i = 0; i < halfEdges_.size(); ++i) {
+        if (!isLiveHalfEdge((int32_t)i)) continue;
+        if (halfEdges_[i].face == F1) continue;
+        if (!boundary && halfEdges_[i].face == F2) continue;
+        if (halfEdges_[i].origin == b) halfEdges_[i].origin = a;
+    }
+
+    // Tombstone F1 (and F2). deleteFace would re-sever twins of these
+    // faces' half-edges and clobber our just-stitched pointers, so we
+    // tombstone manually here.
+    auto tombstoneFace = [&](int32_t fi, std::initializer_list<int32_t> ring) {
+        for (int32_t hh : ring) {
+            halfEdges_[hh].origin = NONE;
+            halfEdges_[hh].next   = NONE;
+            halfEdges_[hh].face   = NONE;
+            halfEdges_[hh].twin   = NONE;
+        }
+        faces_[fi].halfEdge = NONE;
+    };
+    tombstoneFace(F1, { h1, h2, h3 });
+    if (!boundary) tombstoneFace(F2, { t1, t2, t3 });
+
+    // Reseed vertex.halfEdge for a (its previous outgoing he might have
+    // been any of the tombstoned ones), and clear b.
+    vertices_[a].halfEdge = NONE;
+    for (size_t i = 0; i < halfEdges_.size(); ++i) {
+        if (!isLiveHalfEdge((int32_t)i)) continue;
+        if (halfEdges_[i].origin == a) { vertices_[a].halfEdge = (int32_t)i; break; }
+    }
+    vertices_[b].halfEdge = NONE;
+
+    // Reseed any vertex (including c, d) whose outgoing-he pointer was
+    // killed in this op.
+    auto reseedVertex = [&](int32_t vi) {
+        if (vi < 0 || vi >= (int32_t)vertices_.size()) return;
+        if (isLiveHalfEdge(vertices_[vi].halfEdge) &&
+            halfEdges_[vertices_[vi].halfEdge].origin == vi) return;
+        vertices_[vi].halfEdge = NONE;
+        for (size_t i = 0; i < halfEdges_.size(); ++i) {
+            if (!isLiveHalfEdge((int32_t)i)) continue;
+            if (halfEdges_[i].origin == vi) {
+                vertices_[vi].halfEdge = (int32_t)i;
+                break;
+            }
+        }
+    };
+    reseedVertex(c);
+    if (!boundary) reseedVertex(d);
+
+    return true;
+}
+
+void PolyMesh::deleteFace(int32_t fi) {
+    if (!isLiveFace(fi)) return;
+
+    // Walk the face's halfEdges first, recording them, before mutating —
+    // marking face = NONE midway would terminate isLiveHalfEdge() walkers
+    // mid-loop.
+    std::vector<int32_t> ring;
+    ring.reserve(8);
+    int32_t start = faces_[fi].halfEdge;
+    int32_t cur = start;
+    size_t guard = 0;
+    do {
+        ring.push_back(cur);
+        cur = halfEdges_[cur].next;
+        if (++guard > halfEdges_.size()) break; // malformed; bail
+    } while (cur != start && cur != NONE);
+
+    // Sever outside twins.
+    for (int32_t hi : ring) {
+        int32_t tw = halfEdges_[hi].twin;
+        if (tw != NONE && tw >= 0 && tw < (int32_t)halfEdges_.size()) {
+            halfEdges_[tw].twin = NONE;
+        }
+    }
+
+    // Tombstone the face and its half-edges. Capture origins for vertex
+    // reseed.
+    std::vector<int32_t> orphanedOrigins;
+    orphanedOrigins.reserve(ring.size());
+    for (int32_t hi : ring) {
+        orphanedOrigins.push_back(halfEdges_[hi].origin);
+        halfEdges_[hi].origin = NONE;
+        halfEdges_[hi].next   = NONE;
+        halfEdges_[hi].face   = NONE;
+        // Leave .twin as NONE-or-now-stale; severing above already cleared
+        // outside twins. Setting our own twin to NONE for clarity.
+        halfEdges_[hi].twin   = NONE;
+    }
+    faces_[fi].halfEdge = NONE;
+
+    // Reseed vertex.halfEdge for any vertex whose outgoing pointer is now
+    // dead. Search for a surviving live outgoing HE; if none, set NONE.
+    for (int32_t vi : orphanedOrigins) {
+        if (vi < 0 || vi >= (int32_t)vertices_.size()) continue;
+        if (isLiveHalfEdge(vertices_[vi].halfEdge)) continue;
+        vertices_[vi].halfEdge = NONE;
+        for (size_t i = 0; i < halfEdges_.size(); ++i) {
+            if (halfEdges_[i].face == NONE) continue;
+            if (halfEdges_[i].origin == vi) {
+                vertices_[vi].halfEdge = (int32_t)i;
+                break;
+            }
+        }
+    }
+}
+
 void PolyMesh::compact() {
+    // -- Half-edge compaction ------------------------------------------------
+    std::vector<int32_t> heRemap(halfEdges_.size(), NONE);
+    std::vector<HalfEdge> newHe;
+    newHe.reserve(halfEdges_.size());
+    for (size_t i = 0; i < halfEdges_.size(); ++i) {
+        if (halfEdges_[i].face == NONE) continue;
+        heRemap[i] = (int32_t)newHe.size();
+        newHe.push_back(halfEdges_[i]);
+    }
+
+    // -- Face compaction -----------------------------------------------------
+    std::vector<int32_t> faceRemap(faces_.size(), NONE);
+    std::vector<Face> newFaces;
+    newFaces.reserve(faces_.size());
+    for (size_t i = 0; i < faces_.size(); ++i) {
+        if (faces_[i].halfEdge == NONE) continue;
+        faceRemap[i] = (int32_t)newFaces.size();
+        newFaces.push_back(faces_[i]);
+    }
+
+    // Rewrite he.next, he.twin, he.face.
+    for (HalfEdge& he : newHe) {
+        if (he.next >= 0 && he.next < (int32_t)heRemap.size())
+            he.next = heRemap[he.next];
+        if (he.twin >= 0 && he.twin < (int32_t)heRemap.size())
+            he.twin = heRemap[he.twin];
+        if (he.face >= 0 && he.face < (int32_t)faceRemap.size())
+            he.face = faceRemap[he.face];
+    }
+    // Rewrite face.halfEdge.
+    for (Face& f : newFaces) {
+        if (f.halfEdge >= 0 && f.halfEdge < (int32_t)heRemap.size())
+            f.halfEdge = heRemap[f.halfEdge];
+    }
+
+    halfEdges_ = std::move(newHe);
+    faces_     = std::move(newFaces);
+
+    // -- Vertex compaction ---------------------------------------------------
     std::vector<uint8_t> used(vertices_.size(), 0);
     for (const HalfEdge& he : halfEdges_) {
         if (he.origin >= 0 && he.origin < (int32_t)used.size()) used[he.origin] = 1;
     }
-    std::vector<int32_t> remap(vertices_.size(), NONE);
+    std::vector<int32_t> vremap(vertices_.size(), NONE);
     std::vector<Vertex> newVerts;
     newVerts.reserve(vertices_.size());
     for (size_t i = 0; i < vertices_.size(); ++i) {
         if (!used[i]) continue;
-        remap[i] = (int32_t)newVerts.size();
+        vremap[i] = (int32_t)newVerts.size();
         newVerts.push_back(vertices_[i]);
     }
-    // Rewrite he origins.
     for (HalfEdge& he : halfEdges_) {
-        if (he.origin >= 0 && he.origin < (int32_t)remap.size())
-            he.origin = remap[he.origin];
+        if (he.origin >= 0 && he.origin < (int32_t)vremap.size())
+            he.origin = vremap[he.origin];
     }
-    // Reseed vertex halfEdge pointers.
     for (Vertex& v : newVerts) v.halfEdge = NONE;
     for (size_t i = 0; i < halfEdges_.size(); ++i) {
         int32_t oi = halfEdges_[i].origin;

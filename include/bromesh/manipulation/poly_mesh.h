@@ -28,6 +28,15 @@ namespace bromesh {
 //     to itself in faceVertexCount(F) steps.
 //   - For every he H with twin T != -1: he[T].twin == H.
 //   - Boundary half-edges have twin == -1.
+//
+// Tombstones (transient state during surgery):
+//   - A half-edge with face == NONE is dead. Its origin/next are also set
+//     to NONE for clarity. All references (twin, vertex.halfEdge,
+//     face.halfEdge) into dead half-edges must be severed by the surgery
+//     operation that creates the tombstone.
+//   - A face with halfEdge == NONE is dead.
+//   - Tombstoned entries are skipped by validate() and other walkers; they
+//     are removed (and indices renumbered) by compact().
 // ---------------------------------------------------------------------------
 
 class PolyMesh {
@@ -90,6 +99,30 @@ public:
     size_t vertexCount()   const { return vertices_.size(); }
     size_t halfEdgeCount() const { return halfEdges_.size(); }
     size_t faceCount()     const { return faces_.size(); }
+
+    /// Liveness checks. After surgery (e.g. collapseEdge, deleteFace) some
+    /// entries are tombstoned and walkers should skip them; compact() drops
+    /// them and renumbers the survivors.
+    bool isLiveHalfEdge(int32_t hi) const {
+        return hi >= 0 && hi < (int32_t)halfEdges_.size() &&
+               halfEdges_[hi].face != NONE;
+    }
+    bool isLiveFace(int32_t fi) const {
+        return fi >= 0 && fi < (int32_t)faces_.size() &&
+               faces_[fi].halfEdge != NONE;
+    }
+
+    /// A boundary half-edge has no twin (twin == NONE). True for both the
+    /// half-edge representing the outer rim of an open mesh and for any
+    /// internal half-edge whose adjacent face has been removed.
+    bool isBoundaryHalfEdge(int32_t hi) const {
+        return isLiveHalfEdge(hi) && halfEdges_[hi].twin == NONE;
+    }
+
+    /// True if any live half-edge incident to `vi` (incoming or outgoing)
+    /// is a boundary half-edge. O(halfEdgeCount); used to gate boundary
+    /// behavior in surgery operations.
+    bool isBoundaryVertex(int32_t vi) const;
 
     const std::vector<Vertex>&   vertices()  const { return vertices_; }
     const std::vector<HalfEdge>& halfEdges() const { return halfEdges_; }
@@ -198,6 +231,64 @@ public:
                                int32_t bridgeGroup    = -1,
                                int32_t backGroup      = -1);
 
+    /// Split the edge identified by half-edge `hi`. Inserts a new vertex
+    /// at `posOptional` (if non-null) or at the midpoint of the edge's
+    /// endpoints. Both adjacent faces (or the single face on a boundary
+    /// edge) must be triangles — otherwise returns NONE without modifying
+    /// the mesh.
+    ///
+    /// Net change for an interior edge: +1 vertex, +2 faces, +6 half-edges.
+    /// Net change for a boundary edge:  +1 vertex, +1 face,  +3 half-edges.
+    /// Twin links across the original edge are preserved (rewired to the
+    /// new midpoint vertex on each side); all unrelated twins are unchanged.
+    ///
+    /// Returns the new vertex index, or NONE on precondition failure.
+    int32_t splitEdge(int32_t hi, const float* posOptional = nullptr);
+
+    /// Flip the diagonal of two adjacent triangles. The edge identified by
+    /// `hi` separates triangles (a,b,c) and (b,a,d); after flipping, the
+    /// diagonal becomes c-d and the triangles become (a,d,c) and (b,c,d).
+    ///
+    /// Refused (returns false, no mutation) when:
+    ///   - hi is dead, on a boundary, or the adjacent faces aren't triangles
+    ///   - the new diagonal vertices c,d are already connected by another
+    ///     edge in the mesh (flipping would produce a non-manifold edge)
+    ///
+    /// No vertices, faces, or half-edges are added or deleted — only the
+    /// origin/next/face pointers of the six half-edges of the two faces
+    /// are rewired.
+    bool flipEdge(int32_t hi);
+
+    /// Collapse the edge identified by half-edge `hi`, merging its
+    /// destination vertex into its origin. The surviving vertex moves to
+    /// `posOptional` (if non-null) or to the midpoint of the original
+    /// edge.
+    ///
+    /// Returns false (no mutation) when:
+    ///   - hi is dead, or its adjacent face(s) aren't triangles
+    ///   - link condition fails (a and b share a common neighbor that
+    ///     isn't an opposite-face tip — collapsing would create a
+    ///     duplicated edge or non-manifold)
+    ///   - hi is interior (has a twin) but either endpoint is a boundary
+    ///     vertex (collapsing would degenerate a boundary loop)
+    ///
+    /// Net change for an interior edge: -1 vertex, -2 faces, -6 half-edges.
+    /// Net change for a boundary edge:  -1 vertex, -1 face,  -3 half-edges.
+    /// Tombstones the removed faces/half-edges; call compact() to drop them.
+    bool collapseEdge(int32_t hi, const float* posOptional = nullptr);
+
+    /// Low-level: tombstone a face and all its half-edges. Any outside twin
+    /// of those half-edges is severed (its `.twin` becomes NONE), so the
+    /// surviving side becomes a boundary half-edge. Vertex outgoing-HE
+    /// pointers that referenced any of the now-dead half-edges are reseeded
+    /// to a surviving outgoing HE if one exists, else set to NONE.
+    ///
+    /// This is a primitive used by collapseEdge after twin-stitching.
+    /// Direct callers must understand it leaves no twin link across the
+    /// removed face — typically you stitch the relevant wings yourself
+    /// (rewriting twin pointers on the surviving sides) before calling.
+    void deleteFace(int32_t faceIdx);
+
     /// Walk every unpaired half-edge and pair with any other unpaired he
     /// whose endpoints match by vertex identity, then by quantized position.
     void rematchTwins();
@@ -213,7 +304,10 @@ public:
     /// to lift a triangle-soup mesh into proper N-gon face semantics.
     void mergeFacesByGroup();
 
-    /// Drop unreferenced vertices and renumber. Preserves face/he ordering.
+    /// Drop dead half-edges, dead faces, and unreferenced vertices, and
+    /// renumber survivors. After compact(), every index in the mesh is in
+    /// [0, count) and there are no tombstones. Surviving relative ordering
+    /// is preserved within each array.
     void compact();
 
 private:

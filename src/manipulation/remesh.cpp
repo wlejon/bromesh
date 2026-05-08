@@ -1,547 +1,410 @@
 #include "bromesh/manipulation/remesh.h"
+#include "bromesh/manipulation/poly_mesh.h"
+#include "bromesh/manipulation/weld.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <cstring>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace bromesh {
 
 // Isotropic remeshing (Botsch & Kobbelt, 2004 — "A Remeshing Approach to
-// Multiresolution Modeling").
+// Multiresolution Modeling"), implemented over PolyMesh's half-edge surgery
+// API (splitEdge / collapseEdge / flipEdge). The hot loop touches no hash
+// maps — every topology change is a fixed-cost local rewire of pointers
+// inside PolyMesh's flat arrays.
 //
 // Each pass:
-//   1. Split every edge longer than 4/3 · L. Splits are edge-based: a single
-//      midpoint is inserted into *every* face sharing the edge, so neighbors
-//      never end up with a T-junction that then cracks during relaxation.
-//   2. Collapse edges shorter than 4/5 · L, skipping any collapse that would
-//      produce an edge longer than 4/3 · L (that edge would just be split
-//      again next iteration — the classic split/collapse thrash).
+//   1. Split every edge longer than 4/3 · L. splitEdge bisects both adjacent
+//      faces (or the lone face on a boundary edge), so neighbors never end
+//      up with a T-junction.
+//   2. Collapse edges shorter than 4/5 · L, skipping any collapse that
+//      would produce an edge longer than 4/3 · L (anti-thrash) or that
+//      touches the boundary.
 //   3. Flip interior edges toward target valence (6 interior / 4 boundary).
-//   4. Tangential Laplacian relaxation with boundary vertices held fixed.
+//   4. Tangential Laplacian relaxation; boundary vertices are pinned.
 
-struct HalfEdgeMesh {
-    struct Vertex {
-        float pos[3];
-        bool boundary = false;
-    };
-    std::vector<Vertex> verts;
-    std::vector<std::array<uint32_t, 3>> tris;
+namespace {
 
-    float edgeLength(uint32_t a, uint32_t b) const {
-        float dx = verts[a].pos[0] - verts[b].pos[0];
-        float dy = verts[a].pos[1] - verts[b].pos[1];
-        float dz = verts[a].pos[2] - verts[b].pos[2];
-        return std::sqrt(dx*dx + dy*dy + dz*dz);
-    }
-};
-
-struct EdgeKey {
-    uint32_t a, b;
-    EdgeKey(uint32_t x, uint32_t y)
-        : a(std::min(x, y)), b(std::max(x, y)) {}
-    bool operator==(const EdgeKey& o) const { return a == o.a && b == o.b; }
-};
-struct EdgeKeyHash {
-    size_t operator()(const EdgeKey& k) const {
-        return std::hash<uint64_t>()(
-            (static_cast<uint64_t>(k.a) << 32) | k.b);
-    }
-};
-
-using EdgeFaceMap =
-    std::unordered_map<EdgeKey, std::vector<size_t>, EdgeKeyHash>;
-
-static EdgeFaceMap buildEdgeFaces(const HalfEdgeMesh& hm) {
-    EdgeFaceMap m;
-    m.reserve(hm.tris.size() * 3);
-    for (size_t t = 0; t < hm.tris.size(); ++t) {
-        const auto& tri = hm.tris[t];
-        for (int e = 0; e < 3; ++e) {
-            m[EdgeKey(tri[e], tri[(e+1)%3])].push_back(t);
-        }
-    }
-    return m;
+inline float edgeLength(const PolyMesh& pm, int32_t hi) {
+    const auto& he = pm.halfEdges()[hi];
+    int32_t v0 = he.origin;
+    int32_t v1 = pm.halfEdges()[he.next].origin;
+    float a[3], b[3];
+    pm.getVertex(v0, a);
+    pm.getVertex(v1, b);
+    float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+    return std::sqrt(dx*dx + dy*dy + dz*dz);
 }
 
-static void markBoundaryVerts(HalfEdgeMesh& hm) {
-    for (auto& v : hm.verts) v.boundary = false;
-    EdgeFaceMap m = buildEdgeFaces(hm);
-    for (const auto& kv : m) {
-        if (kv.second.size() == 1) {
-            hm.verts[kv.first.a].boundary = true;
-            hm.verts[kv.first.b].boundary = true;
-        }
+// Compute boundary-vertex bitmap in one pass over live half-edges.
+std::vector<uint8_t> computeBoundary(const PolyMesh& pm) {
+    std::vector<uint8_t> isB(pm.vertexCount(), 0);
+    const auto& hes = pm.halfEdges();
+    for (size_t i = 0; i < hes.size(); ++i) {
+        if (!pm.isLiveHalfEdge((int32_t)i)) continue;
+        if (hes[i].twin != PolyMesh::NONE) continue;
+        int32_t v0 = hes[i].origin;
+        int32_t v1 = hes[hes[i].next].origin;
+        if (v0 >= 0 && v0 < (int32_t)isB.size()) isB[v0] = 1;
+        if (v1 >= 0 && v1 < (int32_t)isB.size()) isB[v1] = 1;
     }
+    return isB;
 }
 
-// Split every edge longer than splitThreshold, preserving manifoldness by
-// inserting each midpoint into every face adjacent to the edge.
-static void splitLongEdges(HalfEdgeMesh& hm, float splitThreshold) {
-    EdgeFaceMap edgeFaces = buildEdgeFaces(hm);
-
-    auto rmEdge = [&](uint32_t x, uint32_t y, size_t f) {
-        auto it = edgeFaces.find(EdgeKey(x, y));
-        if (it == edgeFaces.end()) return;
-        auto& v = it->second;
-        v.erase(std::remove(v.begin(), v.end(), f), v.end());
-    };
-    auto addEdge = [&](uint32_t x, uint32_t y, size_t f) {
-        edgeFaces[EdgeKey(x, y)].push_back(f);
-    };
-
-    // Snapshot long edges at start of pass. Splitting never lengthens any
-    // edge (midpoints are interior), so candidates stay eligible.
-    std::vector<EdgeKey> candidates;
-    candidates.reserve(edgeFaces.size());
-    for (const auto& kv : edgeFaces) {
-        if (hm.edgeLength(kv.first.a, kv.first.b) > splitThreshold)
-            candidates.push_back(kv.first);
+// Snapshot one half-edge per undirected edge. Convention: for an edge with
+// twin t, keep min(hi, t); for boundary edges keep hi.
+std::vector<int32_t> snapshotEdges(const PolyMesh& pm) {
+    std::vector<int32_t> out;
+    out.reserve(pm.halfEdgeCount() / 2 + 1);
+    const auto& hes = pm.halfEdges();
+    for (size_t i = 0; i < hes.size(); ++i) {
+        if (!pm.isLiveHalfEdge((int32_t)i)) continue;
+        int32_t tw = hes[i].twin;
+        if (tw != PolyMesh::NONE && (int32_t)i > tw) continue;
+        out.push_back((int32_t)i);
     }
+    return out;
+}
 
-    for (const EdgeKey& key : candidates) {
-        auto it = edgeFaces.find(key);
-        if (it == edgeFaces.end() || it->second.empty()) continue;
-
-        uint32_t a = key.a, b = key.b;
-        HalfEdgeMesh::Vertex mid;
-        for (int c = 0; c < 3; ++c)
-            mid.pos[c] = (hm.verts[a].pos[c] + hm.verts[b].pos[c]) * 0.5f;
-        // A boundary edge has exactly one adjacent face; its midpoint is
-        // still on the boundary.
-        mid.boundary = (it->second.size() == 1);
-        uint32_t midIdx = static_cast<uint32_t>(hm.verts.size());
-        hm.verts.push_back(mid);
-
-        // Copy face list — we'll mutate edgeFaces while iterating.
-        std::vector<size_t> faces = it->second;
-        for (size_t f : faces) {
-            auto& tri = hm.tris[f];
-            int ei = -1;
-            for (int i = 0; i < 3; ++i) {
-                uint32_t x = tri[i], y = tri[(i+1)%3];
-                if ((x == a && y == b) || (x == b && y == a)) { ei = i; break; }
-            }
-            if (ei < 0) continue;
-            uint32_t v0 = tri[ei];
-            uint32_t v1 = tri[(ei+1)%3];
-            uint32_t v2 = tri[(ei+2)%3];
-
-            // Face f: (v0,v1,v2) -> (v0, M, v2).
-            // Edges of f that change: (v0,v1) and (v1,v2) leave; (v0,v2) stays.
-            rmEdge(v0, v1, f);
-            rmEdge(v1, v2, f);
-            tri = {v0, midIdx, v2};
-            addEdge(v0, midIdx, f);
-            addEdge(midIdx, v2, f);
-
-            // New face f2: (M, v1, v2) with winding matching original.
-            size_t f2 = hm.tris.size();
-            hm.tris.push_back({midIdx, v1, v2});
-            addEdge(midIdx, v1, f2);
-            addEdge(v1, v2, f2);
-            addEdge(v2, midIdx, f2);
-        }
+void splitLongEdges(PolyMesh& pm, float splitThreshold,
+                    std::vector<uint8_t>& isBoundaryV) {
+    auto edges = snapshotEdges(pm);
+    for (int32_t hi : edges) {
+        if (!pm.isLiveHalfEdge(hi)) continue;
+        if (edgeLength(pm, hi) <= splitThreshold) continue;
+        bool wasBoundary = (pm.halfEdges()[hi].twin == PolyMesh::NONE);
+        int32_t M = pm.splitEdge(hi);
+        if (M < 0) continue;
+        if ((int32_t)isBoundaryV.size() <= M)
+            isBoundaryV.resize(pm.vertexCount(), 0);
+        isBoundaryV[M] = wasBoundary ? 1 : 0;
     }
 }
 
-static void collapseShortEdges(HalfEdgeMesh& hm,
-                               float collapseThreshold,
-                               float splitThreshold) {
-    EdgeFaceMap edgeFaces = buildEdgeFaces(hm);
+void collapseShortEdges(PolyMesh& pm, float collapseThreshold,
+                        float splitThreshold,
+                        const std::vector<uint8_t>& isBoundaryV) {
+    auto edges = snapshotEdges(pm);
+    if (edges.empty()) return;
 
-    std::vector<std::vector<uint32_t>> adj(hm.verts.size());
-    auto addUnique = [](std::vector<uint32_t>& list, uint32_t v) {
-        for (uint32_t x : list) if (x == v) return;
-        list.push_back(v);
-    };
-    for (const auto& kv : edgeFaces) {
-        addUnique(adj[kv.first.a], kv.first.b);
-        addUnique(adj[kv.first.b], kv.first.a);
+    // 1-ring fence: never collapse two edges that share a vertex within the
+    // same pass. The original implementation's "touchedVert" concept,
+    // preserved verbatim — keeps the local topology consistent against
+    // overlapping commits.
+    std::vector<uint8_t> touched(pm.vertexCount(), 0);
+
+    // Build adjacency once for the anti-thrash check (post-collapse edge
+    // length to every neighbor of either endpoint).
+    std::vector<std::vector<int32_t>> adj(pm.vertexCount());
+    {
+        const auto& hes = pm.halfEdges();
+        for (size_t i = 0; i < hes.size(); ++i) {
+            if (!pm.isLiveHalfEdge((int32_t)i)) continue;
+            int32_t a = hes[i].origin;
+            int32_t b = hes[hes[i].next].origin;
+            auto& la = adj[a];
+            bool seen = false;
+            for (int32_t x : la) if (x == b) { seen = true; break; }
+            if (!seen) la.push_back(b);
+        }
     }
 
-    std::vector<bool> removedVert(hm.verts.size(), false);
-    std::vector<bool> touchedVert(hm.verts.size(), false);
-    std::unordered_set<size_t> removedTri;
+    for (int32_t hi : edges) {
+        if (!pm.isLiveHalfEdge(hi)) continue;
+        if (edgeLength(pm, hi) >= collapseThreshold) continue;
 
-    std::vector<EdgeKey> shortEdges;
-    for (const auto& kv : edgeFaces) {
-        if (hm.edgeLength(kv.first.a, kv.first.b) < collapseThreshold)
-            shortEdges.push_back(kv.first);
-    }
+        const auto& he = pm.halfEdges()[hi];
+        int32_t a = he.origin;
+        int32_t b = pm.halfEdges()[he.next].origin;
+        if (a < 0 || b < 0) continue;
+        if (touched[a] || touched[b]) continue;
+        if (isBoundaryV[a] || isBoundaryV[b]) continue;
 
-    for (const EdgeKey& key : shortEdges) {
-        uint32_t a = key.a, b = key.b;
-        if (removedVert[a] || removedVert[b]) continue;
-        // Non-overlapping commits per pass keep adj/edgeFaces consistent.
-        if (touchedVert[a] || touchedVert[b]) continue;
-        // Boundary preservation: don't collapse edges that touch boundary
-        // vertices. MeshyAI meshes are closed; this costs nothing there.
-        if (hm.verts[a].boundary || hm.verts[b].boundary) continue;
-
-        // Link condition: the only vertices adjacent to both a and b must
-        // be the 1 or 2 opposite-tip vertices of the faces sharing edge
-        // (a,b). Any other common neighbor means collapsing a↔b would
-        // create a non-manifold edge or a duplicated triangle.
-        auto itEF = edgeFaces.find(EdgeKey(a, b));
-        if (itEF == edgeFaces.end()) continue;
-        std::unordered_set<uint32_t> tips;
-        for (size_t f : itEF->second) {
-            const auto& tri = hm.tris[f];
-            for (int i = 0; i < 3; ++i)
-                if (tri[i] != a && tri[i] != b) tips.insert(tri[i]);
+        // Anti-thrash: would the merged neighborhood produce an edge
+        // longer than the split threshold? If so, splits would just undo
+        // the collapse next pass — bail.
+        float ax, ay, az, bx, by, bz;
+        {
+            float p[3]; pm.getVertex(a, p); ax = p[0]; ay = p[1]; az = p[2];
+            pm.getVertex(b, p);             bx = p[0]; by = p[1]; bz = p[2];
         }
-        std::unordered_set<uint32_t> nbA(adj[a].begin(), adj[a].end());
-        bool linkOK = true;
-        for (uint32_t n : adj[b]) {
-            if (n == a) continue;
-            if (nbA.count(n) && !tips.count(n)) { linkOK = false; break; }
-        }
-        if (!linkOK) continue;
+        const float mx = 0.5f * (ax + bx);
+        const float my = 0.5f * (ay + by);
+        const float mz = 0.5f * (az + bz);
 
-        float mx = (hm.verts[a].pos[0] + hm.verts[b].pos[0]) * 0.5f;
-        float my = (hm.verts[a].pos[1] + hm.verts[b].pos[1]) * 0.5f;
-        float mz = (hm.verts[a].pos[2] + hm.verts[b].pos[2]) * 0.5f;
-
-        // Anti-thrash: if collapsing would produce an edge longer than the
-        // split threshold, bail. Otherwise split would just undo us.
         bool ok = true;
-        auto checkNeighbors = [&](uint32_t v) {
-            for (uint32_t n : adj[v]) {
+        auto checkRing = [&](int32_t v) {
+            for (int32_t n : adj[v]) {
                 if (n == a || n == b) continue;
-                if (removedVert[n]) continue;
-                float dx = hm.verts[n].pos[0] - mx;
-                float dy = hm.verts[n].pos[1] - my;
-                float dz = hm.verts[n].pos[2] - mz;
+                float p[3]; pm.getVertex(n, p);
+                float dx = p[0] - mx, dy = p[1] - my, dz = p[2] - mz;
                 float len = std::sqrt(dx*dx + dy*dy + dz*dz);
                 if (len > splitThreshold) { ok = false; return; }
             }
         };
-        checkNeighbors(a);
-        if (ok) checkNeighbors(b);
+        checkRing(a);
+        if (ok) checkRing(b);
         if (!ok) continue;
 
-        hm.verts[a].pos[0] = mx;
-        hm.verts[a].pos[1] = my;
-        hm.verts[a].pos[2] = mz;
-        removedVert[b] = true;
+        const float mid[3] = { mx, my, mz };
+        if (!pm.collapseEdge(hi, mid)) continue;
 
-        for (uint32_t n : adj[b]) {
-            if (n == a || n == b) continue;
-            addUnique(adj[a], n);
-        }
-
-        // Fence off this 1-ring: no adjacent edge collapses this pass.
-        touchedVert[a] = true;
-        touchedVert[b] = true;
-        for (uint32_t n : adj[a]) touchedVert[n] = true;
-
-        for (size_t t = 0; t < hm.tris.size(); ++t) {
-            if (removedTri.count(t)) continue;
-            auto& tri = hm.tris[t];
-            bool touchesA = (tri[0] == a || tri[1] == a || tri[2] == a);
-            bool touchesB = (tri[0] == b || tri[1] == b || tri[2] == b);
-            if (touchesA && touchesB) {
-                removedTri.insert(t);
-            } else if (touchesB) {
-                for (int i = 0; i < 3; ++i)
-                    if (tri[i] == b) tri[i] = a;
-            }
-        }
+        // Fence the 1-ring of the merged vertex.
+        touched[a] = 1;
+        touched[b] = 1;
+        for (int32_t n : adj[a]) if (n >= 0) touched[n] = 1;
+        for (int32_t n : adj[b]) if (n >= 0) touched[n] = 1;
     }
-
-    std::vector<std::array<uint32_t, 3>> newTris;
-    newTris.reserve(hm.tris.size());
-    for (size_t t = 0; t < hm.tris.size(); ++t) {
-        if (removedTri.count(t)) continue;
-        const auto& tri = hm.tris[t];
-        if (tri[0] == tri[1] || tri[1] == tri[2] || tri[0] == tri[2]) continue;
-        newTris.push_back(tri);
-    }
-    hm.tris = std::move(newTris);
 }
 
-static void flipEdges(HalfEdgeMesh& hm) {
-    std::vector<int> valence(hm.verts.size(), 0);
-    for (const auto& tri : hm.tris) {
-        valence[tri[0]]++;
-        valence[tri[1]]++;
-        valence[tri[2]]++;
+int targetValence(int32_t v, const std::vector<uint8_t>& isBoundaryV) {
+    return isBoundaryV[v] ? 4 : 6;
+}
+
+void flipEdges(PolyMesh& pm, const std::vector<uint8_t>& isBoundaryV) {
+    // Per-vertex valence (live outgoing he count).
+    std::vector<int> valence(pm.vertexCount(), 0);
+    {
+        const auto& hes = pm.halfEdges();
+        for (size_t i = 0; i < hes.size(); ++i) {
+            if (!pm.isLiveHalfEdge((int32_t)i)) continue;
+            int32_t v = hes[i].origin;
+            if (v >= 0 && v < (int32_t)valence.size()) ++valence[v];
+        }
     }
 
-    EdgeFaceMap edgeFaces = buildEdgeFaces(hm);
-    auto tgt = [&](uint32_t v) { return hm.verts[v].boundary ? 4 : 6; };
+    auto edges = snapshotEdges(pm);
+    for (int32_t hi : edges) {
+        if (!pm.isLiveHalfEdge(hi)) continue;
+        const auto& he = pm.halfEdges()[hi];
+        if (he.twin == PolyMesh::NONE) continue;
 
-    auto rmEdge = [&](uint32_t x, uint32_t y, size_t f) {
-        auto it = edgeFaces.find(EdgeKey(x, y));
-        if (it == edgeFaces.end()) return;
-        auto& v = it->second;
-        v.erase(std::remove(v.begin(), v.end(), f), v.end());
-    };
-    auto addEdge = [&](uint32_t x, uint32_t y, size_t f) {
-        edgeFaces[EdgeKey(x, y)].push_back(f);
-    };
-    auto containsEdge = [&](size_t f, uint32_t a, uint32_t b) {
-        const auto& tri = hm.tris[f];
-        bool hasA = false, hasB = false;
-        for (int i = 0; i < 3; ++i) {
-            if (tri[i] == a) hasA = true;
-            if (tri[i] == b) hasB = true;
-        }
-        return hasA && hasB;
-    };
+        // Triangle precondition.
+        int32_t h2 = he.next;
+        int32_t h3 = pm.halfEdges()[h2].next;
+        if (pm.halfEdges()[h3].next != hi) continue;
+        int32_t t1 = he.twin;
+        int32_t t2 = pm.halfEdges()[t1].next;
+        int32_t t3 = pm.halfEdges()[t2].next;
+        if (pm.halfEdges()[t3].next != t1) continue;
 
-    // Iterate a snapshot of candidate edges so we can mutate edgeFaces live.
-    std::vector<EdgeKey> candidates;
-    candidates.reserve(edgeFaces.size());
-    for (const auto& kv : edgeFaces) candidates.push_back(kv.first);
+        int32_t a  = he.origin;
+        int32_t b  = pm.halfEdges()[h2].origin;
+        int32_t c  = pm.halfEdges()[h3].origin;
+        int32_t d  = pm.halfEdges()[t3].origin;
+        if (a == d || b == c) continue;
+        if (isBoundaryV[a] && isBoundaryV[b]) continue;
 
-    // edgeDir: +1 if face f traverses edge as (a→b), -1 if (b→a), 0 if neither.
-    auto edgeDir = [&](size_t f, uint32_t a, uint32_t b) -> int {
-        const auto& tri = hm.tris[f];
-        for (int i = 0; i < 3; ++i) {
-            if (tri[i] == a && tri[(i+1)%3] == b) return +1;
-            if (tri[i] == b && tri[(i+1)%3] == a) return -1;
-        }
-        return 0;
-    };
-
-    for (const EdgeKey& key : candidates) {
-        auto it = edgeFaces.find(key);
-        if (it == edgeFaces.end() || it->second.size() != 2) continue;
-
-        uint32_t a = key.a, b = key.b;
-        if (hm.verts[a].boundary && hm.verts[b].boundary) continue;
-
-        size_t f0 = it->second[0], f1 = it->second[1];
-        if (!containsEdge(f0, a, b) || !containsEdge(f1, a, b)) continue;
-
-        // Classify sides so winding is preserved.
-        // FA = face traversing a→b (its opposite vert = vA).
-        // FB = face traversing b→a (its opposite vert = vB).
-        int d0 = edgeDir(f0, a, b), d1 = edgeDir(f1, a, b);
-        if (d0 == 0 || d1 == 0 || d0 == d1) continue;
-        size_t FA, FB;
-        if (d0 > 0) { FA = f0; FB = f1; }
-        else        { FA = f1; FB = f0; }
-
-        uint32_t vA = UINT32_MAX, vB = UINT32_MAX;
-        for (int i = 0; i < 3; ++i) {
-            uint32_t v = hm.tris[FA][i];
-            if (v != a && v != b) vA = v;
-            v = hm.tris[FB][i];
-            if (v != a && v != b) vB = v;
-        }
-        if (vA == UINT32_MAX || vB == UINT32_MAX || vA == vB) continue;
-
-        // Don't flip if the diagonal (vA,vB) already exists: would become
-        // a 3-face non-manifold edge.
-        auto itNew = edgeFaces.find(EdgeKey(vA, vB));
-        if (itNew != edgeFaces.end() && !itNew->second.empty()) continue;
-
-        int devBefore = std::abs(valence[a]      - tgt(a))
-                      + std::abs(valence[b]      - tgt(b))
-                      + std::abs(valence[vA]     - tgt(vA))
-                      + std::abs(valence[vB]     - tgt(vB));
-        int devAfter  = std::abs(valence[a]  - 1 - tgt(a))
-                      + std::abs(valence[b]  - 1 - tgt(b))
-                      + std::abs(valence[vA] + 1 - tgt(vA))
-                      + std::abs(valence[vB] + 1 - tgt(vB));
+        int devBefore = std::abs(valence[a]      - targetValence(a, isBoundaryV))
+                      + std::abs(valence[b]      - targetValence(b, isBoundaryV))
+                      + std::abs(valence[c]      - targetValence(c, isBoundaryV))
+                      + std::abs(valence[d]      - targetValence(d, isBoundaryV));
+        int devAfter  = std::abs(valence[a]  - 1 - targetValence(a, isBoundaryV))
+                      + std::abs(valence[b]  - 1 - targetValence(b, isBoundaryV))
+                      + std::abs(valence[c]  + 1 - targetValence(c, isBoundaryV))
+                      + std::abs(valence[d]  + 1 - targetValence(d, isBoundaryV));
         if (devAfter >= devBefore) continue;
 
-        // Commit. New triangles preserve CCW winding of the original quad:
-        //   FA: (a, vB, vA)   — a-side
-        //   FB: (b, vA, vB)   — b-side
-        // The shared diagonal (vA,vB) appears as (vB→vA) in FA and (vA→vB)
-        // in FB, which is the correct opposite-direction pairing.
-        hm.tris[FA] = {a, vB, vA};
-        hm.tris[FB] = {b, vA, vB};
-        valence[a]--; valence[b]--;
-        valence[vA]++; valence[vB]++;
-
-        // edgeFaces incremental update.
-        // FA leaves (a,b),(b,vA); joins (a,vB),(vA,vB); stays (vA,a).
-        rmEdge(a, b, FA); rmEdge(b, vA, FA);
-        addEdge(a, vB, FA); addEdge(vA, vB, FA);
-        // FB leaves (a,b),(a,vB); joins (b,vA),(vA,vB); stays (vB,b).
-        rmEdge(a, b, FB); rmEdge(a, vB, FB);
-        addEdge(b, vA, FB); addEdge(vA, vB, FB);
-        auto itAb = edgeFaces.find(EdgeKey(a, b));
-        if (itAb != edgeFaces.end() && itAb->second.empty())
-            edgeFaces.erase(itAb);
+        if (!pm.flipEdge(hi)) continue;
+        --valence[a]; --valence[b];
+        ++valence[c]; ++valence[d];
     }
 }
 
-static void relax(HalfEdgeMesh& hm) {
-    std::vector<std::vector<uint32_t>> adj(hm.verts.size());
-    auto addUnique = [](std::vector<uint32_t>& list, uint32_t v) {
-        for (uint32_t x : list) if (x == v) return;
-        list.push_back(v);
-    };
-    for (const auto& tri : hm.tris) {
-        for (int i = 0; i < 3; ++i) {
-            uint32_t a = tri[i], b = tri[(i+1)%3];
-            addUnique(adj[a], b);
-            addUnique(adj[b], a);
+void relax(PolyMesh& pm, const std::vector<uint8_t>& isBoundaryV) {
+    const size_t V = pm.vertexCount();
+    std::vector<std::vector<int32_t>> adj(V);
+    {
+        const auto& hes = pm.halfEdges();
+        for (size_t i = 0; i < hes.size(); ++i) {
+            if (!pm.isLiveHalfEdge((int32_t)i)) continue;
+            int32_t a = hes[i].origin;
+            int32_t b = hes[hes[i].next].origin;
+            auto& la = adj[a];
+            bool seen = false;
+            for (int32_t x : la) if (x == b) { seen = true; break; }
+            if (!seen) la.push_back(b);
         }
     }
 
-    std::vector<float> normals(hm.verts.size() * 3, 0.0f);
-    for (const auto& tri : hm.tris) {
-        float e1[3], e2[3];
-        for (int c = 0; c < 3; ++c) {
-            e1[c] = hm.verts[tri[1]].pos[c] - hm.verts[tri[0]].pos[c];
-            e2[c] = hm.verts[tri[2]].pos[c] - hm.verts[tri[0]].pos[c];
-        }
+    // Per-vertex normal: average of incident face normals, normalized.
+    std::vector<float> normals(V * 3, 0.0f);
+    for (size_t fi = 0; fi < pm.faceCount(); ++fi) {
+        if (!pm.isLiveFace((int32_t)fi)) continue;
+        auto fv = pm.faceVertices((int32_t)fi);
+        if (fv.size() != 3) continue;
+        float p0[3], p1[3], p2[3];
+        pm.getVertex(fv[0], p0);
+        pm.getVertex(fv[1], p1);
+        pm.getVertex(fv[2], p2);
+        float e1[3] = { p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2] };
+        float e2[3] = { p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2] };
         float nx = e1[1]*e2[2] - e1[2]*e2[1];
         float ny = e1[2]*e2[0] - e1[0]*e2[2];
         float nz = e1[0]*e2[1] - e1[1]*e2[0];
-        for (int i = 0; i < 3; ++i) {
-            normals[tri[i]*3+0] += nx;
-            normals[tri[i]*3+1] += ny;
-            normals[tri[i]*3+2] += nz;
+        for (int k = 0; k < 3; ++k) {
+            normals[fv[k]*3+0] += nx;
+            normals[fv[k]*3+1] += ny;
+            normals[fv[k]*3+2] += nz;
         }
     }
-    for (size_t v = 0; v < hm.verts.size(); ++v) {
+    for (size_t v = 0; v < V; ++v) {
         float* n = &normals[v*3];
-        float len = std::sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
-        if (len > 1e-8f) { n[0]/=len; n[1]/=len; n[2]/=len; }
+        float L = std::sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+        if (L > 1e-8f) { n[0]/=L; n[1]/=L; n[2]/=L; }
     }
 
-    // Double-buffer so neighbor updates don't leak into the same pass.
-    std::vector<float> newPos(hm.verts.size() * 3);
-    for (size_t v = 0; v < hm.verts.size(); ++v) {
-        newPos[v*3+0] = hm.verts[v].pos[0];
-        newPos[v*3+1] = hm.verts[v].pos[1];
-        newPos[v*3+2] = hm.verts[v].pos[2];
+    // Double-buffer position writes so neighbor updates don't leak.
+    std::vector<float> newPos(V * 3);
+    for (size_t v = 0; v < V; ++v) {
+        float p[3]; pm.getVertex((int32_t)v, p);
+        newPos[v*3+0] = p[0];
+        newPos[v*3+1] = p[1];
+        newPos[v*3+2] = p[2];
     }
 
-    for (size_t v = 0; v < hm.verts.size(); ++v) {
+    for (size_t v = 0; v < V; ++v) {
         if (adj[v].empty()) continue;
-        if (hm.verts[v].boundary) continue;
+        if (isBoundaryV[v]) continue;
 
         float cx = 0, cy = 0, cz = 0;
-        for (uint32_t n : adj[v]) {
-            cx += hm.verts[n].pos[0];
-            cy += hm.verts[n].pos[1];
-            cz += hm.verts[n].pos[2];
+        for (int32_t n : adj[v]) {
+            float p[3]; pm.getVertex(n, p);
+            cx += p[0]; cy += p[1]; cz += p[2];
         }
-        float invN = 1.0f / adj[v].size();
+        float invN = 1.0f / (float)adj[v].size();
         cx *= invN; cy *= invN; cz *= invN;
 
-        float dx = cx - hm.verts[v].pos[0];
-        float dy = cy - hm.verts[v].pos[1];
-        float dz = cz - hm.verts[v].pos[2];
+        float p[3]; pm.getVertex((int32_t)v, p);
+        float dx = cx - p[0];
+        float dy = cy - p[1];
+        float dz = cz - p[2];
 
-        const float* n = &normals[v * 3];
+        const float* n = &normals[v*3];
         float dot = dx*n[0] + dy*n[1] + dz*n[2];
         dx -= dot * n[0];
         dy -= dot * n[1];
         dz -= dot * n[2];
 
-        newPos[v*3+0] = hm.verts[v].pos[0] + dx * 0.5f;
-        newPos[v*3+1] = hm.verts[v].pos[1] + dy * 0.5f;
-        newPos[v*3+2] = hm.verts[v].pos[2] + dz * 0.5f;
+        newPos[v*3+0] = p[0] + dx * 0.5f;
+        newPos[v*3+1] = p[1] + dy * 0.5f;
+        newPos[v*3+2] = p[2] + dz * 0.5f;
     }
-    for (size_t v = 0; v < hm.verts.size(); ++v) {
-        hm.verts[v].pos[0] = newPos[v*3+0];
-        hm.verts[v].pos[1] = newPos[v*3+1];
-        hm.verts[v].pos[2] = newPos[v*3+2];
+
+    // Apply.
+    // PolyMesh's vertices_ is private; we set positions via translateVertex
+    // (origin → new pos).
+    for (size_t v = 0; v < V; ++v) {
+        float cur[3]; pm.getVertex((int32_t)v, cur);
+        float off[3] = {
+            newPos[v*3+0] - cur[0],
+            newPos[v*3+1] - cur[1],
+            newPos[v*3+2] - cur[2]
+        };
+        pm.translateVertex((int32_t)v, off);
     }
 }
+
+MeshData polyMeshToTriangles(const PolyMesh& pm) {
+    MeshData out;
+    out.positions.reserve(pm.vertexCount() * 3);
+    for (size_t v = 0; v < pm.vertexCount(); ++v) {
+        float p[3]; pm.getVertex((int32_t)v, p);
+        out.positions.push_back(p[0]);
+        out.positions.push_back(p[1]);
+        out.positions.push_back(p[2]);
+    }
+    out.indices.reserve(pm.faceCount() * 3);
+    for (size_t f = 0; f < pm.faceCount(); ++f) {
+        if (!pm.isLiveFace((int32_t)f)) continue;
+        auto fv = pm.faceVertices((int32_t)f);
+        if (fv.size() != 3) continue;
+        out.indices.push_back((uint32_t)fv[0]);
+        out.indices.push_back((uint32_t)fv[1]);
+        out.indices.push_back((uint32_t)fv[2]);
+    }
+    return out;
+}
+
+void recomputeVertexNormals(MeshData& m) {
+    const size_t V = m.vertexCount();
+    m.normals.assign(V * 3, 0.0f);
+    for (size_t t = 0; t < m.triangleCount(); ++t) {
+        uint32_t i0 = m.indices[t*3+0];
+        uint32_t i1 = m.indices[t*3+1];
+        uint32_t i2 = m.indices[t*3+2];
+        float e1x = m.positions[i1*3+0] - m.positions[i0*3+0];
+        float e1y = m.positions[i1*3+1] - m.positions[i0*3+1];
+        float e1z = m.positions[i1*3+2] - m.positions[i0*3+2];
+        float e2x = m.positions[i2*3+0] - m.positions[i0*3+0];
+        float e2y = m.positions[i2*3+1] - m.positions[i0*3+1];
+        float e2z = m.positions[i2*3+2] - m.positions[i0*3+2];
+        float nx = e1y*e2z - e1z*e2y;
+        float ny = e1z*e2x - e1x*e2z;
+        float nz = e1x*e2y - e1y*e2x;
+        for (uint32_t idx : {i0, i1, i2}) {
+            m.normals[idx*3+0] += nx;
+            m.normals[idx*3+1] += ny;
+            m.normals[idx*3+2] += nz;
+        }
+    }
+    for (size_t v = 0; v < V; ++v) {
+        float* n = &m.normals[v*3];
+        float L = std::sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+        if (L > 1e-8f) { n[0]/=L; n[1]/=L; n[2]/=L; }
+    }
+}
+
+} // anon namespace
 
 MeshData remeshIsotropic(const MeshData& mesh, float targetEdgeLength,
                          int iterations) {
     if (mesh.empty() || mesh.indices.empty() || iterations <= 0) return mesh;
 
-    HalfEdgeMesh hm;
-    size_t vertCount = mesh.vertexCount();
-    hm.verts.resize(vertCount);
-    for (size_t v = 0; v < vertCount; ++v) {
-        hm.verts[v].pos[0] = mesh.positions[v * 3 + 0];
-        hm.verts[v].pos[1] = mesh.positions[v * 3 + 1];
-        hm.verts[v].pos[2] = mesh.positions[v * 3 + 2];
-    }
-
-    size_t triCount = mesh.triangleCount();
-    hm.tris.resize(triCount);
-    for (size_t t = 0; t < triCount; ++t) {
-        hm.tris[t] = {mesh.indices[t*3+0], mesh.indices[t*3+1], mesh.indices[t*3+2]};
-    }
+    // Weld first: PolyMesh's surgery operates on vertex-identity manifolds.
+    // Position-duplicate vertices (e.g. UV-seam splits in `sphere()`) get
+    // their twin pointers paired by PolyMesh::rematchTwins's position pass,
+    // but splitEdge / collapseEdge / flipEdge mutate vertex indices in
+    // ways that quietly desynchronize seam pairs. Welding collapses each
+    // duplicate set to a single vertex up front, which makes the surgery
+    // both faster and unambiguous. Attribute streams (UVs, colors,
+    // skinning) are dropped by remesh anyway, so the weld is non-lossy
+    // here.
+    MeshData welded = weldVertices(mesh);
+    PolyMesh pm = PolyMesh::fromMeshData(welded.positions, welded.indices);
 
     if (targetEdgeLength <= 0.0f) {
         double totalLen = 0.0;
         int edgeCount = 0;
-        for (const auto& tri : hm.tris) {
-            for (int e = 0; e < 3; ++e) {
-                totalLen += hm.edgeLength(tri[e], tri[(e+1)%3]);
-                edgeCount++;
-            }
+        const auto& hes = pm.halfEdges();
+        for (size_t i = 0; i < hes.size(); ++i) {
+            if (!pm.isLiveHalfEdge((int32_t)i)) continue;
+            totalLen += edgeLength(pm, (int32_t)i);
+            ++edgeCount;
         }
+        if (edgeCount == 0) return welded;
         targetEdgeLength = static_cast<float>(totalLen / edgeCount);
     }
-
     const float splitThreshold    = targetEdgeLength * (4.0f / 3.0f);
     const float collapseThreshold = targetEdgeLength * (4.0f / 5.0f);
 
-    markBoundaryVerts(hm);
+    auto isBoundaryV = computeBoundary(pm);
 
-    for (int iter = 0; iter < iterations; ++iter) {
-        splitLongEdges(hm, splitThreshold);
-        collapseShortEdges(hm, collapseThreshold, splitThreshold);
-        flipEdges(hm);
-        relax(hm);
+    for (int it = 0; it < iterations; ++it) {
+        splitLongEdges(pm, splitThreshold, isBoundaryV);
+        collapseShortEdges(pm, collapseThreshold, splitThreshold, isBoundaryV);
+        pm.compact();
+        isBoundaryV = computeBoundary(pm);
+        flipEdges(pm, isBoundaryV);
+        relax(pm, isBoundaryV);
     }
 
-    // Compact: remove unused vertices, build output MeshData.
-    std::vector<uint32_t> remap(hm.verts.size(), UINT32_MAX);
-    MeshData result;
-
-    for (const auto& tri : hm.tris) {
-        for (int i = 0; i < 3; ++i) {
-            if (remap[tri[i]] == UINT32_MAX) {
-                remap[tri[i]] = static_cast<uint32_t>(result.positions.size() / 3);
-                result.positions.push_back(hm.verts[tri[i]].pos[0]);
-                result.positions.push_back(hm.verts[tri[i]].pos[1]);
-                result.positions.push_back(hm.verts[tri[i]].pos[2]);
-            }
-        }
-        result.indices.push_back(remap[tri[0]]);
-        result.indices.push_back(remap[tri[1]]);
-        result.indices.push_back(remap[tri[2]]);
-    }
-
-    size_t outVertCount = result.vertexCount();
-    result.normals.assign(outVertCount * 3, 0.0f);
-    for (size_t t = 0; t < result.triangleCount(); ++t) {
-        uint32_t i0 = result.indices[t*3+0];
-        uint32_t i1 = result.indices[t*3+1];
-        uint32_t i2 = result.indices[t*3+2];
-        float e1x = result.positions[i1*3+0]-result.positions[i0*3+0];
-        float e1y = result.positions[i1*3+1]-result.positions[i0*3+1];
-        float e1z = result.positions[i1*3+2]-result.positions[i0*3+2];
-        float e2x = result.positions[i2*3+0]-result.positions[i0*3+0];
-        float e2y = result.positions[i2*3+1]-result.positions[i0*3+1];
-        float e2z = result.positions[i2*3+2]-result.positions[i0*3+2];
-        float nx = e1y*e2z - e1z*e2y;
-        float ny = e1z*e2x - e1x*e2z;
-        float nz = e1x*e2y - e1y*e2x;
-        for (uint32_t idx : {i0, i1, i2}) {
-            result.normals[idx*3+0] += nx;
-            result.normals[idx*3+1] += ny;
-            result.normals[idx*3+2] += nz;
-        }
-    }
-    for (size_t v = 0; v < outVertCount; ++v) {
-        float* n = &result.normals[v*3];
-        float len = std::sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
-        if (len > 1e-8f) { n[0]/=len; n[1]/=len; n[2]/=len; }
-    }
-
-    return result;
+    pm.compact();
+    MeshData out = polyMeshToTriangles(pm);
+    recomputeVertexNormals(out);
+    return out;
 }
 
 } // namespace bromesh
