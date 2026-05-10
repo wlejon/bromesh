@@ -422,10 +422,13 @@ MeshData transvoxel(const float* field, int gridSize, int lod,
                     cornerVals[c] = field[sz * gridSize * gridSize + sy * gridSize + sx];
                 }
 
-                // Build cube index
+                // Build cube index. Bit set when corner is at or above iso
+                // (outside under standard SDF convention); Bourke's tri-table
+                // winds normals toward set-bit corners, so this yields
+                // outward-facing surfaces for f < iso = inside fields.
                 int cubeIndex = 0;
                 for (int c = 0; c < 8; ++c) {
-                    if (cornerVals[c] < isoLevel)
+                    if (cornerVals[c] >= isoLevel)
                         cubeIndex |= (1 << c);
                 }
 

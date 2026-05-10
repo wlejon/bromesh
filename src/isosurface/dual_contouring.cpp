@@ -142,8 +142,8 @@ MeshData dualContour(const float* field, int gridX, int gridY, int gridZ,
                     float v0 = cornerVals[c0];
                     float v1 = cornerVals[c1];
 
-                    bool s0 = (v0 >= isoLevel);
-                    bool s1 = (v1 >= isoLevel);
+                    bool s0 = (v0 < isoLevel);
+                    bool s1 = (v1 < isoLevel);
                     if (s0 == s1) continue;
 
                     float t = (isoLevel - v0) / (v1 - v0);
@@ -264,8 +264,8 @@ MeshData dualContour(const float* field, int gridX, int gridY, int gridZ,
                 // Shared by cells: (gx,gy,gz), (gx,gy-1,gz), (gx,gy,gz-1), (gx,gy-1,gz-1)
                 if (gx + 1 < gridX) {
                     float v1 = field[fieldIdx(gx + 1, gy, gz)];
-                    bool s0 = (v0 >= isoLevel);
-                    bool s1 = (v1 >= isoLevel);
+                    bool s0 = (v0 < isoLevel);
+                    bool s1 = (v1 < isoLevel);
                     if (s0 != s1) {
                         int cy0 = gy, cy1 = gy - 1;
                         int cz0 = gz, cz1 = gz - 1;
@@ -301,8 +301,8 @@ MeshData dualContour(const float* field, int gridX, int gridY, int gridZ,
                 // Shared by cells: (gx,gy,gz), (gx-1,gy,gz), (gx,gy,gz-1), (gx-1,gy,gz-1)
                 if (gy + 1 < gridY) {
                     float v1 = field[fieldIdx(gx, gy + 1, gz)];
-                    bool s0 = (v0 >= isoLevel);
-                    bool s1 = (v1 >= isoLevel);
+                    bool s0 = (v0 < isoLevel);
+                    bool s1 = (v1 < isoLevel);
                     if (s0 != s1) {
                         int cx0 = gx, cx1 = gx - 1;
                         int cz0 = gz, cz1 = gz - 1;
@@ -338,8 +338,8 @@ MeshData dualContour(const float* field, int gridX, int gridY, int gridZ,
                 // Shared by cells: (gx,gy,gz), (gx-1,gy,gz), (gx,gy-1,gz), (gx-1,gy-1,gz)
                 if (gz + 1 < gridZ) {
                     float v1 = field[fieldIdx(gx, gy, gz + 1)];
-                    bool s0 = (v0 >= isoLevel);
-                    bool s1 = (v1 >= isoLevel);
+                    bool s0 = (v0 < isoLevel);
+                    bool s1 = (v1 < isoLevel);
                     if (s0 != s1) {
                         int cx0 = gx, cx1 = gx - 1;
                         int cy0 = gy, cy1 = gy - 1;

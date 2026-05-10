@@ -222,7 +222,7 @@ TEST(marching_cubes_sphere) {
                 float dy = y - cy;
                 float dz = z - cz;
                 float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                field[z * N * N + y * N + x] = radius - dist;
+                field[z * N * N + y * N + x] = dist - radius;
             }
         }
     }
@@ -246,21 +246,23 @@ TEST(marching_cubes_sphere) {
     ASSERT(allUnit, "sphere normals should be unit length");
 }
 
-TEST(marching_cubes_all_positive) {
+TEST(marching_cubes_all_inside) {
+    // Standard SDF: f < iso means inside. An all-negative field is "all inside"
+    // and with closeBoundary=true should produce a closed skin around the grid.
     const int N = 4;
     float field[N * N * N];
     for (int i = 0; i < N * N * N; ++i)
-        field[i] = 1.0f; // all positive, above isoLevel=0
+        field[i] = -1.0f; // all below iso = all inside
 
-    // closeBoundary=true (default): treats out-of-grid as below iso, so
-    // an all-inside field produces a closed skin around the entire grid.
+    // closeBoundary=true (default): pads with a super-iso ("outside") sentinel,
+    // so an all-inside field produces a closed skin around the entire grid.
     auto closed = bromesh::marchingCubes(field, N, N, N, 0.0f, 1.0f);
-    ASSERT(!closed.empty(), "all-positive field with closeBoundary yields a closed skin");
+    ASSERT(!closed.empty(), "all-inside field with closeBoundary yields a closed skin");
 
-    // closeBoundary=false: legacy behavior, no boundary handling, so an
-    // all-positive field has no zero crossings and produces no triangles.
+    // closeBoundary=false: no boundary handling, so an all-inside field has no
+    // zero crossings inside the grid and produces no triangles.
     auto open = bromesh::marchingCubes(field, N, N, N, 0.0f, 1.0f, false);
-    ASSERT(open.empty(), "all-positive field with closeBoundary=false stays empty");
+    ASSERT(open.empty(), "all-inside field with closeBoundary=false stays empty");
 }
 
 TEST(surface_nets_sphere) {
@@ -278,7 +280,7 @@ TEST(surface_nets_sphere) {
                 float dy = y - cy;
                 float dz = z - cz;
                 float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                field[z * N * N + y * N + x] = radius - dist;
+                field[z * N * N + y * N + x] = dist - radius;
             }
         }
     }
@@ -313,13 +315,15 @@ TEST(surface_nets_sphere) {
     ASSERT(allUnit, "surface nets sphere normals should be unit length");
 }
 
-TEST(marching_cubes_all_negative) {
+TEST(marching_cubes_all_outside) {
+    // Standard SDF: f >= iso means outside. An all-positive field is fully
+    // outside; closeBoundary's "outside" sentinel matches, so no surface.
     const int N = 4;
     float field[N * N * N];
     for (int i = 0; i < N * N * N; ++i)
-        field[i] = -1.0f; // all negative, below isoLevel=0
+        field[i] = 1.0f; // all above iso = all outside
     auto mesh = bromesh::marchingCubes(field, N, N, N, 0.0f, 1.0f);
-    ASSERT(mesh.empty(), "all-negative field should produce empty mesh");
+    ASSERT(mesh.empty(), "all-outside field should produce empty mesh");
 }
 
 TEST(greedy_mesh_single_voxel) {
@@ -391,7 +395,7 @@ TEST(dual_contour_sphere) {
                 float dy = y - cy;
                 float dz = z - cz;
                 float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                field[z * N * N + y * N + x] = radius - dist;
+                field[z * N * N + y * N + x] = dist - radius;
             }
         }
     }
@@ -429,12 +433,11 @@ TEST(dual_contour_box_field) {
                 float dx = std::fabs(x - cx) - halfExtent;
                 float dy = std::fabs(y - cy) - halfExtent;
                 float dz = std::fabs(z - cz) - halfExtent;
-                // Negative inside, positive outside (SDF convention for "inside = negative")
-                // We want field > 0 inside, so negate the box SDF
+                // Standard SDF: max of 3 plane distances; negative inside, positive outside.
                 float maxDist = dx;
                 if (dy > maxDist) maxDist = dy;
                 if (dz > maxDist) maxDist = dz;
-                field[z * N * N + y * N + x] = -maxDist;
+                field[z * N * N + y * N + x] = maxDist;
             }
         }
     }
@@ -508,7 +511,7 @@ TEST(transvoxel_uniform_lod) {
                 float dy = y - cy;
                 float dz = z - cz;
                 float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                field[z * N * N + y * N + x] = radius - dist;
+                field[z * N * N + y * N + x] = dist - radius;
             }
         }
     }
@@ -545,7 +548,7 @@ TEST(transvoxel_with_transition) {
                 float dy = y - cy;
                 float dz = z - cz;
                 float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                field[z * N * N + y * N + x] = radius - dist;
+                field[z * N * N + y * N + x] = dist - radius;
             }
         }
     }
@@ -692,7 +695,7 @@ static void fillSphereField(float* field, int N, float radius) {
         for (int y = 0; y < N; ++y)
             for (int x = 0; x < N; ++x) {
                 float dx = x - c, dy = y - c, dz = z - c;
-                field[z * N * N + y * N + x] = radius - std::sqrt(dx*dx + dy*dy + dz*dz);
+                field[z * N * N + y * N + x] = std::sqrt(dx*dx + dy*dy + dz*dz) - radius;
             }
 }
 

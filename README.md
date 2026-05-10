@@ -87,7 +87,8 @@ bromesh::saveGLTF(mesh, "sphere.glb");
 ```cpp
 #include "bromesh/isosurface/marching_cubes.h"
 
-// Build a scalar field (positive = inside)
+// Build a scalar field. Standard SDF convention: f < iso is inside,
+// f >= iso is outside. e.g. for a sphere of radius r: f = length(p) - r.
 const int N = 32;
 std::vector<float> field(N * N * N);
 // ... fill with SDF values ...

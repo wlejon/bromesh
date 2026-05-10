@@ -8,6 +8,9 @@ namespace bromesh {
 /// Generates transition cells along chunk boundaries where neighboring
 /// chunks have different resolution levels.
 ///
+/// Sign convention: standard SDF — `field < isoLevel` is inside,
+/// `field >= isoLevel` is outside. Normals point outward.
+///
 /// field: scalar values for this chunk's grid, row-major.
 /// gridSize: cubic grid dimension (must be uniform).
 /// lod: LOD level of this chunk (0 = highest detail).

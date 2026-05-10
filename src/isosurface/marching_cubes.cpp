@@ -353,11 +353,12 @@ MeshData marchingCubes(const float* field, int gridX, int gridY, int gridZ,
         return mesh;
 
     // When closeBoundary is true, walk a virtual one-cell-wider grid whose
-    // padding cells contain a sentinel value strictly below isoLevel. This
-    // forces the iso-surface to close along any face where it would have
-    // otherwise exited the original grid (sphere clipped at the chunk edge,
-    // terrain noise meeting the boundary, etc.) — the resulting mesh is
-    // watertight and downstream code (volume, BVH raycast, GPU backface
+    // padding cells contain a sentinel value strictly above isoLevel (the
+    // "outside" side under the standard SDF convention used by this library).
+    // This forces the iso-surface to close along any face where it would
+    // have otherwise exited the original grid (sphere clipped at the chunk
+    // edge, terrain noise meeting the boundary, etc.) — the resulting mesh
+    // is watertight and downstream code (volume, BVH raycast, GPU backface
     // culling) sees a manifold surface.
     //
     // We don't allocate a padded copy of the field; we just remap the cell
@@ -370,10 +371,11 @@ MeshData marchingCubes(const float* field, int gridX, int gridY, int gridZ,
     const int xHi = closeBoundary ? gridX : gridX - 1;
     const int yHi = closeBoundary ? gridY : gridY - 1;
     const int zHi = closeBoundary ? gridZ : gridZ - 1;
-    // Sentinel must be strictly below isoLevel so the padding cells classify
-    // as "outside" — but not so far below that interpolation snaps to the
-    // padding corner. One unit of cellSize works for any reasonable iso.
-    const float sentinel = isoLevel - 1.0f;
+    // Sentinel must be strictly above isoLevel so the padding cells classify
+    // as "outside" under the standard SDF convention (f >= iso = outside).
+    // Not so far above that interpolation snaps to the padding corner;
+    // one unit works for any reasonable iso.
+    const float sentinel = isoLevel + 1.0f;
     auto sampleField = [&](int sx, int sy, int sz) -> float {
         if (sx < 0 || sy < 0 || sz < 0 ||
             sx >= gridX || sy >= gridY || sz >= gridZ) {
@@ -442,10 +444,15 @@ MeshData marchingCubes(const float* field, int gridX, int gridY, int gridZ,
                     cornerVals[c] = sampleField(cx, cy, cz);
                 }
 
-                // Build cube index: bit i is set if corner i is below isoLevel
+                // Build cube index: bit i is set if corner i is at or above
+                // isoLevel (the "outside" side under the standard SDF
+                // convention: f < iso is inside, f >= iso is outside).
+                // Paul Bourke's tri-table winds triangles so the surface
+                // normal points toward the set-bit corners, so this gives
+                // outward-facing normals for an SDF.
                 int cubeIndex = 0;
                 for (int c = 0; c < 8; ++c) {
-                    if (cornerVals[c] < isoLevel)
+                    if (cornerVals[c] >= isoLevel)
                         cubeIndex |= (1 << c);
                 }
 
