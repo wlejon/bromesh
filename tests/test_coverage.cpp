@@ -172,6 +172,7 @@ TEST(vox_load_no_palette_defaults_white) {
     ASSERT(data.sizeX == 1 && data.voxels.size() == 1, "vox nopal: 1x1x1");
     ASSERT(data.voxels[0] == 7, "vox nopal: voxel = 7");
     ASSERT(data.palette[5*4 + 0] == 1.0f, "vox nopal: default palette white");
+    std::remove(path);
 }
 
 TEST(vox_load_bad_magic_returns_empty) {
