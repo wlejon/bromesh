@@ -4,6 +4,7 @@ add_executable(bromesh_test
     test_animation.cpp
     test_rigging.cpp
     test_procedural.cpp
+    test_coverage.cpp
 )
 target_link_libraries(bromesh_test PRIVATE bromesh)
 
