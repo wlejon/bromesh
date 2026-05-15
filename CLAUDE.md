@@ -59,8 +59,19 @@ optimization/   optimize (meshopt), meshlets, analyze, spatial, encode, strips,
                 progressive (continuous LOD with serialization)
 reconstruction/ point cloud → mesh
 csg/            boolean (manifold)
+procedural/     stateless plant-shaped mesh constructors: leafCard / flower /
+                bladeStrip (low-poly foliage cards), space_colonization +
+                branches + tree (attractor-grown branch tubes), lsystem +
+                lsystem_turtle (rule-based geometry), leaf_scatter,
+                obstacle_field
 io/             obj, stl, ply, gltf, fbx (read-only), vox (read-only)
 ```
+
+The `procedural/` module is the renderer surface that the sibling
+`broflora` ecosystem-simulation library composes — broflora ticks plant
+state forward, then calls into these constructors to emit `MeshData`.
+Standalone consumers (game backgrounds, UI icons, distant LODs) use the
+same calls directly without dragging in broflora.
 
 ### The rigging + animation pipeline (multi-file flow)
 
