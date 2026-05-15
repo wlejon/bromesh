@@ -2,7 +2,7 @@
 
 #include "bromesh/procedural/lsystem.h"
 #include "bromesh/procedural/space_colonization.h"
-#include "bromesh/procedural/vec_math.h"
+#include <bromath/vec.h>
 
 #include <vector>
 
@@ -41,9 +41,9 @@ struct TurtleOptions {
     /// overridden by `!` or by an `F` second parameter.
     float radius     = 0.01f;
     /// Initial pose.
-    Vec3  position   = {0.0f, 0.0f, 0.0f};
-    Vec3  heading    = {0.0f, 1.0f, 0.0f};   // forward
-    Vec3  up         = {0.0f, 0.0f, 1.0f};   // roll reference
+    bromath::Vec3  position   = {0.0f, 0.0f, 0.0f};
+    bromath::Vec3  heading    = {0.0f, 1.0f, 0.0f};   // forward
+    bromath::Vec3  up         = {0.0f, 0.0f, 1.0f};   // roll reference
 };
 
 /// Interpret a flat L-system module sequence as a 3D turtle. Returns the

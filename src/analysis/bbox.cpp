@@ -8,22 +8,10 @@
 
 namespace bromesh {
 
-BBox computeBBox(const MeshData& mesh) {
+bromath::AABB3 computeBBox(const MeshData& mesh) {
     if (mesh.positions.empty()) return {};
-
-    BBox bbox;
-    bbox.min[0] = bbox.min[1] = bbox.min[2] =  std::numeric_limits<float>::max();
-    bbox.max[0] = bbox.max[1] = bbox.max[2] = -std::numeric_limits<float>::max();
-
-    size_t vertCount = mesh.vertexCount();
-    for (size_t v = 0; v < vertCount; ++v) {
-        for (int k = 0; k < 3; ++k) {
-            float val = mesh.positions[v * 3 + k];
-            if (val < bbox.min[k]) bbox.min[k] = val;
-            if (val > bbox.max[k]) bbox.max[k] = val;
-        }
-    }
-    return bbox;
+    return bromath::afromPoints(mesh.positions.data(),
+                                static_cast<int>(mesh.vertexCount()), 3);
 }
 
 bool isManifold(const MeshData& mesh) {

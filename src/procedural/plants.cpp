@@ -6,13 +6,15 @@
 #include "bromesh/manipulation/transform.h"
 #include "bromesh/primitives/primitives.h"
 #include "bromesh/procedural/branches.h"
-#include "bromesh/procedural/vec_math.h"
+#include <bromath/bromath.h>
 
 #include <algorithm>
 #include <cmath>
 #include <random>
 
 namespace bromesh {
+
+using namespace bromath;
 
 namespace {
 

@@ -499,7 +499,7 @@ TEST(capsule_field_with_spheres_and_long_capsule) {
     ASSERT(d < 0.0f, "field: distance inside long capsule");
 
     // excludeTag should skip the sphere and report only capsule distance.
-    Vec3 nearSphere = { 5, 5, 0 };
+    bromath::Vec3 nearSphere = { 5, 5, 0 };
     float dExcl = f.distance(nearSphere, /*excludeTag=*/2);
     ASSERT(dExcl > 0.0f, "field: excludeTag skips sphere");
 }

@@ -240,13 +240,11 @@ MeshBVH MeshBVH::build(const MeshData& mesh, int leafSize) {
 
 // --- Queries -----------------------------------------------------------------
 
-BBox MeshBVH::bounds() const {
-    BBox b;
+bromath::AABB3 MeshBVH::bounds() const {
+    bromath::AABB3 b;
     if (nodes_.empty()) return b;
-    for (int a = 0; a < 3; ++a) {
-        b.min[a] = nodes_[0].bboxMin[a];
-        b.max[a] = nodes_[0].bboxMax[a];
-    }
+    b.min = { nodes_[0].bboxMin[0], nodes_[0].bboxMin[1], nodes_[0].bboxMin[2] };
+    b.max = { nodes_[0].bboxMax[0], nodes_[0].bboxMax[1], nodes_[0].bboxMax[2] };
     return b;
 }
 

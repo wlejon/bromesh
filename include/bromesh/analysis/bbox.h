@@ -5,7 +5,7 @@
 namespace bromesh {
 
 /// Compute the axis-aligned bounding box of a mesh.
-BBox computeBBox(const MeshData& mesh);
+bromath::AABB3 computeBBox(const MeshData& mesh);
 
 /// Check if a mesh is manifold (watertight, every edge shared by exactly 2 triangles).
 bool isManifold(const MeshData& mesh);

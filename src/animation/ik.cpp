@@ -1,15 +1,22 @@
 #include "bromesh/animation/ik.h"
 
+#include <bromath/bromath.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 
 namespace bromesh {
 
-// ---- local math (duplicated intentionally, same patterns as pose.cpp) ----
+using namespace bromath;
+
+// ---- float-pointer adapters over bromath ---------------------------------
+// The IK routines operate on raw float buffers (consumer-friendly when
+// interoperating with Pose data) — these are thin wrappers that pack into
+// bromath types, call the canonical op, and write back.
 
 static float v3len(const float* v) {
-    return std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+    return vlen(Vec3{v[0], v[1], v[2]});
 }
 static void v3sub(const float* a, const float* b, float* o) {
     o[0]=a[0]-b[0]; o[1]=a[1]-b[1]; o[2]=a[2]-b[2];
@@ -18,70 +25,43 @@ static void v3scale(const float* a, float s, float* o) {
     o[0]=a[0]*s; o[1]=a[1]*s; o[2]=a[2]*s;
 }
 static float v3dot(const float* a, const float* b) {
-    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+    return vdot(Vec3{a[0],a[1],a[2]}, Vec3{b[0],b[1],b[2]});
 }
 static void v3cross(const float* a, const float* b, float* o) {
-    o[0]=a[1]*b[2]-a[2]*b[1]; o[1]=a[2]*b[0]-a[0]*b[2]; o[2]=a[0]*b[1]-a[1]*b[0];
+    Vec3 r = vcross(Vec3{a[0],a[1],a[2]}, Vec3{b[0],b[1],b[2]});
+    o[0]=r.x; o[1]=r.y; o[2]=r.z;
 }
 static void v3norm(float* v) {
-    float len = v3len(v);
-    if (len > 1e-8f) { v[0]/=len; v[1]/=len; v[2]/=len; }
-}
-
-static void quatNormalize(float* q) {
-    float len = std::sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
-    if (len > 1e-8f) { q[0]/=len; q[1]/=len; q[2]/=len; q[3]/=len; }
+    Vec3 r = vnorm(Vec3{v[0], v[1], v[2]});
+    v[0]=r.x; v[1]=r.y; v[2]=r.z;
 }
 
 // Quaternion product p*q (xyzw) -> out
-static void quatMul(const float* p, const float* q, float* out) {
-    float r[4];
-    r[0] = p[3]*q[0] + p[0]*q[3] + p[1]*q[2] - p[2]*q[1];
-    r[1] = p[3]*q[1] - p[0]*q[2] + p[1]*q[3] + p[2]*q[0];
-    r[2] = p[3]*q[2] + p[0]*q[1] - p[1]*q[0] + p[2]*q[3];
-    r[3] = p[3]*q[3] - p[0]*q[0] - p[1]*q[1] - p[2]*q[2];
-    out[0]=r[0]; out[1]=r[1]; out[2]=r[2]; out[3]=r[3];
+static void quatMulRaw(const float* p, const float* q, float* out) {
+    Quat r = qmul(Quat{p[0],p[1],p[2],p[3]}, Quat{q[0],q[1],q[2],q[3]});
+    out[0]=r.x; out[1]=r.y; out[2]=r.z; out[3]=r.w;
 }
 
 static void quatConj(const float* q, float* out) {
-    out[0]=-q[0]; out[1]=-q[1]; out[2]=-q[2]; out[3]=q[3];
+    Quat r = qconjugate(Quat{q[0],q[1],q[2],q[3]});
+    out[0]=r.x; out[1]=r.y; out[2]=r.z; out[3]=r.w;
+}
+
+static void quatNormalize(float* q) {
+    Quat r = qnorm(Quat{q[0],q[1],q[2],q[3]});
+    q[0]=r.x; q[1]=r.y; q[2]=r.z; q[3]=r.w;
 }
 
 // Rotate vector v by quaternion q -> out
 static void quatRotateVec(const float* q, const float* v, float* out) {
-    // Fast formula: t = 2 * cross(q.xyz, v); out = v + q.w*t + cross(q.xyz, t)
-    float t[3];
-    v3cross(q, v, t);
-    t[0]*=2; t[1]*=2; t[2]*=2;
-    float a[3] = { v[0] + q[3]*t[0], v[1] + q[3]*t[1], v[2] + q[3]*t[2] };
-    float c[3];
-    v3cross(q, t, c);
-    out[0] = a[0] + c[0];
-    out[1] = a[1] + c[1];
-    out[2] = a[2] + c[2];
+    Vec3 r = qrotate(Quat{q[0],q[1],q[2],q[3]}, Vec3{v[0],v[1],v[2]});
+    out[0]=r.x; out[1]=r.y; out[2]=r.z;
 }
 
 // Quaternion that rotates `from` to `to` (both normalized vec3).
-static void quatFromTo(const float* from, const float* to, float* out) {
-    float d = v3dot(from, to);
-    if (d > 0.9999f) { out[0]=0; out[1]=0; out[2]=0; out[3]=1; return; }
-    if (d < -0.9999f) {
-        // 180°: any perpendicular axis
-        float axis[3] = { 1, 0, 0 };
-        float c[3]; v3cross(from, axis, c);
-        if (v3len(c) < 1e-4f) { axis[0]=0; axis[1]=1; axis[2]=0; v3cross(from, axis, c); }
-        v3norm(c);
-        out[0]=c[0]; out[1]=c[1]; out[2]=c[2]; out[3]=0;
-        return;
-    }
-    float c[3]; v3cross(from, to, c);
-    float s = std::sqrt((1.0f + d) * 2.0f);
-    float inv = 1.0f / s;
-    out[0] = c[0] * inv;
-    out[1] = c[1] * inv;
-    out[2] = c[2] * inv;
-    out[3] = s * 0.5f;
-    quatNormalize(out);
+static void quatFromToRaw(const float* from, const float* to, float* out) {
+    Quat r = qfromTo(Vec3{from[0],from[1],from[2]}, Vec3{to[0],to[1],to[2]});
+    out[0]=r.x; out[1]=r.y; out[2]=r.z; out[3]=r.w;
 }
 
 // Gather accumulated world rotation and world position by walking bone chain
@@ -110,7 +90,7 @@ static void accumulateBoneWorld(const Skeleton& skeleton, const Pose& pose,
         outPos[2] += rotated[2];
         // world_rot = parent_rot * local_rot
         float q[4];
-        quatMul(outRot, &d[3], q);
+        quatMulRaw(outRot, &d[3], q);
         quatNormalize(q);
         outRot[0]=q[0]; outRot[1]=q[1]; outRot[2]=q[2]; outRot[3]=q[3];
     }
@@ -130,13 +110,13 @@ static void applyWorldRotationDelta(const Skeleton& skeleton, Pose& pose,
 
     // tmp = pRotConj * qDelta
     float tmp[4];
-    quatMul(pRotConj, qDelta, tmp);
+    quatMulRaw(pRotConj, qDelta, tmp);
     // tmp = tmp * pRot
-    quatMul(tmp, pRot, tmp);
+    quatMulRaw(tmp, pRot, tmp);
     // newLocal = tmp * oldLocal
     float* local = &pose.data[bone * 10 + 3];
     float result[4];
-    quatMul(tmp, local, result);
+    quatMulRaw(tmp, local, result);
     quatNormalize(result);
     local[0]=result[0]; local[1]=result[1]; local[2]=result[2]; local[3]=result[3];
 }
@@ -216,7 +196,7 @@ bool solveTwoBoneIK(const Skeleton& skeleton,
     float curRootToMid[3]; v3sub(midPos, rootPos, curRootToMid); v3norm(curRootToMid);
     float newRootToMid[3]; v3sub(desiredMid, rootPos, newRootToMid); v3norm(newRootToMid);
     float qA[4];
-    quatFromTo(curRootToMid, newRootToMid, qA);
+    quatFromToRaw(curRootToMid, newRootToMid, qA);
     applyWorldRotationDelta(skeleton, pose, rootBone, qA);
 
     // Refresh world positions
@@ -228,7 +208,7 @@ bool solveTwoBoneIK(const Skeleton& skeleton,
     float curMidToEnd[3]; v3sub(endPos, midPos, curMidToEnd); v3norm(curMidToEnd);
     float newMidToEnd[3]; v3sub(clampedTarget, midPos, newMidToEnd); v3norm(newMidToEnd);
     float qB[4];
-    quatFromTo(curMidToEnd, newMidToEnd, qB);
+    quatFromToRaw(curMidToEnd, newMidToEnd, qB);
     applyWorldRotationDelta(skeleton, pose, midBone, qB);
 
     return true;
@@ -338,7 +318,7 @@ bool solveFABRIK(const Skeleton& skeleton,
         v3norm(newDir);
 
         float q[4];
-        quatFromTo(oldDir, newDir, q);
+        quatFromToRaw(oldDir, newDir, q);
         applyWorldRotationDelta(skeleton, pose, b, q);
     }
 
@@ -372,7 +352,7 @@ bool solveLookAt(const Skeleton& skeleton,
     v3norm(desiredFwd);
 
     float q[4];
-    quatFromTo(curFwd, desiredFwd, q);
+    quatFromToRaw(curFwd, desiredFwd, q);
     applyWorldRotationDelta(skeleton, pose, bone, q);
     return true;
 }

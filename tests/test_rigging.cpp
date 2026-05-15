@@ -633,7 +633,8 @@ TEST(detect_landmarks_quadruped_near_reference) {
     // Quadruped body is elongated along forward; tolerance tracks the
     // largest extent so the bar doesn't vary wildly with species shape.
     auto bbox = bromesh::computeBBox(mesh);
-    float scale = std::max({bbox.extentX(), bbox.extentY(), bbox.extentZ()});
+    auto bext = bromath::aextent(bbox);
+    float scale = std::max({bext.x, bext.y, bext.z});
     float tol = 0.15f * scale;
 
     int checked = 0;
@@ -852,7 +853,7 @@ TEST(detect_landmarks_humanoid_near_reference) {
     // 15% of body height from the hand-authored reference — the detector is
     // a geometric heuristic, not a pixel-perfect match.
     auto bbox = bromesh::computeBBox(mesh);
-    float H = bbox.extentY();
+    float H = bromath::aextent(bbox).y;
     float tol = 0.15f * H;
 
     int checked = 0;

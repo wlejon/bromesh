@@ -3,7 +3,8 @@
 #include "bromesh/manipulation/merge.h"
 #include "bromesh/optimization/spatial_hash.h"
 #include "bromesh/procedural/obstacle_field.h"
-#include "bromesh/procedural/vec_math.h"
+
+#include <bromath/bromath.h>
 
 #include <algorithm>
 #include <cmath>
@@ -12,10 +13,11 @@
 
 namespace bromesh {
 
+using namespace bromath;
+
 namespace {
 
-constexpr float kPi = 3.14159265358979323846f;
-constexpr float kTwoPi = 2.0f * kPi;
+constexpr float kTwoPi = bromath::TWO_PI;
 
 // Pick any unit vector perpendicular to `t` (assumed unit length).
 Vec3 perpendicularUnit(Vec3 t) {
@@ -152,7 +154,7 @@ LeafPlacements placeLeavesOnBranches(
             if (opts.tiltJitter > 0.0f) {
                 float tiltAng = (uni01(rng) * 2.0f - 1.0f) * opts.tiltJitter;
                 Vec3 tiltAxis = vnormOr(vcross(F, T), e2);
-                F = vnorm(quatRotate(quatAxisAngle(tiltAxis, tiltAng), F));
+                F = vnorm(qrotate(qaxisAngle(tiltAxis, tiltAng), F));
             }
 
             // Side / normal — N points roughly upward when F is roughly horizontal.
@@ -166,9 +168,9 @@ LeafPlacements placeLeavesOnBranches(
             // Roll around F.
             if (opts.rollJitter > 0.0f) {
                 float rollAng = (uni01(rng) * 2.0f - 1.0f) * opts.rollJitter;
-                Quat q = quatAxisAngle(F, rollAng);
-                sideAxis = vnorm(quatRotate(q, sideAxis));
-                N = vnorm(quatRotate(q, N));
+                Quat q = qaxisAngle(F, rollAng);
+                sideAxis = vnorm(qrotate(q, sideAxis));
+                N = vnorm(qrotate(q, N));
             }
 
             // Scale.

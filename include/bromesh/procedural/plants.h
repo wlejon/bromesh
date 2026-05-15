@@ -2,7 +2,7 @@
 
 #include "bromesh/mesh_data.h"
 #include "bromesh/procedural/space_colonization.h"
-#include "bromesh/procedural/vec_math.h"
+#include <bromath/vec.h>
 
 #include <string>
 #include <vector>
@@ -137,13 +137,13 @@ struct BladeStripOptions {
 /// Sweep a 4-vertex diamond profile along `path`, producing a thin tapered
 /// blade-like ribbon with optional thickness. Convenience wrapper over
 /// `sweep()` for grass blades, fern leaflets, succulent leaves.
-MeshData bladeStrip(const std::vector<Vec3>& path,
+MeshData bladeStrip(const std::vector<bromath::Vec3>& path,
                     const BladeStripOptions& opts = {});
 
 struct BladePathOptions {
-    Vec3  base    = {0.0f, 0.0f, 0.0f};
+    bromath::Vec3  base    = {0.0f, 0.0f, 0.0f};
     /// Direction from base toward tip. Normalized internally.
-    Vec3  tipDir  = {0.0f, 1.0f, 0.0f};
+    bromath::Vec3  tipDir  = {0.0f, 1.0f, 0.0f};
     float length  = 1.0f;
     /// Lateral tip offset, perpendicular to tipDir. The lateral axis is
     /// chosen as the world +X projected perpendicular to tipDir, falling
@@ -157,13 +157,13 @@ struct BladePathOptions {
 /// Build a smooth path from `base` to `base + tipDir·length` using a
 /// quadratic Bezier whose control point is offset by `bend` on the lateral
 /// axis and `lift` on world +Y. Returns segments+1 points.
-std::vector<Vec3> bladePath(const BladePathOptions& opts = {});
+std::vector<bromath::Vec3> bladePath(const BladePathOptions& opts = {});
 
 struct TreeOptions {
     /// Trunk root (single seed point passed to spaceColonize).
-    Vec3 base = {0.0f, 0.0f, 0.0f};
+    bromath::Vec3 base = {0.0f, 0.0f, 0.0f};
     /// Centre of the spherical attractor cloud (world space).
-    Vec3 canopyCenter = {0.0f, 4.0f, 0.0f};
+    bromath::Vec3 canopyCenter = {0.0f, 4.0f, 0.0f};
     /// Radius of the spherical attractor cloud.
     float canopyRadius = 3.0f;
     /// Attractors sampled uniformly inside the sphere.

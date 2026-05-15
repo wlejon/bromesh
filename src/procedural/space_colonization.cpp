@@ -3,12 +3,16 @@
 #include "bromesh/optimization/spatial_hash.h"
 #include "bromesh/procedural/obstacle_field.h"
 
+#include <bromath/bromath.h>
+
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <vector>
 
 namespace bromesh {
+
+using namespace bromath;
 
 std::vector<BranchSegment> spaceColonize(
     const std::vector<Vec3>& attractors,
@@ -123,8 +127,8 @@ std::vector<BranchSegment> spaceColonize(
                         } else {
                             // Slerp dir toward tangent by `obstacleSteer`.
                             Vec3 axis = vnormOr(vcross(dir, tangent), n);
-                            newDir = vnorm(quatRotate(
-                                quatAxisAngle(axis, opts.obstacleSteer), dir));
+                            newDir = vnorm(qrotate(
+                                qaxisAngle(axis, opts.obstacleSteer), dir));
                         }
                         Vec3 steered = nodes[i].pos + newDir * opts.segmentLength;
                         // If the slerped step still grazes the surface,

@@ -1,12 +1,13 @@
 #include "bromesh/primitives/primitives.h"
 
+#include <bromath/scalar.h>
+
 #include <cmath>
 #include <cstring>
-#include <numbers>
 
 namespace bromesh {
 
-namespace { constexpr float kPi = std::numbers::pi_v<float>; }
+namespace { constexpr float kPi = bromath::PI; }
 
 // Helper: push a vertex (pos + normal + uv)
 static void pushVert(MeshData& m, float px, float py, float pz,

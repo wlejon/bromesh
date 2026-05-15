@@ -1,20 +1,15 @@
 #include "bromesh/manipulation/bezier_sweep.h"
 
+#include <bromath/bromath.h>
+
 #include <algorithm>
 #include <cmath>
 
 namespace bromesh {
 
-namespace {
+using namespace bromath;
 
-inline Vec3 cubicBezier(Vec3 p0, Vec3 p1, Vec3 p2, Vec3 p3, float t) {
-    float u = 1.0f - t;
-    float b0 = u * u * u;
-    float b1 = 3.0f * u * u * t;
-    float b2 = 3.0f * u * t * t;
-    float b3 = t * t * t;
-    return p0 * b0 + p1 * b1 + p2 * b2 + p3 * b3;
-}
+namespace {
 
 void resample(const std::vector<float>& src, std::vector<float>& dst, int n) {
     dst.clear();
@@ -53,7 +48,7 @@ MeshData bezierSweep(const std::vector<Vec3>& controlPoints,
         int seg = std::min(segCount - 1, static_cast<int>(std::floor(scaled)));
         float s = scaled - static_cast<float>(seg);
         int base = seg * 3;
-        Vec3 pt = cubicBezier(
+        Vec3 pt = cbezier(
             controlPoints[base + 0],
             controlPoints[base + 1],
             controlPoints[base + 2],

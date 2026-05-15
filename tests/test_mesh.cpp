@@ -19,18 +19,21 @@ TEST(mesh_data_basics) {
 }
 
 TEST(bbox_basics) {
-    bromesh::BBox b;
-    b.min[0] = -1; b.min[1] = -2; b.min[2] = -3;
-    b.max[0] =  1; b.max[1] =  2; b.max[2] =  3;
-    ASSERT(std::fabs(b.centerX()) < 0.001f, "center X");
-    ASSERT(std::fabs(b.centerY()) < 0.001f, "center Y");
-    ASSERT(std::fabs(b.centerZ()) < 0.001f, "center Z");
-    ASSERT(std::fabs(b.extentX() - 2.0f) < 0.001f, "extent X (full size)");
-    ASSERT(std::fabs(b.extentY() - 4.0f) < 0.001f, "extent Y (full size)");
-    ASSERT(std::fabs(b.extentZ() - 6.0f) < 0.001f, "extent Z (full size)");
-    ASSERT(std::fabs(b.halfExtentX() - 1.0f) < 0.001f, "halfExtent X");
-    ASSERT(std::fabs(b.halfExtentY() - 2.0f) < 0.001f, "halfExtent Y");
-    ASSERT(std::fabs(b.halfExtentZ() - 3.0f) < 0.001f, "halfExtent Z");
+    bromath::AABB3 b;
+    b.min = {-1, -2, -3};
+    b.max = { 1,  2,  3};
+    auto c = bromath::acenter(b);
+    auto e = bromath::aextent(b);
+    auto h = bromath::ahalfExtent(b);
+    ASSERT(std::fabs(c.x) < 0.001f, "center X");
+    ASSERT(std::fabs(c.y) < 0.001f, "center Y");
+    ASSERT(std::fabs(c.z) < 0.001f, "center Z");
+    ASSERT(std::fabs(e.x - 2.0f) < 0.001f, "extent X (full size)");
+    ASSERT(std::fabs(e.y - 4.0f) < 0.001f, "extent Y (full size)");
+    ASSERT(std::fabs(e.z - 6.0f) < 0.001f, "extent Z (full size)");
+    ASSERT(std::fabs(h.x - 1.0f) < 0.001f, "halfExtent X");
+    ASSERT(std::fabs(h.y - 2.0f) < 0.001f, "halfExtent Y");
+    ASSERT(std::fabs(h.z - 3.0f) < 0.001f, "halfExtent Z");
 }
 
 TEST(stubs_link) {
@@ -122,12 +125,12 @@ TEST(compute_flat_normals_sphere) {
 TEST(compute_bbox_box) {
     auto b = bromesh::box(1, 1, 1);
     auto bbox = bromesh::computeBBox(b);
-    ASSERT(std::fabs(bbox.min[0] - (-1.0f)) < 0.001f, "bbox min x == -1");
-    ASSERT(std::fabs(bbox.min[1] - (-1.0f)) < 0.001f, "bbox min y == -1");
-    ASSERT(std::fabs(bbox.min[2] - (-1.0f)) < 0.001f, "bbox min z == -1");
-    ASSERT(std::fabs(bbox.max[0] - 1.0f) < 0.001f, "bbox max x == 1");
-    ASSERT(std::fabs(bbox.max[1] - 1.0f) < 0.001f, "bbox max y == 1");
-    ASSERT(std::fabs(bbox.max[2] - 1.0f) < 0.001f, "bbox max z == 1");
+    ASSERT(std::fabs(bbox.min.x - (-1.0f)) < 0.001f, "bbox min x == -1");
+    ASSERT(std::fabs(bbox.min.y - (-1.0f)) < 0.001f, "bbox min y == -1");
+    ASSERT(std::fabs(bbox.min.z - (-1.0f)) < 0.001f, "bbox min z == -1");
+    ASSERT(std::fabs(bbox.max.x - 1.0f) < 0.001f, "bbox max x == 1");
+    ASSERT(std::fabs(bbox.max.y - 1.0f) < 0.001f, "bbox max y == 1");
+    ASSERT(std::fabs(bbox.max.z - 1.0f) < 0.001f, "bbox max z == 1");
 }
 
 TEST(is_manifold_box) {
@@ -676,15 +679,17 @@ static bool indicesMatch(const bromesh::MeshData& a, const bromesh::MeshData& b)
     return a.indices == b.indices;
 }
 
-static bromesh::BBox meshBBox(const bromesh::MeshData& m) {
+static bromath::AABB3 meshBBox(const bromesh::MeshData& m) {
     return bromesh::computeBBox(m);
 }
 
-static bool bboxMatch(const bromesh::BBox& a, const bromesh::BBox& b, float tol) {
-    for (int i = 0; i < 3; ++i) {
-        if (!approxEqual(a.min[i], b.min[i], tol)) return false;
-        if (!approxEqual(a.max[i], b.max[i], tol)) return false;
-    }
+static bool bboxMatch(const bromath::AABB3& a, const bromath::AABB3& b, float tol) {
+    if (!approxEqual(a.min.x, b.min.x, tol)) return false;
+    if (!approxEqual(a.min.y, b.min.y, tol)) return false;
+    if (!approxEqual(a.min.z, b.min.z, tol)) return false;
+    if (!approxEqual(a.max.x, b.max.x, tol)) return false;
+    if (!approxEqual(a.max.y, b.max.y, tol)) return false;
+    if (!approxEqual(a.max.z, b.max.z, tol)) return false;
     return true;
 }
 
@@ -2143,7 +2148,7 @@ TEST(boolean_difference) {
     // BBox should fit within A's bbox
     auto bboxA = bromesh::computeBBox(a);
     auto bboxR = bromesh::computeBBox(result);
-    ASSERT(bboxR.min[0] >= bboxA.min[0] - 0.01f && bboxR.max[0] <= bboxA.max[0] + 0.01f,
+    ASSERT(bboxR.min.x >= bboxA.min.x - 0.01f && bboxR.max.x <= bboxA.max.x + 0.01f,
            "bool_diff: result should fit within A's bbox on X");
 }
 
@@ -2207,7 +2212,7 @@ TEST(boolean_box_minus_sphere) {
     // BBox should fit within cube's bbox
     auto bboxC = bromesh::computeBBox(cube);
     auto bboxR = bromesh::computeBBox(result);
-    ASSERT(bboxR.min[0] >= bboxC.min[0] - 0.01f && bboxR.max[0] <= bboxC.max[0] + 0.01f,
+    ASSERT(bboxR.min.x >= bboxC.min.x - 0.01f && bboxR.max.x <= bboxC.max.x + 0.01f,
            "bool_box_sphere: result should fit within cube bbox");
 }
 
@@ -2343,12 +2348,12 @@ TEST(smooth_taubin_box) {
 
     // Measure initial bounding box
     auto bbox1 = bromesh::computeBBox(mesh);
-    float vol1 = (bbox1.max[0]-bbox1.min[0]) * (bbox1.max[1]-bbox1.min[1]) * (bbox1.max[2]-bbox1.min[2]);
+    float vol1 = (bbox1.max.x-bbox1.min.x) * (bbox1.max.y-bbox1.min.y) * (bbox1.max.z-bbox1.min.z);
 
     bromesh::smoothTaubin(mesh, 0.5f, -0.53f, 5);
 
     auto bbox2 = bromesh::computeBBox(mesh);
-    float vol2 = (bbox2.max[0]-bbox2.min[0]) * (bbox2.max[1]-bbox2.min[1]) * (bbox2.max[2]-bbox2.min[2]);
+    float vol2 = (bbox2.max.x-bbox2.min.x) * (bbox2.max.y-bbox2.min.y) * (bbox2.max.z-bbox2.min.z);
 
     // Taubin should not shrink significantly (unlike pure Laplacian)
     ASSERT(vol2 > vol1 * 0.5f, "taubin: should not shrink excessively");
@@ -3356,9 +3361,9 @@ TEST(transform_center) {
 
     // After centering, bbox center should be at origin
     auto bbox = bromesh::computeBBox(mesh);
-    ASSERT(std::fabs(bbox.centerX()) < 0.01f, "center: bbox center X ~= 0");
-    ASSERT(std::fabs(bbox.centerY()) < 0.01f, "center: bbox center Y ~= 0");
-    ASSERT(std::fabs(bbox.centerZ()) < 0.01f, "center: bbox center Z ~= 0");
+    ASSERT(std::fabs(bromath::acenter(bbox).x) < 0.01f, "center: bbox center X ~= 0");
+    ASSERT(std::fabs(bromath::acenter(bbox).y) < 0.01f, "center: bbox center Y ~= 0");
+    ASSERT(std::fabs(bromath::acenter(bbox).z) < 0.01f, "center: bbox center Z ~= 0");
     tests_passed++;
 }
 
@@ -3553,9 +3558,9 @@ TEST(bvh_build_box) {
     ASSERT(!bvh.empty(), "bvh_box: non-empty");
     ASSERT(bvh.triangleCount() == mesh.triangleCount(), "bvh_box: indexes every tri");
     auto bb = bvh.bounds();
-    ASSERT(std::fabs(bb.min[0] - -1.0f) < 1e-4f, "bvh_box: bounds minX");
-    ASSERT(std::fabs(bb.max[1] -  2.0f) < 1e-4f, "bvh_box: bounds maxY");
-    ASSERT(std::fabs(bb.max[2] -  3.0f) < 1e-4f, "bvh_box: bounds maxZ");
+    ASSERT(std::fabs(bb.min.x - -1.0f) < 1e-4f, "bvh_box: bounds minX");
+    ASSERT(std::fabs(bb.max.y -  2.0f) < 1e-4f, "bvh_box: bounds maxY");
+    ASSERT(std::fabs(bb.max.z -  3.0f) < 1e-4f, "bvh_box: bounds maxZ");
     tests_passed++;
 }
 

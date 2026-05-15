@@ -1,9 +1,13 @@
 #include "bromesh/manipulation/sweep.h"
 
+#include <bromath/bromath.h>
+
 #include <cmath>
 #include <cstdint>
 
 namespace bromesh {
+
+using namespace bromath;
 
 namespace {
 
@@ -61,8 +65,8 @@ MeshData sweep(const std::vector<Vec2>& profile,
         Vec3 tPrev = (i == 0) ? segDir[0] : segDir[i - 1];
         Vec3 tNext = (i + 1 < N) ? segDir[i] : segDir[i - 1];
         // Rotate previous frame's basis from tPrev to tNext.
-        Quat q = quatFromTo(tPrev, tNext);
-        Vec3 n = vnorm(quatRotate(q, frames[i - 1].n));
+        Quat q = qfromTo(tPrev, tNext);
+        Vec3 n = vnorm(qrotate(q, frames[i - 1].n));
         Vec3 t = (i + 1 < N) ? tNext : tPrev;
         // For miter at interior nodes, average tangents and re-orthogonalize n.
         Vec3 tFrame = t;

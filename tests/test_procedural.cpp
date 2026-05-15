@@ -17,6 +17,7 @@
 #include <set>
 
 using namespace bromesh;
+using namespace bromath;
 
 TEST(spatial_hash_radius_query) {
     SpatialHash3D hash(1.0f);

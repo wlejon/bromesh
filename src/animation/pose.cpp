@@ -1,69 +1,42 @@
 #include "bromesh/animation/pose.h"
 
+#include <bromath/bromath.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 
 namespace bromesh {
 
-// ---- quaternion + matrix helpers ------------------------------------------
+using namespace bromath;
+
+// ---- quaternion + matrix helpers (thin wrappers over bromath) -------------
 
 static void quatNormalize(float* q) {
-    float len = std::sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
-    if (len > 1e-8f) { q[0]/=len; q[1]/=len; q[2]/=len; q[3]/=len; }
-    else             { q[0]=0; q[1]=0; q[2]=0; q[3]=1; }
+    Quat r = qnorm(Quat{q[0], q[1], q[2], q[3]});
+    q[0] = r.x; q[1] = r.y; q[2] = r.z; q[3] = r.w;
 }
 
 static void quatSlerp(const float* a, const float* b, float t, float* out) {
-    float cosTheta = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
-    float bb[4] = { b[0], b[1], b[2], b[3] };
-    if (cosTheta < 0) { bb[0]=-bb[0]; bb[1]=-bb[1]; bb[2]=-bb[2]; bb[3]=-bb[3]; cosTheta = -cosTheta; }
-    if (cosTheta > 0.9995f) {
-        // Linear nlerp
-        for (int i = 0; i < 4; ++i) out[i] = a[i] + t * (bb[i] - a[i]);
-        quatNormalize(out);
-        return;
-    }
-    float theta = std::acos(cosTheta);
-    float sinTheta = std::sin(theta);
-    float w0 = std::sin((1.0f - t) * theta) / sinTheta;
-    float w1 = std::sin(t * theta) / sinTheta;
-    for (int i = 0; i < 4; ++i) out[i] = a[i]*w0 + bb[i]*w1;
-}
-
-static void quatToMat(const float* q, float* m) {
-    float x = q[0], y = q[1], z = q[2], w = q[3];
-    float xx=x*x, yy=y*y, zz=z*z;
-    float xy=x*y, xz=x*z, yz=y*z;
-    float wx=w*x, wy=w*y, wz=w*z;
-    m[0]  = 1 - 2*(yy+zz); m[1]  = 2*(xy+wz);     m[2]  = 2*(xz-wy);     m[3]  = 0;
-    m[4]  = 2*(xy-wz);     m[5]  = 1 - 2*(xx+zz); m[6]  = 2*(yz+wx);     m[7]  = 0;
-    m[8]  = 2*(xz+wy);     m[9]  = 2*(yz-wx);     m[10] = 1 - 2*(xx+yy); m[11] = 0;
-    m[12] = 0;             m[13] = 0;             m[14] = 0;             m[15] = 1;
+    Quat r = qslerp(Quat{a[0], a[1], a[2], a[3]},
+                    Quat{b[0], b[1], b[2], b[3]}, t);
+    out[0] = r.x; out[1] = r.y; out[2] = r.z; out[3] = r.w;
 }
 
 // out = a * b (column-major 4x4)
 static void matMul(const float* a, const float* b, float* out) {
-    float r[16];
-    for (int c = 0; c < 4; ++c) {
-        for (int row = 0; row < 4; ++row) {
-            float s = 0;
-            for (int k = 0; k < 4; ++k)
-                s += a[k * 4 + row] * b[c * 4 + k];
-            r[c * 4 + row] = s;
-        }
-    }
-    std::memcpy(out, r, 16 * sizeof(float));
+    Mat4 ma, mb;
+    std::memcpy(ma.data, a, 16 * sizeof(float));
+    std::memcpy(mb.data, b, 16 * sizeof(float));
+    Mat4 r = mmul(ma, mb);
+    std::memcpy(out, r.data, 16 * sizeof(float));
 }
 
 static void composeTRS(const float* t, const float* r, const float* s, float* m) {
-    float rot[16];
-    quatToMat(r, rot);
-    rot[0] *= s[0]; rot[1] *= s[0]; rot[2] *= s[0];
-    rot[4] *= s[1]; rot[5] *= s[1]; rot[6] *= s[1];
-    rot[8] *= s[2]; rot[9] *= s[2]; rot[10] *= s[2];
-    rot[12] = t[0]; rot[13] = t[1]; rot[14] = t[2];
-    std::memcpy(m, rot, 16 * sizeof(float));
+    Mat4 r4 = mfromTRS(Vec3{t[0], t[1], t[2]},
+                       Quat{r[0], r[1], r[2], r[3]},
+                       Vec3{s[0], s[1], s[2]});
+    std::memcpy(m, r4.data, 16 * sizeof(float));
 }
 
 // ---- Pose construction ----------------------------------------------------
@@ -124,12 +97,16 @@ static void sampleChannel(const AnimChannel& ch, float t, float* out) {
         const float* m0 = &ch.values[base0 + 2 * stride];   // outTangent0
         const float* m1 = &ch.values[base1];                 // inTangent1
         const float* v1 = &ch.values[base1 + stride];
+        float dt = t1 - t0;
+        // bromath::chermite operates on Vec3; for stride==3 we use it directly.
+        // For stride==4 (quaternion) the same Hermite polynomial applies
+        // component-wise — replicate via two chermite calls on xyz then handle w.
+        // Keep the expanded form so the four-component case is straightforward.
         float u2 = u*u, u3 = u2*u;
         float h00 = 2*u3 - 3*u2 + 1;
         float h10 = u3 - 2*u2 + u;
         float h01 = -2*u3 + 3*u2;
         float h11 = u3 - u2;
-        float dt = t1 - t0;
         for (int i = 0; i < stride; ++i)
             out[i] = h00*v0[i] + h10*dt*m0[i] + h01*v1[i] + h11*dt*m1[i];
         if (stride == 4) quatNormalize(out);

@@ -2,7 +2,7 @@
 
 #include "bromesh/manipulation/sweep.h"
 #include "bromesh/mesh_data.h"
-#include "bromesh/procedural/vec_math.h"
+#include <bromath/vec.h>
 
 #include <vector>
 
@@ -29,8 +29,8 @@ struct BezierSweepOptions {
 /// (P0,P1,P2,P3=Q0,Q1,Q2,Q3). The total length of `controlPoints` must
 /// satisfy `(N - 1) % 3 == 0` and `N >= 4`. Empty / malformed input
 /// returns an empty MeshData.
-MeshData bezierSweep(const std::vector<Vec3>& controlPoints,
-                     const std::vector<Vec2>& profile,
+MeshData bezierSweep(const std::vector<bromath::Vec3>& controlPoints,
+                     const std::vector<bromath::Vec2>& profile,
                      const BezierSweepOptions& opts = {});
 
 } // namespace bromesh

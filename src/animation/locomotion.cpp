@@ -2,6 +2,8 @@
 #include "bromesh/animation/pose.h"
 #include "bromesh/animation/ik.h"
 
+#include <bromath/scalar.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -12,7 +14,7 @@ namespace bromesh {
 
 namespace {
 
-constexpr float kPi = 3.14159265358979323846f;
+constexpr float kPi = bromath::PI;
 
 void allBoneHeadsWorld(const Skeleton& sk, const Pose& pose,
                        std::vector<float>& out) {

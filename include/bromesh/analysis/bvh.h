@@ -31,7 +31,7 @@ public:
 
     /// Overall bounding box of the mesh (the root node's AABB). Zero-sized if
     /// the BVH is empty.
-    BBox bounds() const;
+    bromath::AABB3 bounds() const;
 
     /// Cast a ray against the mesh using this BVH. Semantics match
     /// bromesh::raycast: direction need not be normalized; `maxDistance` of 0

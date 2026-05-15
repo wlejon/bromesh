@@ -1,13 +1,16 @@
 #include "bromesh/procedural/lsystem_turtle.h"
 
+#include <bromath/bromath.h>
+
 #include <cmath>
 
 namespace bromesh {
 
+using namespace bromath;
+
 namespace {
 
-constexpr float kPi = 3.14159265358979323846f;
-constexpr float kDeg2Rad = kPi / 180.0f;
+constexpr float kDeg2Rad = bromath::DEG2RAD;
 
 struct Pose {
     Vec3  position;
@@ -112,15 +115,15 @@ std::vector<BranchSegment> lsystemToBranches(
             case '\\': axis = cur.heading; break;
             case '/':  axis = cur.heading; ang = -ang; break;
             }
-            Quat q = quatAxisAngle(axis, ang);
-            cur.heading = vnorm(quatRotate(q, cur.heading));
-            cur.up      = vnorm(quatRotate(q, cur.up));
+            Quat q = qaxisAngle(axis, ang);
+            cur.heading = vnorm(qrotate(q, cur.heading));
+            cur.up      = vnorm(qrotate(q, cur.up));
             reorthogonalize(cur.heading, cur.up);
             break;
         }
         case '|': {
-            Quat q = quatAxisAngle(cur.up, kPi);
-            cur.heading = vnorm(quatRotate(q, cur.heading));
+            Quat q = qaxisAngle(cur.up, PI);
+            cur.heading = vnorm(qrotate(q, cur.heading));
             reorthogonalize(cur.heading, cur.up);
             break;
         }

@@ -1,10 +1,14 @@
 #include "bromesh/procedural/obstacle_field.h"
 
+#include <bromath/bromath.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
 namespace bromesh {
+
+using namespace bromath;
 
 namespace {
 

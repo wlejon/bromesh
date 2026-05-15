@@ -1,7 +1,7 @@
 #pragma once
 
 #include "bromesh/mesh_data.h"
-#include "bromesh/procedural/vec_math.h"
+#include <bromath/vec.h>
 
 #include <vector>
 
@@ -28,8 +28,8 @@ struct SweepOptions {
 /// triangulate the profile assuming it is convex; concave profiles will
 /// produce a fan from the centroid which may overlap. Output is a
 /// triangulated `MeshData` with smooth ring-averaged vertex normals.
-MeshData sweep(const std::vector<Vec2>& profile,
-               const std::vector<Vec3>& path,
+MeshData sweep(const std::vector<bromath::Vec2>& profile,
+               const std::vector<bromath::Vec3>& path,
                const SweepOptions& opts = {});
 
 struct TubeOptions {
@@ -44,7 +44,7 @@ struct TubeOptions {
 /// by `radii`. `radii.size()` must be 0 or 1 (constant) or `path.size()`.
 /// Convenience wrapper over `sweep` for the circular-cross-section case
 /// — branches, vines, stems.
-MeshData tube(const std::vector<Vec3>& path,
+MeshData tube(const std::vector<bromath::Vec3>& path,
               const std::vector<float>& radii,
               const TubeOptions& opts = {});
 

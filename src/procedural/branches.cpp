@@ -3,11 +3,14 @@
 #include "bromesh/manipulation/merge.h"
 #include "bromesh/manipulation/normals.h"
 #include "bromesh/manipulation/sweep.h"
-#include "bromesh/procedural/vec_math.h"
+
+#include <bromath/bromath.h>
 
 #include <cmath>
 
 namespace bromesh {
+
+using namespace bromath;
 
 static std::vector<Vec2> circleProfile(int segments, float radius) {
     std::vector<Vec2> out;

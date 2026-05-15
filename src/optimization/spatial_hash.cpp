@@ -5,6 +5,8 @@
 
 namespace bromesh {
 
+using bromath::Vec3;
+
 SpatialHash3D::SpatialHash3D(float cellSize) {
     reset(cellSize);
 }

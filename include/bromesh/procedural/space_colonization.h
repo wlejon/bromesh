@@ -1,6 +1,6 @@
 #pragma once
 
-#include "bromesh/procedural/vec_math.h"
+#include <bromath/vec.h>
 
 #include <vector>
 
@@ -19,7 +19,7 @@ struct SpaceColonizationOptions {
     int maxIterations = 200;
     /// Direction biased into every growth step (e.g. up-vector). Combined
     /// with the attractor-derived direction, weighted by `tropismWeight`.
-    Vec3 tropism = {0, 0, 0};
+    bromath::Vec3 tropism = {0, 0, 0};
     float tropismWeight = 0.0f;
 
     /// Optional obstacle field. New nodes are not placed where
@@ -38,8 +38,8 @@ struct SpaceColonizationOptions {
 /// `parent == -1` marks a root (one of the seed points).
 struct BranchSegment {
     int parent = -1;
-    Vec3 from{};
-    Vec3 to{};
+    bromath::Vec3 from{};
+    bromath::Vec3 to{};
     float radius = 0.0f;
     int depth = 0;
 };
@@ -48,9 +48,9 @@ struct BranchSegment {
 /// each segment's parent index refers to an earlier entry. Roots
 /// (one per seed point) have parent = -1 and `from == to == seedPoint`.
 std::vector<BranchSegment> spaceColonize(
-    const std::vector<Vec3>& attractors,
-    const std::vector<Vec3>& seedPoints,
-    const Vec3& initialDirection,
+    const std::vector<bromath::Vec3>& attractors,
+    const std::vector<bromath::Vec3>& seedPoints,
+    const bromath::Vec3& initialDirection,
     const SpaceColonizationOptions& opts);
 
 /// Compute branch radii using the pipe model. Leaves get `leafRadius`;

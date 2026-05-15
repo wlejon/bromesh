@@ -13,6 +13,16 @@ if(MSVC)
     endif()
 endif()
 
+# --- bromath sibling (shared math library, header-only) ---
+set(BROMATH_DIR "${CMAKE_SOURCE_DIR}/../bromath" CACHE PATH "bromath sibling")
+if(NOT TARGET bromath)
+    if(EXISTS "${BROMATH_DIR}/CMakeLists.txt")
+        add_subdirectory("${BROMATH_DIR}" "${CMAKE_BINARY_DIR}/bromath" EXCLUDE_FROM_ALL)
+    else()
+        message(FATAL_ERROR "bromath not found at ${BROMATH_DIR}")
+    endif()
+endif()
+
 # --- Third-party dependencies ---
 
 # meshoptimizer — simplification, vertex cache optimization, quantization
@@ -285,6 +295,8 @@ add_library(bromesh STATIC
 target_include_directories(bromesh PUBLIC include)
 target_include_directories(bromesh PRIVATE src)
 target_compile_features(bromesh PUBLIC cxx_std_20)
+
+target_link_libraries(bromesh PUBLIC bromath::bromath)
 
 if(MSVC)
     target_compile_options(bromesh PRIVATE /W4)

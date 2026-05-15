@@ -4,6 +4,8 @@
 #include "bromesh/procedural/obstacle_field.h"
 #include "bromesh/procedural/space_colonization.h"
 
+#include <bromath/vec.h>
+
 #include <cstdint>
 #include <vector>
 
@@ -114,7 +116,7 @@ struct AnchorPackOptions {
 /// `reservedKeepOut` sphere. Returns the indices of accepted candidates in
 /// acceptance order.
 std::vector<int> packAnchors(
-    const std::vector<Vec3>& candidates,
+    const std::vector<bromath::Vec3>& candidates,
     const CapsuleField* avoid,
     const std::vector<Sphere>& reservedKeepOut,
     const AnchorPackOptions& opts = {});

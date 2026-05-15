@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bromath/aabb.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -42,27 +44,8 @@ struct MeshData {
     }
 };
 
-/// Axis-aligned bounding box.
-struct BBox {
-    float min[3] = { 0, 0, 0 };
-    float max[3] = { 0, 0, 0 };
-
-    float centerX() const { return (min[0] + max[0]) * 0.5f; }
-    float centerY() const { return (min[1] + max[1]) * 0.5f; }
-    float centerZ() const { return (min[2] + max[2]) * 0.5f; }
-
-    /// Full size of the box along each axis (max - min). For a [-1, 1] box,
-    /// extentX() == 2.0. Matches Three.js / glm naming conventions.
-    float extentX() const { return max[0] - min[0]; }
-    float extentY() const { return max[1] - min[1]; }
-    float extentZ() const { return max[2] - min[2]; }
-
-    /// Half of the full extent (Unity/Unreal "extents" naming). For a [-1, 1]
-    /// box, halfExtentX() == 1.0.
-    float halfExtentX() const { return (max[0] - min[0]) * 0.5f; }
-    float halfExtentY() const { return (max[1] - min[1]) * 0.5f; }
-    float halfExtentZ() const { return (max[2] - min[2]) * 0.5f; }
-};
+// Axis-aligned bounding box type comes from bromath. Use bromath::AABB3
+// directly; access components via bromath::acenter / aextent / ahalfExtent.
 
 /// Skinning data for a mesh (optional, populated from glTF).
 /// Per-vertex bone weights and indices; inverse bind matrices are part of
