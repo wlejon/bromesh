@@ -241,7 +241,6 @@ add_library(bromesh STATIC
     src/optimization/meshlets.cpp
     src/optimization/analyze.cpp
     src/optimization/spatial.cpp
-    src/optimization/spatial_hash.cpp
     src/optimization/encode.cpp
     src/optimization/strips.cpp
     src/optimization/progressive.cpp

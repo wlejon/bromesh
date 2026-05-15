@@ -1,6 +1,5 @@
 #include "test_framework.h"
 
-#include "bromesh/optimization/spatial_hash.h"
 #include "bromesh/manipulation/sweep.h"
 #include "bromesh/manipulation/bezier_sweep.h"
 #include "bromesh/procedural/lsystem.h"
@@ -18,56 +17,6 @@
 
 using namespace bromesh;
 using namespace bromath;
-
-TEST(spatial_hash_radius_query) {
-    SpatialHash3D hash(1.0f);
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<float> uni(-10.0f, 10.0f);
-    std::vector<Vec3> pts;
-    pts.reserve(1000);
-    for (int i = 0; i < 1000; ++i) {
-        Vec3 p{uni(rng), uni(rng), uni(rng)};
-        pts.push_back(p);
-        hash.insert(p, i);
-    }
-    ASSERT(hash.size() == 1000, "size after insert");
-
-    Vec3 center{0, 0, 0};
-    float radius = 3.0f;
-    std::set<int32_t> brute;
-    for (size_t i = 0; i < pts.size(); ++i) {
-        if (vdist(pts[i], center) <= radius) brute.insert(static_cast<int32_t>(i));
-    }
-    std::vector<int32_t> got;
-    hash.radiusQuery(center, radius, got);
-    std::set<int32_t> gotSet(got.begin(), got.end());
-    ASSERT(brute == gotSet, "radius query matches brute force");
-
-    // Brute-force nearest.
-    int32_t bestId = -1;
-    float bestD2 = 1e30f;
-    for (size_t i = 0; i < pts.size(); ++i) {
-        float d2 = vdist2(pts[i], center);
-        if (d2 < bestD2) { bestD2 = d2; bestId = static_cast<int32_t>(i); }
-    }
-    int32_t got2 = hash.nearest(center, 100.0f);
-    ASSERT(got2 == bestId, "nearest matches brute force");
-}
-
-TEST(spatial_hash_remove_clear) {
-    SpatialHash3D h(0.5f);
-    h.insert({0,0,0}, 1);
-    h.insert({0.1f, 0, 0}, 2);
-    h.insert({5, 5, 5}, 3);
-    ASSERT(h.size() == 3, "three inserted");
-    h.remove(2);
-    ASSERT(h.size() == 2, "size after remove");
-    std::vector<int32_t> ids;
-    h.radiusQuery({0,0,0}, 1.0f, ids);
-    ASSERT(ids.size() == 1 && ids[0] == 1, "removed id is gone");
-    h.clear();
-    ASSERT(h.size() == 0, "size after clear");
-}
 
 TEST(sweep_straight_triangle_profile) {
     std::vector<Vec2> profile = {{1, 0}, {-0.5f, 0.866f}, {-0.5f, -0.866f}};
@@ -816,7 +765,7 @@ TEST(leaf_scatter_keepout_spheres) {
     BranchSegment s; s.parent = 0; s.from = {0,0,0}; s.to = {0,1,0};
     s.radius = 0.02f; s.depth = 1; segs.push_back(s);
 
-    Sphere keep;
+    bromesh::Sphere keep;
     keep.center = {0, 0.5f, 0};
     keep.radius = 0.15f;
 

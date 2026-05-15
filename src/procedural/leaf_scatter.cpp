@@ -1,7 +1,6 @@
 #include "bromesh/procedural/leaf_scatter.h"
 
 #include "bromesh/manipulation/merge.h"
-#include "bromesh/optimization/spatial_hash.h"
 #include "bromesh/procedural/obstacle_field.h"
 
 #include <bromath/bromath.h>

@@ -1,6 +1,5 @@
 #include "bromesh/procedural/space_colonization.h"
 
-#include "bromesh/optimization/spatial_hash.h"
 #include "bromesh/procedural/obstacle_field.h"
 
 #include <bromath/bromath.h>

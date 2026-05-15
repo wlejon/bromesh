@@ -1,7 +1,7 @@
 #pragma once
 
-#include "bromesh/optimization/spatial_hash.h"
 #include "bromesh/procedural/space_colonization.h"
+#include <bromath/spatial_hash.h>
 #include <bromath/vec.h>
 
 #include <cstddef>
@@ -92,8 +92,8 @@ private:
 
     std::vector<Capsule> caps_;
     std::vector<Sphere>  spheres_;
-    SpatialHash3D        capHash_;   // capsule-axis sample points -> caps_ index
-    SpatialHash3D        sphHash_;   // sphere centers -> spheres_ index
+    bromath::SpatialHash3D capHash_; // capsule-axis sample points -> caps_ index
+    bromath::SpatialHash3D sphHash_; // sphere centers -> spheres_ index
     float                cellSize_   = 1.0f;
     float                queryPad_   = 0.0f; // half-cell + max radius slack
 };
