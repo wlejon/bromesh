@@ -26,6 +26,16 @@ struct LeafPlacementOptions {
     /// (t = 1 - (1-u)^(1+falloff)).
     float densityFalloff = 0.0f;
 
+    /// Optional per-segment density multiplier, indexed in lockstep with
+    /// `segments`. Each entry scales `perUnitLength` for that segment — 0
+    /// places no leaves, 1 is full density, values >1 over-pack. Empty means
+    /// uniform (every segment at full `perUnitLength`). This is the hook a
+    /// simulation uses to drive foliage by light / vigor / maturity so shaded
+    /// or immature shoots go bare while lit crowns stay lush — e.g. pass
+    /// broflora's per-segment `FoliageSample.mass`. Out-of-range / negative
+    /// entries clamp to 0.
+    std::vector<float> densityWeight;
+
     /// 0 = leaf forward points purely radially-outward from the branch;
     /// 1 = leaf forward forced toward world up (phototropism).
     float upBias = 0.5f;

@@ -93,7 +93,17 @@ LeafPlacements placeLeavesOnBranches(
 
         Vec3 T = d * (1.0f / length);
 
-        float expected = length * opts.perUnitLength;
+        // Per-segment density multiplier (light / vigor / maturity driven).
+        // Empty weight vector = uniform; a zero weight skips the segment.
+        float weight = 1.0f;
+        if (!opts.densityWeight.empty()) {
+            weight = (i < opts.densityWeight.size())
+                         ? std::max(0.0f, opts.densityWeight[i])
+                         : 0.0f;
+            if (weight <= 0.0f) continue;
+        }
+
+        float expected = length * opts.perUnitLength * weight;
         // Stochastic rounding so very short segments still occasionally place.
         int sampleCount = static_cast<int>(std::floor(expected));
         if (uni01(rng) < (expected - static_cast<float>(sampleCount))) {
