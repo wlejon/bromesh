@@ -9,7 +9,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build and test
 
 ```bash
-# Submodules must be present — features linked against missing submodules silently disable (see "Optional-by-submodule" below).
+# The bromath sibling must sit at ../bromath (header-only; configure FATAL_ERRORs
+# without it — overridable via -DBROMATH_DIR=...). Submodules under third_party/
+# must be present — features linked against missing submodules silently disable
+# (see "Optional-by-submodule" below).
 git submodule update --init --recursive
 
 cmake -B build
@@ -36,7 +39,7 @@ The test harness is custom (`tests/test_framework.h`) — not GoogleTest. Tests 
 
 ### The core contract: `MeshData`
 
-Every algorithm in the library produces or consumes `bromesh::MeshData` (`include/bromesh/mesh_data.h`) — a flat struct of separate `std::vector<float>` streams (positions, normals, uvs, colors) plus a `std::vector<uint32_t>` index buffer. The design goal is **direct GPU upload and zero-copy TypedArray transfer to JS**; do not introduce AoS vertex structs or interleaved buffers. Companion structs `SkinData`, `Skeleton`, `Bone`, `Socket`, `Animation`, `AnimChannel`, `MorphTarget` live in the same header and are the canonical types across the animation/rigging stack.
+Every algorithm in the library produces or consumes `bromesh::MeshData` (`include/bromesh/mesh_data.h`) — a flat struct of separate `std::vector<float>` streams (positions, normals, uvs, colors, tangents) plus a `std::vector<uint32_t>` index buffer. The design goal is **direct GPU upload and zero-copy TypedArray transfer to JS**; do not introduce AoS vertex structs or interleaved buffers. Companion structs `SkinData`, `Skeleton`, `Bone`, `Socket`, `Animation`, `AnimChannel`, `MorphTarget` live in the same header and are the canonical types across the animation/rigging stack. The AABB type comes from `bromath` (`bromath::AABB3`) — bromesh does not define its own.
 
 Public headers live under `include/bromesh/<module>/...` and mirror `src/<module>/...`. Each subsystem is a self-contained module with narrow entry points — they are composed by the caller, not by the library.
 
@@ -47,9 +50,13 @@ isosurface/     marching cubes, surface nets, dual contouring (QEF), transvoxel
 voxel/          greedy meshing, voxel chunks
 primitives/     analytic (box/sphere/...) + par_shapes (platonic, knot, rock, ...)
 manipulation/   normals, simplify, subdivide, smooth, remesh, repair, weld, merge,
-                split_components, transform, skin, skin_transfer, shrinkwrap
-analysis/       bbox, bvh, raycast, intersect, sample, bake (vertex + texture +
-                hi→lo transfer), convex_decomposition
+                split_components, transform, skin, skin_transfer, shrinkwrap,
+                sweep + bezier_sweep (profile-along-path extrusion / tube),
+                polygon (triangulate 2D/planar-3D outlines via manifold),
+                poly_mesh (PolyMesh half-edge N-gon edit mesh)
+analysis/       bbox (+ volume), manifold_check, bvh, raycast, intersect,
+                sample, bake (vertex + texture + hi→lo transfer),
+                convex_decomposition (+ convexHull)
 animation/      pose, ik (two-bone / FABRIK / look-at), retarget, locomotion
 rigging/        auto_rig driver, landmarks + landmark_detect, rig_spec, skeleton_fit,
                 weighting (bone_heat, bbw, voxel_bind), weight_smooth, skin_validate,
@@ -59,11 +66,14 @@ optimization/   optimize (meshopt), meshlets, analyze, spatial, encode, strips,
                 progressive (continuous LOD with serialization)
 reconstruction/ point cloud → mesh
 csg/            boolean (manifold)
-procedural/     stateless plant-shaped mesh constructors: leafCard / flower /
-                bladeStrip (low-poly foliage cards), space_colonization +
-                branches + tree (attractor-grown branch tubes), lsystem +
-                lsystem_turtle (rule-based geometry), leaf_scatter,
-                obstacle_field
+procedural/     stateless plant-shaped mesh constructors. plants.h:
+                leafCard / flower (4x4-atlas foliage + petal cards, LeafShape,
+                cup/silhouette controls), bladeStrip + bladePath (swept blades),
+                tree (attractor cloud -> colonize -> pipe-model thicken -> tube).
+                space_colonization + branches (attractor-grown branch tubes),
+                lsystem + lsystem_turtle (rule-based geometry), leaf_scatter
+                (branch-driven, per-segment density weighting),
+                obstacle_field (CapsuleField for obstacle-aware growth/scatter)
 io/             obj, stl, ply, gltf, fbx (read-only), vox (read-only)
 ```
 
@@ -91,7 +101,12 @@ The strategy doc at `docs/auto-rig-strategy.md` is the north star for this subsy
 
 ### Optional-by-submodule pattern
 
-Every third-party dependency (meshoptimizer, V-HACD, tinygltf, par_shapes, xatlas, manifold, OpenFBX, OSQP) is a git submodule under `third_party/`. The top-level `CMakeLists.txt` gates each by an `EXISTS` check and sets `BROMESH_HAS_<DEP>` accordingly, forwarded as a public compile definition.
+The **one hard dependency** is the `bromath` sibling (`../bromath`, header-only,
+linked as `bromath::bromath`) — it backs `MeshData`'s AABB plus the Vec/Quat/Mat
+and `SpatialHash3D` types used throughout sweep/procedural/analysis. Everything
+else is optional.
+
+Every third-party dependency (meshoptimizer, V-HACD, tinygltf, par_shapes, xatlas, manifold, OpenFBX, OSQP) is a git submodule under `third_party/`. The top-level `CMakeLists.txt` gates each by an `EXISTS` check and sets `BROMESH_HAS_<DEP>` accordingly, forwarded as a public compile definition. Note `manifold` backs both Boolean/CSG (`csg/boolean.cpp`) and polygon triangulation (`manipulation/polygon.cpp`); the latter no-ops to an empty `MeshData` when `BROMESH_HAS_MANIFOLD==0`.
 
 **Implication for new code**: any `.cpp` that uses an optional dep must compile to a working no-op (usually returning an empty `MeshData` or `false`) when its `BROMESH_HAS_...` macro is undefined. Do not add a hard dependency on any submodule. The library must build and link with every submodule absent.
 

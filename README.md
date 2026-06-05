@@ -8,7 +8,10 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 |---|---|
 | **Isosurface** | Marching cubes, surface nets, dual contouring (QEF), transvoxel (seamless LOD) |
 | **Voxel** | Greedy meshing with palette colors |
-| **Primitives** | Box, sphere, cylinder, capsule, plane, torus, heightmap grid; parametric: geodesic sphere, Platonic solids, cone, disc, rock, trefoil knot, Klein bottle |
+| **Primitives** | Box, sphere, cylinder, capsule, plane, torus, heightmap grid; parametric: geodesic sphere, Platonic solids, cone, disc, rock, blob (rock + scale + translate), trefoil knot, Klein bottle |
+| **Sweep / extrusion** | Sweep a 2D profile along a 3D path (parallel-transport frames, per-ring scale/twist, mitered joints), circular `tube`, cubic-bezier sweep; triangulate 2D/planar-3D polygons (with holes, via manifold) |
+| **Edit mesh** | `PolyMesh` half-edge adjacency over N-gon faces — extrude/translate face, split/flip/collapse edge, group merge to N-gons, tessellation, validation, compaction; the editable topology behind isotropic remeshing |
+| **Procedural** | Foliage cards (leaf/petal, flower, blade strip), space-colonization branch trees + pipe-model thickening, L-system turtle geometry, leaf scatter, obstacle/capsule fields — the renderer surface the `broflora` sibling composes |
 | **Subdivision** | Loop, Catmull-Clark, midpoint (iterative, arbitrary depth) |
 | **Manipulation** | Smooth/flat normals, tangents, simplify (quadric error + attribute-aware), target triangle count decimation, LOD chain, weld, split components, merge, repair (degenerate/duplicate removal, hole filling), translate/rotate/scale/mirror/center/transform, shrinkwrap (nearest / normal-project / axis-project) |
 | **Skinning** | Apply bone transforms (4 weights/vertex), morph target blending, weight normalization, closest-point skin weight transfer between meshes |
@@ -25,7 +28,7 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 | **Boolean/CSG** | Union, difference, intersection, plane splitting (manifold) |
 | **I/O** | OBJ read/write, STL read/write, PLY read/write, glTF/GLB read/write (meshes, skins, skeletons, animations, materials, embedded images), FBX read, MagicaVoxel VOX read |
 
-All algorithms produce `bromesh::MeshData` -- a flat struct with separate position, normal, UV, color, and index arrays ready for GPU upload or TypedArray transfer.
+All algorithms produce `bromesh::MeshData` -- a flat struct with separate position, normal, UV, color, tangent, and index arrays ready for GPU upload or TypedArray transfer.
 
 ## Building
 
@@ -45,9 +48,15 @@ cd build
 ctest --build-config Release --output-on-failure
 ```
 
-## Third-party dependencies
+## Dependencies
 
-All vendored under `third_party/` as git submodules or single headers:
+bromesh links one sibling library, [bromath](https://github.com/wlejon/bromath)
+(header-only Vec/Quat/Mat, AABB, curves, easing, `SpatialHash3D`), found at
+`../bromath` relative to the repo. It is a hard dependency — configure fails if
+it is missing.
+
+Everything else is vendored under `third_party/` as git submodules or single
+headers:
 
 | Library | Purpose | License |
 |---|---|---|
@@ -56,7 +65,7 @@ All vendored under `third_party/` as git submodules or single headers:
 | [tinygltf](https://github.com/syoyo/tinygltf) | glTF/GLB loading and saving | MIT |
 | [par_shapes](https://github.com/prideout/par) | Parametric primitive generation | MIT |
 | [xatlas](https://github.com/jpcy/xatlas) | Automatic UV unwrapping and atlas packing | MIT |
-| [manifold](https://github.com/elalish/manifold) | Boolean/CSG operations | Apache-2.0 |
+| [manifold](https://github.com/elalish/manifold) | Boolean/CSG operations and 2D/3D polygon triangulation | Apache-2.0 |
 | [OpenFBX](https://github.com/nem0/OpenFBX) | FBX file loading | MIT |
 | [OSQP](https://github.com/osqp/osqp) | Quadratic program solver backing bounded biharmonic weights (BBW) | Apache-2.0 |
 
@@ -119,6 +128,50 @@ bromesh::smoothTaubin(mesh, 0.5f, -0.53f, 10);  // Volume-preserving smoothing
 auto remeshed = bromesh::remeshIsotropic(mesh);  // Uniform triangle quality
 ```
 
+### Sweep and extrusion
+
+```cpp
+#include "bromesh/manipulation/sweep.h"
+#include "bromesh/manipulation/bezier_sweep.h"
+
+// Sweep a square profile along a path with rotation-minimizing frames
+std::vector<bromath::Vec2> profile = {{-1,-1},{1,-1},{1,1},{-1,1}};
+std::vector<bromath::Vec3> path    = {{0,0,0},{0,2,0},{1,4,0}};
+auto extruded = bromesh::sweep(profile, path);
+
+// Circular tube (branches, vines, stems): unit circle scaled per ring
+auto branch = bromesh::tube(path, /*radii=*/{0.3f, 0.2f, 0.05f});
+
+// Sweep along a cubic-bezier polyline (4 control points per shared segment)
+auto curved = bromesh::bezierSweep(controlPoints, profile);
+```
+
+### Polygon triangulation
+
+```cpp
+#include "bromesh/manipulation/polygon.h"
+
+// 2D outline (flat x,y,...) with optional holes, triangulated via manifold
+auto fill = bromesh::triangulatePolygon2D(outerXY, /*holes=*/{innerXY});
+
+// Planar 3D polygon projected to its plane and indexed back to 3D
+float n[3] = {0, 1, 0};
+auto cap = bromesh::triangulatePolygon3D(outerXYZ, holesXYZ, n);
+```
+
+### Half-edge edit mesh (`PolyMesh`)
+
+```cpp
+#include "bromesh/manipulation/poly_mesh.h"
+
+// Lift a triangle soup into N-gon faces, edit topology, tessellate back
+auto pm = bromesh::PolyMesh::fromMeshData(mesh.positions, mesh.indices, triToGroup);
+pm.mergeFacesByGroup();                 // coplanar tris -> single N-gon faces
+float up[3] = {0, 0.5f, 0};
+pm.extrudeFace(faceIdx, up);            // SketchUp-style push/pull
+auto tess = pm.tessellate();            // render-ready triangles + triToFace map
+```
+
 ### Point cloud reconstruction
 
 ```cpp
@@ -127,6 +180,26 @@ auto remeshed = bromesh::remeshIsotropic(mesh);  // Uniform triangle quality
 bromesh::ReconstructParams params;
 params.gridResolution = 64;
 auto mesh = bromesh::reconstructFromPointCloud(positions, normals, pointCount, params);
+```
+
+### Procedural foliage
+
+Stateless plant-shaped constructors that emit `MeshData` directly. The sibling
+`broflora` ecosystem-sim library composes these as its renderer surface;
+standalone callers (game backgrounds, distant LODs) use them the same way.
+
+```cpp
+#include "bromesh/procedural/plants.h"
+
+// One-call tree: spherical attractor cloud -> space colonization -> pipe-model
+// thickening -> merged branch tubes. Foliage is left to the caller.
+bromesh::TreeOptions topts;
+topts.canopyRadius = 3.0f;
+auto t = bromesh::tree(topts);          // t.branches (MeshData), t.segments
+
+// Low-poly leaf / petal cards with 4x4-atlas UVs, plus a radial flower
+auto leaf   = bromesh::leafCard(bromesh::LeafShape::Oval);
+auto bloom  = bromesh::flower(bromesh::FlowerOptions{});
 ```
 
 ### Transforms
