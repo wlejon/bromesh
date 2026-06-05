@@ -1,4 +1,5 @@
 #include "bromesh/io/ply.h"
+#include "ply_common.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -88,53 +89,11 @@ bool savePLY(const MeshData& mesh, const std::string& path) {
 
 // ---- PLY loading ----
 
-enum class PlyFormat { ASCII, BinaryLE, BinaryBE };
-
-struct PlyProp {
-    std::string name;
-    std::string type;      // float, uchar, uint, int, etc.
-    bool isList = false;
-    std::string countType; // for list properties
-    std::string valueType;
-};
-
-static int typeSize(const std::string& t) {
-    if (t == "char" || t == "uchar" || t == "int8" || t == "uint8") return 1;
-    if (t == "short" || t == "ushort" || t == "int16" || t == "uint16") return 2;
-    if (t == "int" || t == "uint" || t == "int32" || t == "uint32" || t == "float" || t == "float32") return 4;
-    if (t == "double" || t == "float64" || t == "int64" || t == "uint64") return 8;
-    return 0;
-}
-
-static float readFloatVal(const std::string& type, const uint8_t* data) {
-    if (type == "float" || type == "float32") {
-        float v; std::memcpy(&v, data, 4); return v;
-    }
-    if (type == "double" || type == "float64") {
-        double v; std::memcpy(&v, data, 8); return static_cast<float>(v);
-    }
-    if (type == "uchar" || type == "uint8") return data[0] / 255.0f;
-    if (type == "char" || type == "int8") return static_cast<int8_t>(data[0]) / 127.0f;
-    if (type == "ushort" || type == "uint16") {
-        uint16_t v; std::memcpy(&v, data, 2); return v / 65535.0f;
-    }
-    if (type == "int" || type == "int32") {
-        int32_t v; std::memcpy(&v, data, 4); return static_cast<float>(v);
-    }
-    if (type == "uint" || type == "uint32") {
-        uint32_t v; std::memcpy(&v, data, 4); return static_cast<float>(v);
-    }
-    return 0.0f;
-}
-
-static uint32_t readUintVal(const std::string& type, const uint8_t* data) {
-    if (type == "uchar" || type == "uint8") return data[0];
-    if (type == "char" || type == "int8") return static_cast<uint8_t>(data[0]);
-    if (type == "ushort" || type == "uint16") { uint16_t v; std::memcpy(&v, data, 2); return v; }
-    if (type == "int" || type == "int32") { int32_t v; std::memcpy(&v, data, 4); return static_cast<uint32_t>(v); }
-    if (type == "uint" || type == "uint32") { uint32_t v; std::memcpy(&v, data, 4); return v; }
-    return 0;
-}
+using ply_detail::PlyFormat;
+using ply_detail::PlyProp;
+using ply_detail::typeSize;
+using ply_detail::readFloatVal;
+using ply_detail::readUintVal;
 
 MeshData loadPLY(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "rb");
@@ -151,66 +110,16 @@ MeshData loadPLY(const std::string& path) {
     }
     std::fclose(f);
 
-    // Parse header
-    PlyFormat format = PlyFormat::ASCII;
-    size_t vertexCount = 0, faceCount = 0;
-    std::vector<PlyProp> vertexProps;
-    std::vector<PlyProp> faceProps;
-    bool inVertex = false, inFace = false;
-    size_t headerEnd = 0;
+    // Parse header (shared with the Gaussian-splat loader)
+    ply_detail::PlyHeader header;
+    if (!ply_detail::parseHeader(fileData, header)) return {};
 
-    // Find end_header
-    std::string headerStr;
-    for (size_t i = 0; i < fileData.size() - 10; ++i) {
-        if (std::memcmp(&fileData[i], "end_header", 10) == 0) {
-            // Find the newline after end_header
-            size_t j = i + 10;
-            while (j < fileData.size() && fileData[j] != '\n') j++;
-            headerEnd = j + 1;
-            headerStr.assign(reinterpret_cast<char*>(fileData.data()), headerEnd);
-            break;
-        }
-    }
-    if (headerEnd == 0) return {};
-
-    std::istringstream hdr(headerStr);
-    std::string line;
-    while (std::getline(hdr, line)) {
-        // Remove carriage return
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-
-        std::istringstream ls(line);
-        std::string token;
-        ls >> token;
-
-        if (token == "format") {
-            std::string fmt;
-            ls >> fmt;
-            if (fmt == "ascii") format = PlyFormat::ASCII;
-            else if (fmt == "binary_little_endian") format = PlyFormat::BinaryLE;
-            else if (fmt == "binary_big_endian") format = PlyFormat::BinaryBE;
-        } else if (token == "element") {
-            std::string ename;
-            size_t ecount;
-            ls >> ename >> ecount;
-            if (ename == "vertex") { vertexCount = ecount; inVertex = true; inFace = false; }
-            else if (ename == "face") { faceCount = ecount; inFace = true; inVertex = false; }
-            else { inVertex = false; inFace = false; }
-        } else if (token == "property") {
-            std::string t1;
-            ls >> t1;
-            PlyProp prop;
-            if (t1 == "list") {
-                prop.isList = true;
-                ls >> prop.countType >> prop.valueType >> prop.name;
-            } else {
-                prop.type = t1;
-                ls >> prop.name;
-            }
-            if (inVertex) vertexProps.push_back(prop);
-            else if (inFace) faceProps.push_back(prop);
-        }
-    }
+    const PlyFormat format = header.format;
+    const size_t vertexCount = header.vertexCount;
+    const size_t faceCount = header.faceCount;
+    const std::vector<PlyProp>& vertexProps = header.vertexProps;
+    const std::vector<PlyProp>& faceProps = header.faceProps;
+    const size_t headerEnd = header.dataOffset;
 
     if (vertexCount == 0) return {};
 
@@ -252,20 +161,11 @@ MeshData loadPLY(const std::string& path) {
         // Binary loading (only LE supported fully; BE is rare)
         if (format == PlyFormat::BinaryBE) return {}; // Unsupported for now
 
-        // Compute vertex stride
-        int vertexStride = 0;
-        for (const auto& p : vertexProps) {
-            if (p.isList) return {}; // Lists in vertex element not supported
-            vertexStride += typeSize(p.type);
-        }
-
-        // Compute property offsets
-        std::vector<int> propOffsets(vertexProps.size());
-        int off = 0;
-        for (size_t i = 0; i < vertexProps.size(); ++i) {
-            propOffsets[i] = off;
-            off += typeSize(vertexProps[i].type);
-        }
+        // Stride/offsets were precomputed by parseHeader (empty if a vertex
+        // list property is present, which this loader does not support).
+        if (header.vertexStride == 0) return {};
+        const int vertexStride = header.vertexStride;
+        const std::vector<int>& propOffsets = header.vertexOffsets;
 
         const uint8_t* data = fileData.data() + headerEnd;
         size_t remaining = fileData.size() - headerEnd;

@@ -263,6 +263,7 @@ add_library(bromesh STATIC
     src/io/vox.cpp
     src/io/stl.cpp
     src/io/ply.cpp
+    src/io/splat_ply.cpp
     src/io/fbx.cpp
 
     # Reconstruction
