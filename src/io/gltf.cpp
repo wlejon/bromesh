@@ -310,6 +310,14 @@ GltfScene loadGLTF(const std::string& path) {
                     for (size_t i = 0; i < accessor.count; ++i) md.indices[i] = src[i];
                 }
             }
+            // Else: the glTF spec permits non-indexed primitives (no "indices"
+            // accessor) -- the vertex attributes are drawn directly in
+            // TRIANGLES order (e.g. Khronos's own Fox.gltf sample ships this
+            // way). Leaving md.indices empty here silently produced a
+            // zero-triangle mesh downstream (triangleCount == 0, nothing
+            // rendered) even though every vertex attribute loaded correctly.
+            // Synthesize the implicit sequential index buffer once POSITION
+            // count is known, below.
 
             size_t vertCount = 0;
 
@@ -325,6 +333,12 @@ GltfScene loadGLTF(const std::string& path) {
             readVec("POSITION", md.positions, 3);
             readVec("NORMAL",   md.normals,   3);
             readVec("TEXCOORD_0", md.uvs,     2);
+
+            if (prim.indices < 0 && !md.positions.empty()) {
+                size_t n = md.positions.size() / 3;
+                md.indices.resize(n);
+                for (size_t i = 0; i < n; ++i) md.indices[i] = static_cast<uint32_t>(i);
+            }
 
             // COLOR_0 can be float or unsigned short / byte; handle float-only.
             {

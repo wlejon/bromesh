@@ -1,4 +1,5 @@
 #include "bromesh/io/stl.h"
+#include "bromesh/manipulation/weld.h"
 
 #include <cmath>
 #include <cstdio>
@@ -101,7 +102,17 @@ MeshData loadSTL(const std::string& path) {
     }
 
     std::fclose(f);
-    return mesh;
+
+    // Binary STL has no vertex-sharing concept: every triangle stores 3
+    // independent vertex copies, so the buffer built above always has
+    // vertexCount == triangleCount * 3 with zero shared adjacency. Any
+    // topology-dependent op downstream (edge-collapse LOD/simplify,
+    // subdivision, Laplacian/Taubin smoothing, manifold checks) needs a
+    // real half-edge/adjacency structure and silently produces garbage
+    // (fragmented, exploded-looking geometry) without it. Weld coincident
+    // positions here so STL imports behave like glTF/OBJ meshes that
+    // already share vertices.
+    return weldVertices(mesh, 1e-5f);
 }
 
 } // namespace bromesh
