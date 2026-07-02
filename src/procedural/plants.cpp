@@ -259,10 +259,9 @@ MeshData flower(const FlowerOptions& opts) {
         dome.colors.clear();
         dome.colors.reserve(dome.vertexCount() * 4);
         for (size_t i = 0; i < dome.vertexCount(); ++i) {
-            // Dome doesn't sway — windBend = 0.
-            dome.colors.push_back(0.0f);
-            dome.colors.push_back(0.0f);
-            dome.colors.push_back(0.0f);
+            dome.colors.push_back(opts.centerColor[0]);
+            dome.colors.push_back(opts.centerColor[1]);
+            dome.colors.push_back(opts.centerColor[2]);
             dome.colors.push_back(1.0f);
         }
         // Dome has no UVs from the sphere primitive in some cases — ensure
