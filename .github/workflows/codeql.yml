@@ -37,8 +37,7 @@ jobs:
           path: bromath
 
       # Debug / -O0 keeps the extracted IR close to the source so dataflow paths
-      # in the results point at code a human can act on. Default generator, not
-      # Ninja — see the note in ci.yml (osqp/QDLDL trips Ninja).
+      # in the results point at code a human can act on.
       - name: Configure
         run: cmake -S bromesh -B build -DCMAKE_BUILD_TYPE=Debug
 

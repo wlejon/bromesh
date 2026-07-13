@@ -29,6 +29,12 @@ concurrency:
 # are tuned for. (The coverage job below runs Debug, but only on Linux, where
 # the abort is a clean exit rather than a blocking dialog — and it filters those
 # vendored libraries out anyway.)
+#
+# Default CMake generator (no -G): --parallel bounds the job count on its own,
+# and the one sub-project that used to need special handling — osqp's vendored
+# QDLDL, which CMake 4.x rejects for its pre-3.5 minimum — is now pinned in
+# bromesh's CMakeLists (CMAKE_POLICY_VERSION_MINIMUM), so it configures under any
+# generator on any host CMake.
 jobs:
   test:
     name: ${{ matrix.name }}
@@ -52,10 +58,6 @@ jobs:
           repository: wlejon/bromath
           path: bromath
 
-      # Default generator (Unix Makefiles / Visual Studio), not Ninja: osqp
-      # fetches the QDLDL solver, whose ancient cmake_minimum_required trips
-      # "required internal CMake variable not set" under the Ninja generator.
-      # --parallel bounds the job count regardless of generator.
       - name: Configure
         env:
           CC: ${{ matrix.cc }}
@@ -92,7 +94,6 @@ jobs:
       - name: Install gcovr
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcovr
 
-      # Default generator, not Ninja — see the note in the test job (osqp/QDLDL).
       - name: Configure (instrumented)
         run: |
           cmake -S bromesh -B build -DCMAKE_BUILD_TYPE=Debug \
