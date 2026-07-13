@@ -52,24 +52,15 @@ jobs:
           repository: wlejon/bromath
           path: bromath
 
-      - name: Install Ninja (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ninja-build
-
-      - name: Install Ninja (macOS)
-        if: runner.os == 'macOS'
-        run: brew install ninja
-
+      # Default generator (Unix Makefiles / Visual Studio), not Ninja: osqp
+      # fetches the QDLDL solver, whose ancient cmake_minimum_required trips
+      # "required internal CMake variable not set" under the Ninja generator.
+      # --parallel bounds the job count regardless of generator.
       - name: Configure
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake -S bromesh -B build -DCMAKE_BUILD_TYPE=Release
-          else
-            cmake -S bromesh -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          fi
+        run: cmake -S bromesh -B build -DCMAKE_BUILD_TYPE=Release
         shell: bash
 
       - name: Build
@@ -98,12 +89,13 @@ jobs:
           repository: wlejon/bromath
           path: bromath
 
-      - name: Install gcovr + Ninja
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcovr ninja-build
+      - name: Install gcovr
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcovr
 
+      # Default generator, not Ninja — see the note in the test job (osqp/QDLDL).
       - name: Configure (instrumented)
         run: |
-          cmake -S bromesh -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          cmake -S bromesh -B build -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_FLAGS="--coverage" \
             -DCMAKE_EXE_LINKER_FLAGS="--coverage"
 
