@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 

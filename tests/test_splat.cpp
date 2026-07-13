@@ -7,6 +7,7 @@
 #include "bromesh/io/splat_ply.h"
 #include "bromesh/io/ply.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>

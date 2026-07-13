@@ -12,6 +12,7 @@
 #include "bromesh/procedural/plants.h"
 #include "bromesh/procedural/lsystem_turtle.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>

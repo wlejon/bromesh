@@ -1,6 +1,8 @@
 #include "test_framework.h"
 #include "synthetic_rigs.h"
 
+#include <algorithm>
+
 // Rig / animation / transfer / bake tests (new additions)
 // =============================================================================
 

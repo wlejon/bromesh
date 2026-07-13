@@ -13,6 +13,7 @@
 
 #include "tiny_gltf.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
