@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(bromesh LANGUAGES CXX)
+project(bromesh LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,16 +24,6 @@ if(NOT TARGET bromath)
 endif()
 
 # --- Third-party dependencies ---
-
-# Some vendored submodules (osqp's fetched QDLDL solver in particular) carry a
-# cmake_minimum_required that predates 3.5. CMake 4.x refuses that compatibility
-# outright (older CMake only warns), so a standalone configure on a new-CMake
-# host — a CI runner, a fresh dev box — dies with "required internal CMake
-# variable not set". Pin the policy floor once, ahead of every add_subdirectory
-# below, so the whole vendored tree configures regardless of host CMake. It
-# propagates into the FetchContent sub-builds too. bromesh's own
-# cmake_minimum_required (3.24) is well above this and is unaffected.
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 # meshoptimizer — simplification, vertex cache optimization, quantization
 if(NOT TARGET meshoptimizer)

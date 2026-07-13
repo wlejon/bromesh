@@ -30,11 +30,7 @@ concurrency:
 # the abort is a clean exit rather than a blocking dialog — and it filters those
 # vendored libraries out anyway.)
 #
-# Default CMake generator (no -G): --parallel bounds the job count on its own,
-# and the one sub-project that used to need special handling — osqp's vendored
-# QDLDL, which CMake 4.x rejects for its pre-3.5 minimum — is now pinned in
-# bromesh's CMakeLists (CMAKE_POLICY_VERSION_MINIMUM), so it configures under any
-# generator on any host CMake.
+# Default CMake generator (no -G): --parallel bounds the job count on its own.
 jobs:
   test:
     name: ${{ matrix.name }}
