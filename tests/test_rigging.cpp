@@ -1,5 +1,8 @@
 #include "test_framework.h"
 
+#include <algorithm>
+#include <cmath>
+
 // --- Auto-rigging tests ----------------------------------------------------
 
 static bromesh::MeshData makeSyntheticHumanoid() {
