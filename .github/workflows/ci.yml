@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# bromesh resolves bromath from ../bromath (see the BROMATH_DIR block in
+# CMakeLists.txt) and vendors seven submodules (meshoptimizer, manifold, osqp,
+# v-hacd, xatlas, OpenFBX, tinygltf). So every job reconstructs the sibling
+# layout in the runner workspace and checks this repo out with submodules:
+#
+#     $GITHUB_WORKSPACE/
+#       bromesh/    <- this repo, checked out into a named path with submodules
+#       bromath/
+#
+# Hence `path:` on both checkouts and `cmake -S bromesh`. Checking bromesh out
+# at the workspace root would put ../bromath outside the workspace and the
+# configure would die on the FATAL_ERROR in CMakeLists.
+#
+# Release, not Debug: meshoptimizer's Debug assertions fire during the mesh
+# tests and, on Windows, surface as a modal abort() dialog that hangs the runner
+# until it times out. Release sidesteps that and is the configuration the tests
+# are tuned for. (The coverage job below runs Debug, but only on Linux, where
+# the abort is a clean exit rather than a blocking dialog — and it filters those
+# vendored libraries out anyway.)
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc,    os: ubuntu-24.04, cc: gcc,   cxx: g++ }
+          - { name: linux-clang,  os: ubuntu-24.04, cc: clang, cxx: clang++ }
+          - { name: windows-msvc, os: windows-2022 }
+          - { name: macos-arm64,  os: macos-14 }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: bromesh
+          submodules: recursive
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/bromath
+          path: bromath
+
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -S bromesh -B build -DCMAKE_BUILD_TYPE=Release
+          else
+            cmake -S bromesh -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          fi
+        shell: bash
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  # ── Coverage ──────────────────────────────────────────────────────────────
+  #
+  # Debug + --coverage on Linux only. --filter scopes the numbers to bromesh's
+  # own code (include/bromesh/ + src/); the seven vendored submodules and the
+  # tests are excluded. --gcov-ignore-errors=no_working_dir_found tolerates the
+  # generated/vendored TUs whose sources gcovr cannot resolve.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: bromesh
+          submodules: recursive
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/bromath
+          path: bromath
+
+      - name: Install gcovr + Ninja
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcovr ninja-build
+
+      - name: Configure (instrumented)
+        run: |
+          cmake -S bromesh -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="--coverage" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      # pipefail: piping gcovr into tee otherwise hands the step tee's exit
+      # status, so a gcovr crash produces no report and the job still goes green.
+      - name: Report
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p coverage-html
+          gcovr --root . \
+            --filter 'bromesh/include/bromesh/' --filter 'bromesh/src/' \
+            --exclude-unreachable-branches \
+            --gcov-ignore-errors=no_working_dir_found \
+            --print-summary \
+            --html-details coverage-html/index.html \
+            | tee coverage-summary.txt
+          test -s coverage-html/index.html
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo '## Coverage — `include/bromesh/` + `src/`'
+            echo
+            echo 'The seven vendored submodules and the tests are filtered out.'
+            echo
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: coverage-html/
+          retention-days: 14

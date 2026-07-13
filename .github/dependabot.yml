@@ -1,0 +1,18 @@
+version: 2
+
+# Third-party code is vendored as git submodules (meshoptimizer, manifold, osqp,
+# v-hacd, xatlas, OpenFBX, tinygltf) pinned to specific commits, not pulled from
+# a package manager, so there is no manifest for Dependabot to bump. The only
+# versioned things it can watch are the pinned actions in .github/workflows/.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: [ci]
+    commit-message:
+      prefix: "ci"

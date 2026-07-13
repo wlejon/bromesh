@@ -1,0 +1,12 @@
+name: bromesh CodeQL config
+
+queries:
+  - uses: security-extended
+
+# The seven vendored submodules are kept out of the analysis by build order (see
+# the pre-build step in codeql.yml) — that is what excludes their compiled TUs.
+# This paths-ignore is the complement: it drops any finding that originates in a
+# vendored *header* pulled into a bromesh translation unit, which build order
+# cannot catch. Together they scope the Security tab to bromesh's own code.
+paths-ignore:
+  - bromesh/third_party
