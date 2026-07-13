@@ -1,5 +1,14 @@
 #include "test_framework.h"
 
+#include <filesystem>
+#include <string>
+
+// Roundtrip I/O tests write to the OS temp directory rather than a hardcoded
+// build path, so they run on any machine and any CI runner.
+static std::string testFile(const std::string& name) {
+    return (std::filesystem::temp_directory_path() / name).string();
+}
+
 // --- Smoke tests: verify all headers compile and stubs link ---
 
 TEST(mesh_data_basics) {
@@ -457,7 +466,7 @@ TEST(obj_roundtrip) {
     size_t origVerts = b.vertexCount();
     size_t origTris = b.triangleCount();
 
-    std::string objPath = "D:/projects/bromesh/build/test_output.obj";
+    std::string objPath = testFile("test_output.obj");
     bool saved = bromesh::saveOBJ(b, objPath);
     ASSERT(saved, "OBJ save should succeed");
 
@@ -475,22 +484,25 @@ TEST(stl_roundtrip) {
     auto b = bromesh::box(1, 1, 1);
     size_t origTris = b.triangleCount();
 
-    std::string stlPath = "D:/projects/bromesh/build/test_output.stl";
+    std::string stlPath = testFile("test_output.stl");
     bool saved = bromesh::saveSTL(b, stlPath);
     ASSERT(saved, "STL save should succeed");
 
     auto loaded = bromesh::loadSTL(stlPath);
     ASSERT(!loaded.empty(), "STL load should return non-empty mesh");
     ASSERT(loaded.triangleCount() == origTris, "STL roundtrip triangle count should match");
-    // STL doesn't share vertices: 3 verts per triangle
-    ASSERT(loaded.vertexCount() == origTris * 3, "STL vertex count should be 3x triangle count");
+    // A binary STL stores 3 unshared vertices per triangle; loadSTL welds the
+    // coincident positions back into shared topology (see src/io/stl.cpp), so a
+    // closed solid comes back with strictly fewer than 3x its triangle count.
+    ASSERT(loaded.vertexCount() > 0 && loaded.vertexCount() < origTris * 3,
+           "STL import should weld coincident vertices");
     ASSERT(loaded.hasNormals(), "STL should have normals");
 
     std::remove(stlPath.c_str());
 }
 
 TEST(vox_nonexistent_file) {
-    auto data = bromesh::loadVOX("D:/projects/bromesh/build/nonexistent.vox");
+    auto data = bromesh::loadVOX(testFile("nonexistent.vox"));
     ASSERT(data.sizeX == 0, "VOX nonexistent file should return empty sizeX");
     ASSERT(data.sizeY == 0, "VOX nonexistent file should return empty sizeY");
     ASSERT(data.sizeZ == 0, "VOX nonexistent file should return empty sizeZ");
@@ -644,7 +656,7 @@ TEST(optimize_vertex_fetch) {
 // Helpers for comprehensive I/O roundtrip tests
 // ============================================================================
 
-static const char* testDir = "D:/projects/bromesh/build/";
+static const std::string testDir = std::filesystem::temp_directory_path().string() + "/";
 
 static bool approxEqual(float a, float b, float tol) {
     return std::fabs(a - b) <= tol;
@@ -895,13 +907,13 @@ TEST(obj_rt_cylinder_flat_normals_overdraw_opt) {
 }
 
 // ============================================================================
-// STL roundtrip tests — positions + face normals only; vertices unshared on load
+// STL roundtrip tests — positions + face normals; loadSTL welds on import
 // ============================================================================
 
 TEST(stl_rt_torus_with_smooth_normals) {
-    // Torus -> smooth normals -> STL roundtrip
-    // STL stores per-face normals and doesn't share vertices, so we compare
-    // triangle count and bounding box
+    // Torus -> smooth normals -> STL roundtrip. STL carries per-face normals and
+    // stores 3 unshared vertices per triangle; loadSTL welds them back into
+    // shared topology, so we compare triangle count and bounding box.
     auto mesh = bromesh::torus(2.0f, 0.5f, 24, 12);
     bromesh::computeNormals(mesh);
     auto origBBox = meshBBox(mesh);
@@ -911,7 +923,8 @@ TEST(stl_rt_torus_with_smooth_normals) {
     ASSERT(bromesh::saveSTL(mesh, path), "stl_rt_torus: save");
     auto loaded = bromesh::loadSTL(path);
     ASSERT(loaded.triangleCount() == origTris, "stl_rt_torus: tri count");
-    ASSERT(loaded.vertexCount() == origTris * 3, "stl_rt_torus: 3 verts per tri");
+    ASSERT(loaded.vertexCount() > 0 && loaded.vertexCount() < origTris * 3,
+           "stl_rt_torus: welded, fewer than 3 verts per tri");
     ASSERT(loaded.hasNormals(), "stl_rt_torus: has normals");
     auto loadedBBox = meshBBox(loaded);
     ASSERT(bboxMatch(origBBox, loadedBBox, 0.01f), "stl_rt_torus: bbox match");
