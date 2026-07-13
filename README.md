@@ -1,5 +1,9 @@
 # bromesh
 
+[![CI](https://github.com/wlejon/bromesh/actions/workflows/ci.yml/badge.svg)](https://github.com/wlejon/bromesh/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/wlejon/bromesh/actions/workflows/codeql.yml/badge.svg)](https://github.com/wlejon/bromesh/actions/workflows/codeql.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A C++20 static library for mesh generation, manipulation, and I/O. Designed for game engines, tools, and procedural content pipelines.
 
 ## Features
