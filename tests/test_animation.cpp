@@ -493,3 +493,122 @@ TEST(locomotion_cycle_all_creatures_smoke) {
     }
 }
 
+
+// =============================================================================
+// blendPosesN — weighted N-way pose blend
+// =============================================================================
+
+// A pose with distinct, recognizable TRS per bone. `spin` rotates about Z.
+static bromesh::Pose makeTestPose(size_t bones, float tBase, float spin, float sBase) {
+    bromesh::Pose p;
+    p.data.resize(bones * 10);
+    float c = std::cos(spin * 0.5f), s = std::sin(spin * 0.5f);
+    for (size_t i = 0; i < bones; ++i) {
+        float* d = &p.data[i * 10];
+        d[0] = tBase + (float)i; d[1] = tBase * 2; d[2] = -tBase;
+        d[3] = 0; d[4] = 0; d[5] = s; d[6] = c;
+        d[7] = sBase; d[8] = sBase; d[9] = sBase;
+    }
+    return p;
+}
+
+TEST(blendn_two_matches_blend) {
+    auto a = makeTestPose(3, 1.0f, 0.3f, 1.0f);
+    auto b = makeTestPose(3, 5.0f, 1.2f, 2.0f);
+
+    // Ground truth: the existing two-pose blend.
+    bromesh::Pose gt = a;
+    bromesh::blendPoses(gt, b, 0.75f);
+
+    // blendPosesN with weights (0.25, 0.75) — exact same math (slerp path).
+    const bromesh::Pose* poses[2] = { &a, &b };
+    float w[2] = { 0.25f, 0.75f };
+    bromesh::Pose out;
+    bromesh::blendPosesN(poses, w, 2, out);
+
+    ASSERT(out.data.size() == gt.data.size(), "blendn N=2 size");
+    for (size_t i = 0; i < gt.data.size(); ++i)
+        ASSERT(out.data[i] == gt.data[i], "blendn N=2 bit-identical to blendPoses");
+
+    // Endpoints exact.
+    float w0[2] = { 1.0f, 0.0f };
+    bromesh::blendPosesN(poses, w0, 2, out);
+    for (size_t i = 0; i < a.data.size(); ++i)
+        ASSERT(out.data[i] == a.data[i], "blendn N=2 endpoint a exact");
+    float w1[2] = { 0.0f, 1.0f };
+    bromesh::blendPosesN(poses, w1, 2, out);
+    for (size_t i = 0; i < b.data.size(); ++i)
+        ASSERT(out.data[i] == b.data[i], "blendn N=2 endpoint b exact");
+}
+
+TEST(blendn_weights_normalize) {
+    auto a = makeTestPose(2, 0.0f, 0.2f, 1.0f);
+    auto b = makeTestPose(2, 1.0f, 0.7f, 1.5f);
+    auto c = makeTestPose(2, 2.0f, 1.1f, 2.0f);
+    const bromesh::Pose* poses[3] = { &a, &b, &c };
+
+    float wRaw[3]  = { 2.0f, 1.0f, 1.0f };
+    float wNorm[3] = { 0.5f, 0.25f, 0.25f };
+    bromesh::Pose o1, o2;
+    bromesh::blendPosesN(poses, wRaw, 3, o1);
+    bromesh::blendPosesN(poses, wNorm, 3, o2);
+    for (size_t i = 0; i < o1.data.size(); ++i)
+        ASSERT(std::fabs(o1.data[i] - o2.data[i]) < 1e-6f,
+               "unnormalized weights match normalized");
+
+    // Translation is the plain weighted sum: 0.5*0 + 0.25*1 + 0.25*2 = 0.75.
+    ASSERT(std::fabs(o1.data[0] - 0.75f) < 1e-6f, "translation weighted sum");
+}
+
+TEST(blendn_three_endpoint_and_reference) {
+    auto a = makeTestPose(2, 0.0f, 0.2f, 1.0f);
+    auto b = makeTestPose(2, 1.0f, 0.9f, 1.5f);
+    auto c = makeTestPose(2, 2.0f, 1.6f, 2.0f);
+    const bromesh::Pose* poses[3] = { &a, &b, &c };
+    float w[3] = { 0.0f, 1.0f, 0.0f };
+    bromesh::Pose out;
+    bromesh::blendPosesN(poses, w, 3, out);
+    for (size_t i = 0; i < b.data.size(); ++i)
+        ASSERT(std::fabs(out.data[i] - b.data[i]) < 1e-6f,
+               "blendn N=3 sample-point weights land on that pose");
+}
+
+TEST(blendn_hemisphere_alignment) {
+    auto a = makeTestPose(1, 0.0f, 0.4f, 1.0f);
+    auto b = makeTestPose(1, 1.0f, 1.0f, 1.0f);
+    auto c = makeTestPose(1, 2.0f, 1.5f, 1.0f);
+
+    // Same rotation as c, antipodal quaternion representation.
+    auto cNeg = c;
+    for (int k = 3; k < 7; ++k) cNeg.data[k] = -cNeg.data[k];
+
+    const bromesh::Pose* p1[3] = { &a, &b, &c };
+    const bromesh::Pose* p2[3] = { &a, &b, &cNeg };
+    float w[3] = { 0.5f, 0.3f, 0.2f };
+    bromesh::Pose o1, o2;
+    bromesh::blendPosesN(p1, w, 3, o1);
+    bromesh::blendPosesN(p2, w, 3, o2);
+    for (size_t i = 0; i < o1.data.size(); ++i)
+        ASSERT(std::fabs(o1.data[i] - o2.data[i]) < 1e-6f,
+               "antipodal quaternion input blends identically");
+}
+
+TEST(blendn_mask) {
+    auto a = makeTestPose(3, 0.0f, 0.2f, 1.0f);
+    auto b = makeTestPose(3, 1.0f, 0.8f, 1.5f);
+    auto c = makeTestPose(3, 2.0f, 1.3f, 2.0f);
+    const bromesh::Pose* poses[3] = { &a, &b, &c };
+    float w[3] = { 0.4f, 0.3f, 0.3f };
+
+    // Pre-fill out with a sentinel pose; mask bone 1 out of the blend.
+    auto sentinel = makeTestPose(3, 9.0f, 0.0f, 9.0f);
+    bromesh::Pose out = sentinel;
+    uint8_t mask[3] = { 1, 0, 1 };
+    bromesh::blendPosesN(poses, w, 3, out, mask);
+
+    for (int k = 0; k < 10; ++k)
+        ASSERT(out.data[10 + k] == sentinel.data[10 + k],
+               "masked-out bone keeps prior out contents");
+    // Masked-in bone actually blended (translation x of bone 0: 0.4*0+0.3*1+0.3*2=0.9).
+    ASSERT(std::fabs(out.data[0] - 0.9f) < 1e-6f, "masked-in bone blended");
+}

@@ -193,6 +193,85 @@ void blendPoses(Pose& a, const Pose& b, float weight, const uint8_t* boneMask) {
     }
 }
 
+void blendPosesN(const Pose* const* poses, const float* weights, size_t count,
+                 Pose& out, const uint8_t* boneMask) {
+    if (count == 0) return;
+
+    // Validate shared bone count.
+    size_t stride = poses[0]->data.size();
+    for (size_t i = 1; i < count; ++i)
+        if (poses[i]->data.size() != stride) return;
+
+    // Normalize weights (clamped at 0); ~zero sum → first pose wins.
+    float sum = 0.0f;
+    for (size_t i = 0; i < count; ++i) sum += std::max(weights[i], 0.0f);
+
+    // Reference = highest-weight source (hemisphere anchor + fill value).
+    size_t ref = 0;
+    for (size_t i = 1; i < count; ++i)
+        if (weights[i] > weights[ref]) ref = i;
+
+    if (out.data.size() != stride) out.data = poses[ref]->data;
+    if (sum <= 1e-8f) {
+        if (!boneMask) out.data = poses[0]->data;
+        else {
+            size_t bones = stride / 10;
+            for (size_t b = 0; b < bones; ++b)
+                if (boneMask[b])
+                    std::copy_n(&poses[0]->data[b * 10], 10, &out.data[b * 10]);
+        }
+        return;
+    }
+
+    if (count == 2) {
+        // Exact two-way path: identical math to blendPoses (slerp rotations)
+        // so N=2 blend spaces and the two-pose crossfade agree bit-for-bit.
+        float w = std::max(weights[1], 0.0f) / sum;
+        size_t bones = stride / 10;
+        for (size_t b = 0; b < bones; ++b) {
+            if (boneMask && !boneMask[b]) continue;
+            const float* d0 = &poses[0]->data[b * 10];
+            const float* d1 = &poses[1]->data[b * 10];
+            float* o = &out.data[b * 10];
+            for (int k = 0; k < 3; ++k) o[k] = d0[k] * (1 - w) + d1[k] * w;
+            quatSlerp(&d0[3], &d1[3], w, &o[3]);
+            for (int k = 7; k < 10; ++k) o[k] = d0[k] * (1 - w) + d1[k] * w;
+        }
+        return;
+    }
+
+    size_t bones = stride / 10;
+    for (size_t b = 0; b < bones; ++b) {
+        if (boneMask && !boneMask[b]) continue;
+        float* o = &out.data[b * 10];
+        float t[3] = {0, 0, 0}, q[4] = {0, 0, 0, 0}, s[3] = {0, 0, 0};
+        const float* qr = &poses[ref]->data[b * 10] + 3;
+        for (size_t i = 0; i < count; ++i) {
+            float w = std::max(weights[i], 0.0f) / sum;
+            if (w <= 0.0f) continue;
+            const float* d = &poses[i]->data[b * 10];
+            t[0] += w * d[0]; t[1] += w * d[1]; t[2] += w * d[2];
+            // Hemisphere-align against the reference, then weighted nlerp.
+            float dot = d[3]*qr[0] + d[4]*qr[1] + d[5]*qr[2] + d[6]*qr[3];
+            float sign = (dot < 0.0f) ? -w : w;
+            q[0] += sign * d[3]; q[1] += sign * d[4];
+            q[2] += sign * d[5]; q[3] += sign * d[6];
+            s[0] += w * d[7]; s[1] += w * d[8]; s[2] += w * d[9];
+        }
+        o[0] = t[0]; o[1] = t[1]; o[2] = t[2];
+        float len2 = q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3];
+        if (len2 > 1e-12f) {
+            o[3] = q[0]; o[4] = q[1]; o[5] = q[2]; o[6] = q[3];
+            quatNormalize(&o[3]);
+        } else {
+            // Degenerate accumulation (antipodal cancellation) — keep the
+            // reference rotation rather than emitting NaN.
+            o[3] = qr[0]; o[4] = qr[1]; o[5] = qr[2]; o[6] = qr[3];
+        }
+        o[7] = s[0]; o[8] = s[1]; o[9] = s[2];
+    }
+}
+
 // ---- World + skinning matrices -------------------------------------------
 
 void computeWorldMatrices(const Skeleton& skeleton, const Pose& pose,

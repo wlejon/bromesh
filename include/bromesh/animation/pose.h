@@ -44,6 +44,35 @@ void evaluateAnimationInto(const Skeleton& skeleton,
 void blendPoses(Pose& a, const Pose& b, float weight,
                 const uint8_t* boneMask = nullptr);
 
+/// Weighted N-way pose blend into `out`.
+///
+/// `poses`/`weights` are parallel arrays of `count` sources. Weights are
+/// normalized internally (any positive sum works); if the sum is ~0 the
+/// first pose wins. All poses must share one bone count.
+///
+/// Semantics (the industry-standard N-way accumulate):
+///   - translations and scales: weighted sum of the normalized weights.
+///   - rotations, count == 2: exact slerp — bit-identical to
+///     blendPoses(a, b, w1/(w0+w1)), so two-way blend spaces and the
+///     existing crossfade path agree exactly.
+///   - rotations, count >= 3: weighted nlerp — each quaternion is
+///     hemisphere-aligned against the highest-weight source (negated when
+///     its dot with that reference is negative), accumulated by weight,
+///     then normalized. Nlerp is chosen over iterative slerp because it is
+///     commutative across sources, allocation-free, and matches what game
+///     runtimes ship for N-way blending; it coincides with slerp at the
+///     endpoints and at 50/50, and stays within a fraction of a degree of
+///     it for the < 90 degree bone deltas typical between locomotion clips.
+///
+/// `out` is resized if needed and initialized from the highest-weight
+/// source, so with a `boneMask` (same contract as blendPoses: 1 = blend
+/// this bone) the masked-OUT bones keep whatever `out` already held when
+/// it was correctly sized, and take the reference pose's value otherwise.
+/// `out` must not alias any input pose. No allocation when `out` is
+/// already sized.
+void blendPosesN(const Pose* const* poses, const float* weights, size_t count,
+                 Pose& out, const uint8_t* boneMask = nullptr);
+
 /// Compose a pose into world-space bone matrices by walking the skeleton
 /// hierarchy. Output stride: 16 floats per bone, column-major.
 /// `outWorld` is resized to skeleton.bones.size() * 16.
