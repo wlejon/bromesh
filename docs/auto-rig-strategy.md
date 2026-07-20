@@ -1,6 +1,10 @@
 # bromesh auto-rigging: strategy
 
-*Status: strategy document. Not an implementation plan. A fresh session should read this, pick the section it judges most appropriate to tackle first, then produce its own implementation plan for that section.*
+*Status: strategy document — the design rationale behind the shipped `rigging/`
+module, kept as the north star for changes to it. Section 6 tracks what is built
+and what is not; section 10 records which design questions are settled. Sections
+1-5 and 7 describe the reasoning and remain the reference for why the subsystem
+is shaped the way it is.*
 
 ---
 
@@ -8,7 +12,7 @@
 
 bromesh already has the entire **runtime** side of skeletal animation: glTF skin/animation load, pose evaluation with all three interpolation modes, pose blending with bone masks, skinning matrix composition, two-bone IK, FABRIK, look-at, name-based animation retargeting, Rigify-style socket discovery, weight transfer between meshes, shrinkwrap, cross-mesh normal/AO bake.
 
-The remaining gap is **authoring**: you can't yet go from `MeshData` → `(Skeleton, SkinData)` inside bromesh. Today, that step happens in Blender (Rigify) or via external services (Mixamo, AccuRIG). Everything after it is in-engine.
+The gap this document set out to close was **authoring**: going from `MeshData` → `(Skeleton, SkinData)` inside bromesh instead of in Blender (Rigify) or via external services (Mixamo, AccuRIG). That path now exists as the `rigging/` module.
 
 Closing this gap removes the last external dependency in the text-to-animated-character pipeline. That matters for three reasons:
 
@@ -138,41 +142,40 @@ Ships with default gait patterns for biped, quadruped, hexapod, octopod. Users c
 
 ---
 
-## 6. Phased roadmap
+## 6. Roadmap and current state
 
-Phases are **dependency-ordered**, not chronological. Earlier phases unblock later ones. Each phase is shippable on its own — bromesh is useful at every step.
+The roadmap was dependency-ordered, not chronological, with each step shippable
+on its own. Everything through heuristic landmark detection is now implemented.
 
-### Phase 0: rig spec schema and format
+**Built:**
 
-Define the data model for rig specs. Write the humanoid spec. No code yet uses it, but other phases target this schema.
+- **Rig spec schema and format** — `rigging/rig_spec.h`. JSON in and out
+  (`parseRigSpecJSON` / `serializeRigSpecJSON` / `loadRigSpecFile`), bone
+  positions as landmark expressions.
+- **Landmarks + skeleton fitter + voxel weighting** — the end-to-end slice.
+  `rigging/landmarks.h`, `rigging/skeleton_fit.h`, `rigging/voxel_bind.h`,
+  driven by `autoRig()` in `rigging/auto_rig.h`; output exports through the
+  existing glTF save and plays through the existing animation runtime.
+- **Additional rig specs** — quadruped, hexapod, octopod, alongside the
+  humanoid. Bundled as builtins and as data under `data/rig_specs/`; they run
+  the humanoid code path unchanged.
+- **Procedural locomotion** — `animation/locomotion.h`, gait-driven cycle
+  generation on top of the IK solvers, with default gaits for 2/4/6/8 legs.
+- **Quality upgrades** — bounded biharmonic weights as an opt-in
+  (`rigging/bbw.h`, OSQP-backed), surface bone heat as the manifold default
+  (`rigging/bone_heat.h`), Laplacian weight post-processing
+  (`rigging/weight_smooth.h`) and `rigging/skin_validate.h`.
+- **Heuristic landmark detection** — `rigging/landmark_detect.h`, geometric
+  auto-landmarking that removes the user-click step for standard cases while
+  leaving hand-authored landmarks available.
 
-### Phase 1: user-marked landmarks + skeleton fitter + voxel weighting
+**Not built:**
 
-The first end-to-end slice. User marks landmarks, fitter places a humanoid skeleton, voxel-binding computes weights. Output goes through existing glTF save + existing runtime and plays the existing animation library. This is the "replace Blender for humanoids" deliverable.
-
-### Phase 2: additional rig specs
-
-Author quadruped, hexapod, octopod rig specs. Verify Phase 1's code needs zero changes to handle them — if it does, the rig spec schema needs another iteration.
-
-### Phase 3: procedural locomotion
-
-Gait-driven cycle generator. Wired through existing IK solvers. Ships default gaits for 2/4/6/8 legs.
-
-### Phase 4: quality upgrades
-
-Bounded biharmonic weights as an opt-in. Manifold-safe surface bone heat fallback. Weight post-processing (smoothing, outlier rejection).
-
-### Phase 5: heuristic landmark detection
-
-Geometric auto-landmark for humanoids + quadrupeds. Removes the user-click step for standard cases while keeping it available for custom creatures.
-
-### Phase 6: ML landmark detection plug-in
-
-Define the interface for an external landmark detector. Ship a reference ONNX-based implementation if a suitable model is found or trained. Must be optional — bromesh still builds without it.
-
-### Phase 7: face rig (separate scope, named here for completeness)
-
-Blendshape + jaw/eye bone rigging. Logically part of character authoring but substantially different techniques. Plan separately.
+- **ML landmark detection plug-in.** An interface for an external detector plus
+  a reference ONNX-based implementation. Must stay optional — bromesh builds
+  without it.
+- **Face rig.** Blendshape + jaw/eye bone rigging. Logically part of character
+  authoring but substantially different techniques; a separate scope.
 
 ---
 
@@ -186,7 +189,7 @@ Strategy: adaptive — resolution scales with bounding box, tuned to yield ~5-10
 
 ### 7.2 Surface vs. voxel heat
 
-Surface heat needs a manifold mesh; fails catastrophically on non-manifold input. Voxel heat shrugs off topology problems. Given MeshyAI blobs are frequently non-manifold, voxel is the right default. Surface is the optimization.
+Surface heat needs a manifold mesh; fails catastrophically on non-manifold input. Voxel heat shrugs off topology problems. Neither is the default: `WeightingMethod::Auto` inspects manifoldness per mesh (`autoSelectWeightingMethod`) and picks surface bone heat when the mesh supports it, voxel-bind otherwise. That keeps the quality of surface heat for clean input without a cliff on MeshyAI-style blobs.
 
 ### 7.3 Top-N weights per vertex
 
@@ -202,9 +205,9 @@ Symmetric characters (L/R) benefit from enforced symmetry during skeleton fittin
 
 ---
 
-## 8. What reuses what already exists in bromesh
+## 8. What the rigging module reuses
 
-Significant infrastructure is already in place. This is not a from-scratch build.
+The rigging module is a thin layer over infrastructure that already existed:
 
 - **Voxelization** for geodesic voxel weighting: `VoxelChunk`, marching cubes / surface nets.
 - **BVH + closest-point + raycast** for landmark projection, symmetry detection, weight post-processing.
@@ -214,7 +217,7 @@ Significant infrastructure is already in place. This is not a from-scratch build
 - **glTF save with skin + animations** for exporting finished rigged characters.
 - **Socket metadata** on `Skeleton` for equipment attachment.
 
-The new code is concentrated in: rig spec parser, skeleton fitter, landmark detection, voxel weighting, locomotion. Everything else hangs off what's already built.
+The new code is concentrated in: rig spec parser, skeleton fitter, landmark detection, weighting (voxel-bind, bone heat, BBW), weight smoothing, locomotion. Everything else hangs off what was already built.
 
 ---
 
@@ -222,29 +225,42 @@ The new code is concentrated in: rig spec parser, skeleton fitter, landmark dete
 
 For the system as a whole:
 
-1. A MeshyAI humanoid blob → fully rigged character with playable walk cycle, no Blender, no human intervention beyond marking landmarks once (Phase 1). Measured: visually acceptable deformation at shoulders, elbows, knees, hips during a standard walk-cycle test.
-2. Same for a quadruped (wolf, horse) (Phase 2+3). No code changes from the humanoid path — only a different rig spec.
-3. Same for a hexapod and octopod (Phase 2+3). Spiders walk.
+1. A MeshyAI humanoid blob → fully rigged character with playable walk cycle, no Blender, no human intervention beyond marking landmarks once. Measured: visually acceptable deformation at shoulders, elbows, knees, hips during a standard walk-cycle test.
+2. Same for a quadruped (wolf, horse). No code changes from the humanoid path — only a different rig spec.
+3. Same for a hexapod and octopod. Spiders walk.
 4. Produced rigs round-trip through glTF export and reload into bromesh or any external glTF viewer without loss.
 5. Rigging a character takes under 2 seconds wall-clock for a 20k-triangle mesh on a modern desktop.
 6. Rigging is deterministic: same input produces byte-identical output across runs.
 
-For individual phases, the success bar is "does it pass tests covering the quality and correctness claims above, using meshes representative of the target use cases."
+For any individual change, the success bar is "does it pass tests covering the quality and correctness claims above, using meshes representative of the target use cases."
 
 ---
 
-## 10. Open questions a fresh session should resolve
+## 10. Resolved decisions and remaining questions
 
-These are decisions I don't want to prescribe:
+Settled:
 
-1. **Rig spec format: JSON, TOML, or custom.** Trade-off is tool ergonomics vs. dependencies. bromesh currently has no parser for any of these; adding one is a minor dependency choice.
-2. **Landmark marking UI: part of bromesh, or host-app responsibility.** bromesh is a headless library. A landmark-marking tool needs 3D viewport interaction, which is the host's domain (bro's UI, Blender add-on, command-line with numeric input, etc.). The library's job is probably to accept a dict of `{name: position}` and nothing else. But worth deciding whether bromesh ships a reference landmark-marking tool or leaves it entirely to callers.
-3. **QP solver for BBW: dependency or from-scratch.** BBW needs a constrained QP solve. Options: OSQP (small, permissively licensed, a few thousand LOC), Eigen's own QP routines, or implement primal active-set ourselves. Not a Phase-1 decision but worth thinking about before Phase 4.
-4. **Voxel weighting: single-thread first or parallelized from day one.** At 128³ resolution with 30+ bones it's not small work. Worth deciding early since it affects code structure.
-5. **How much of the rig spec is Turing-complete expression evaluation.** "midpoint(pelvis, chest)" is a tiny expression language. The scope of that language determines how much authoring flexibility rig specs have. Too small = every creature needs special-case landmarks. Too big = it's a programming language inside a config file. Find the minimum expressive set.
-6. **Where to ship reference rig specs.** Bromesh repo, separate repo, or bundled as headers/strings. Affects distribution but not architecture.
+1. **Rig spec format: JSON**, with a hand-rolled parser in `rig_spec.cpp` — no
+   parser dependency added.
+2. **QP solver for BBW: OSQP**, as an optional submodule. BBW compiles to a
+   no-op returning failure when the submodule is absent.
+3. **Rig spec expression language: a fixed, closed set** — `landmark:A`,
+   `mid:A,B`, `lerp:A,B,t`, `offset:A,dx,dy,dz`. No control flow, no
+   user-defined functions.
+4. **Reference rig specs ship in this repo**, both as compiled builtins
+   (`builtinHumanoidSpec()` and friends) and as JSON under `data/rig_specs/`,
+   so callers can start from data without a rebuild.
+5. **Landmark marking UI is the host's responsibility.** The library accepts a
+   `{name: position}` dict and nothing else; `landmark_detect.h` covers the
+   standard cases without any UI.
 
-A fresh session should pick Phase 0 or Phase 1 (most likely Phase 0 — the rig spec schema is the architectural keystone) and produce a concrete implementation plan for it. Phase 0 is mostly design work and data format selection; Phase 1 is the first substantial code. Whichever phase is picked first, earlier phases in the roadmap have no code dependencies to worry about, so the choice is mostly about what's more useful to have settled first.
+Still open:
+
+1. **Parallelizing weight computation.** All weighting methods are currently
+   single-threaded. At 128³ voxel resolution with 30+ bones this is the bulk of
+   auto-rig wall-clock, and it is embarrassingly parallel per bone.
+2. **ML landmark detection.** The plug-in interface is undesigned; a suitable
+   model has not been selected or trained.
 
 ---
 
@@ -256,7 +272,7 @@ For context, the broader pipeline this lives inside:
 text/image → MeshyAI (external, generation)
            → bromesh (cleanup, UV, detail bake)                    [done]
            → MeshyAI (external, texturing)
-           → bromesh auto-rig                                       [this document]
+           → bromesh auto-rig                                       [done]
            → bromesh animation (IK, blending, retargeting, sockets) [done]
            → bromesh runtime (weight transfer for equipment, etc.)  [done]
            → glTF export for external use                           [done]

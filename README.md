@@ -19,8 +19,8 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 | **Subdivision** | Loop, Catmull-Clark, midpoint (iterative, arbitrary depth) |
 | **Manipulation** | Smooth/flat normals, tangents, simplify (quadric error + attribute-aware), target triangle count decimation, LOD chain, weld, split components, merge, repair (degenerate/duplicate removal, hole filling), translate/rotate/scale/mirror/center/transform, shrinkwrap (nearest / normal-project / axis-project) |
 | **Skinning** | Apply bone transforms (4 weights/vertex), morph target blending, weight normalization, closest-point skin weight transfer between meshes |
-| **Rigging** | One-call auto-rig from landmarks + RigSpec (bundled humanoid/quadruped/hexapod/octopod specs); geometric landmark detection; skeleton fitting; skin weighting via bone heat, bounded biharmonic weights (BBW, OSQP), or voxel-bind; Laplacian weight smoothing; skin validation |
-| **Animation** | Pose evaluation (bind/animation/blend with bone masks), world & skinning matrix composition, socket resolution, two-bone IK, FABRIK, look-at IK, name-based animation retargeting (Rigify/Mixamo), procedural locomotion cycles (biped/quadruped/hexapod/octopod gaits) |
+| **Rigging** | One-call auto-rig from landmarks + RigSpec (bundled humanoid/quadruped/hexapod/octopod specs, also loadable/serializable as JSON); geometric landmark detection; skeleton fitting; skin weighting via bone heat, bounded biharmonic weights (BBW, OSQP), or voxel-bind; Laplacian weight smoothing; skin validation |
+| **Animation** | Pose evaluation (bind/animation/two-way and N-way weighted blend with bone masks), world & skinning matrix composition, socket resolution, two-bone IK, FABRIK, look-at IK, name-based animation retargeting (Rigify/Mixamo), procedural locomotion cycles (biped/quadruped/hexapod/octopod gaits) |
 | **Smoothing** | Laplacian, Taubin (shrinkage-free) |
 | **Remeshing** | Isotropic remeshing (edge split/collapse/flip + tangential relaxation) |
 | **Reconstruction** | Point cloud to mesh via implicit surface estimation + marching cubes |
@@ -30,9 +30,10 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 | **UV** | Box, planar (XY/XZ/YZ), cylindrical, spherical projection; automatic unwrapping and atlas packing (xatlas); quality metrics (L2 stretch, area/angle distortion, packing efficiency) |
 | **Optimization** | Vertex cache, vertex fetch, overdraw, meshlet generation, spatial sorting, shadow index buffer, mesh encoding/compression, triangle strips, progressive mesh (continuous LOD with serialization) |
 | **Boolean/CSG** | Union, difference, intersection, plane splitting (manifold) |
-| **I/O** | OBJ read/write, STL read/write, PLY read/write, glTF/GLB read/write (meshes, skins, skeletons, animations, materials, embedded images), FBX read, MagicaVoxel VOX read |
+| **Gaussian splats** | `GaussianSplatCloud` (SoA positions/scales/rotations/opacities/SH, degrees 0-3), 3DGS `.ply` read/write with activation on load and inverse on save |
+| **I/O** | OBJ read/write, STL read/write, PLY read/write, glTF/GLB read/write (meshes, skins, skeletons, animations, materials, embedded images), FBX read, MagicaVoxel VOX read, 3DGS splat PLY read/write |
 
-All algorithms produce `bromesh::MeshData` -- a flat struct with separate position, normal, UV, color, tangent, and index arrays ready for GPU upload or TypedArray transfer.
+All mesh algorithms produce `bromesh::MeshData` -- a flat struct with separate position, normal, UV, color, tangent, and index arrays ready for GPU upload or TypedArray transfer. `GaussianSplatCloud` mirrors that layout for splat data.
 
 ## Building
 
@@ -253,6 +254,17 @@ auto result  = bromesh::autoRig(mesh, spec, landmarks, wopts);
 // result.skeleton, result.skin, result.missingLandmarks, result.warnings
 ```
 
+Specs are also data. The bundled ones ship as JSON under `data/rig_specs/`
+(`humanoid.json`, `quadruped.json`, `hexapod.json`, `octopod.json`) and a custom
+skeleton template can be authored the same way:
+
+```cpp
+auto custom = bromesh::loadRigSpecFile("data/rig_specs/quadruped.json");
+auto parsed = bromesh::parseRigSpecJSON(jsonText);
+auto text   = bromesh::serializeRigSpecJSON(custom);
+auto named  = bromesh::builtinRigSpec("hexapod");
+```
+
 ### Skin weight transfer
 
 Project skin weights from a source mesh onto a target (e.g. swappable armor
@@ -271,6 +283,13 @@ auto armorSkin = bromesh::transferSkinWeights(armorMesh, bodyMesh, bodySkin);
 
 auto pose = bromesh::evaluateAnimation(skeleton, anim, tSeconds, /*loop=*/true);
 bromesh::blendPoses(pose, upperBodyPose, 0.5f, boneMaskOrNull);
+
+// N-way weighted blend (blend spaces: idle/walk/run, directional strafe sets).
+// Weights are normalized internally; two sources reproduce blendPoses exactly.
+const bromesh::Pose* sources[3] = {&idle, &walk, &run};
+float weights[3] = {0.2f, 0.5f, 0.3f};
+bromesh::Pose blended;
+bromesh::blendPosesN(sources, weights, 3, blended, boneMaskOrNull);
 
 std::vector<float> skinningMatrices;
 bromesh::computeSkinningMatrices(skeleton, pose, skinningMatrices);
@@ -438,6 +457,24 @@ auto mesh = bromesh::loadPLY("scan.ply");
 bromesh::savePLY(mesh, "output.ply");
 
 auto fbxMeshes = bromesh::loadFBX("model.fbx");  // Returns all meshes in the scene
+```
+
+### Gaussian splats
+
+`GaussianSplatCloud` holds a 3D Gaussian Splat cloud in the same separate-stream
+layout as `MeshData`, stored render-ready: linear scales, `[0,1]` opacities,
+normalized `xyzw` rotations, and spherical-harmonic coefficients interleaved by
+coefficient (`[r0 g0 b0 r1 g1 b1 ...]`, stride `shStride()`). The PLY loader and
+saver convert to and from the log-scale / logit-opacity, channel-major storage
+that standard 3DGS files (INRIA / PlayCanvas) use.
+
+```cpp
+#include "bromesh/io/splat_ply.h"
+
+auto cloud = bromesh::loadSplatPLY("scene.ply");  // SH degree inferred from f_rest_*
+// cloud.count(), cloud.positions, cloud.scales, cloud.rotations,
+// cloud.opacities, cloud.sh, cloud.shDegree
+bromesh::saveSplatPLY(cloud, "scene_out.ply");    // binary little-endian, round-trips
 ```
 
 ## Integration
