@@ -41,6 +41,13 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/par/par_shapes.h")
     add_library(par_shapes STATIC third_party/par/par_shapes.cpp)
     target_include_directories(par_shapes PUBLIC third_party/par)
+    # par_shapes' index type defaults to uint16_t. Subdivision builds an
+    # UNWELDED mesh of 3*ntriangles points before welding, so a geodesicSphere
+    # past ~5 subdivisions (n=6 ≈ 246k intermediate points) overflows 16 bits
+    # and returns corrupt topology. Widen to 32 bits. PUBLIC so par_primitives
+    # (which reads par_shapes_mesh::triangles) agrees on the width; the struct
+    # is all pointers/ints, so layout is unchanged either way.
+    target_compile_definitions(par_shapes PUBLIC PAR_SHAPES_T=uint32_t)
     if(MSVC)
         target_compile_options(par_shapes PRIVATE /W0)
     else()
