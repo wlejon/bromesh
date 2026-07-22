@@ -305,8 +305,21 @@ target_compile_features(bromesh PUBLIC cxx_std_20)
 
 target_link_libraries(bromesh PUBLIC bromath::bromath)
 
+# OpenMP — parallelizes the hot procedural loops (leaf_scatter, primitives,
+# manipulation). The `#pragma omp parallel for` sites are inert without it, so
+# without this the scatter runs single-threaded. Optional: absent OpenMP the
+# pragmas are simply ignored and everything still builds and runs (serially).
+find_package(OpenMP QUIET)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(bromesh PUBLIC OpenMP::OpenMP_CXX)
+    message(STATUS "bromesh: OpenMP enabled (${OpenMP_CXX_FLAGS})")
+else()
+    message(STATUS "bromesh: OpenMP not found, procedural loops run serially")
+endif()
+
 if(MSVC)
-    target_compile_options(bromesh PRIVATE /W4)
+    # /W4 but silence C4068 (unknown pragma) so an OpenMP-less build is quiet
+    target_compile_options(bromesh PRIVATE /W4 $<$<NOT:$<BOOL:${OpenMP_CXX_FOUND}>>:/wd4068>)
 else()
     target_compile_options(bromesh PRIVATE -Wall -Wextra)
 endif()
