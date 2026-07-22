@@ -18,6 +18,25 @@ namespace {
 
 constexpr float kTwoPi = bromath::TWO_PI;
 
+// Fast per-segment RNG. Replaces std::mt19937_64 (2.5 KB of state, a heavy
+// per-segment construction) in the parallel scatter loop: seeding is a single
+// assignment and each draw is a handful of ops, so a segment that ends up
+// placing no leaves costs almost nothing. splitmix64's statistical quality is
+// ample for leaf jitter, and being purely functional in its state it stays
+// deterministic per segment (same seed → same stream) under OpenMP.
+struct FastRng {
+    uint64_t s;
+    explicit FastRng(uint64_t seed) : s(seed) {}
+    inline uint64_t next() {
+        uint64_t z = (s += 0x9E3779B97F4A7C15ULL);
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31);
+    }
+    // 24-bit float in [0, 1).
+    inline float uni01() { return (next() >> 40) * (1.0f / 16777216.0f); }
+};
+
 // Pick any unit vector perpendicular to `t` (assumed unit length).
 Vec3 perpendicularUnit(Vec3 t) {
     Vec3 worldUp{0, 1, 0};
@@ -102,13 +121,11 @@ LeafPlacements placeLeavesOnBranches(
             if (weight <= 0.0f) continue;
         }
 
-        uint64_t segSeed = opts.seed ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL);
-        std::mt19937_64 rng(segSeed);
-        std::uniform_real_distribution<float> uni01(0.0f, 1.0f);
+        FastRng rng(opts.seed ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL));
 
         float expected = length * opts.perUnitLength * weight;
         int sampleCount = static_cast<int>(std::floor(expected));
-        if (uni01(rng) < (expected - static_cast<float>(sampleCount))) {
+        if (rng.uni01() < (expected - static_cast<float>(sampleCount))) {
             ++sampleCount;
         }
         if (sampleCount <= 0) continue;
@@ -121,7 +138,7 @@ LeafPlacements placeLeavesOnBranches(
         depths.reserve(static_cast<size_t>(sampleCount));
 
         for (int s = 0; s < sampleCount; ++s) {
-            float u = uni01(rng);
+            float u = rng.uni01();
             float t = (opts.densityFalloff > 0.0f)
                 ? 1.0f - std::pow(1.0f - u, 1.0f + opts.densityFalloff)
                 : u;
@@ -158,7 +175,7 @@ LeafPlacements placeLeavesOnBranches(
                 if (blocked) continue;
             }
 
-            float phi = uni01(rng) * kTwoPi;
+            float phi = rng.uni01() * kTwoPi;
             Vec3 e1 = perpendicularUnit(T);
             Vec3 e2 = vcross(T, e1);
             Vec3 R = e1 * std::cos(phi) + e2 * std::sin(phi);
@@ -167,7 +184,7 @@ LeafPlacements placeLeavesOnBranches(
             Vec3 F = vnormOr(Fraw, R);
 
             if (opts.tiltJitter > 0.0f) {
-                float tiltAng = (uni01(rng) * 2.0f - 1.0f) * opts.tiltJitter;
+                float tiltAng = (rng.uni01() * 2.0f - 1.0f) * opts.tiltJitter;
                 Vec3 tiltAxis = vnormOr(vcross(F, T), e2);
                 F = vnorm(qrotate(qaxisAngle(tiltAxis, tiltAng), F));
             }
@@ -180,13 +197,13 @@ LeafPlacements placeLeavesOnBranches(
             Vec3 N = vnorm(vcross(sideAxis, F));
 
             if (opts.rollJitter > 0.0f) {
-                float rollAng = (uni01(rng) * 2.0f - 1.0f) * opts.rollJitter;
+                float rollAng = (rng.uni01() * 2.0f - 1.0f) * opts.rollJitter;
                 Quat q = qaxisAngle(F, rollAng);
                 sideAxis = vnorm(qrotate(q, sideAxis));
                 N = vnorm(qrotate(q, N));
             }
 
-            float jitter = (uni01(rng) * 2.0f - 1.0f) * opts.scaleJitter;
+            float jitter = (rng.uni01() * 2.0f - 1.0f) * opts.scaleJitter;
             float radiusFactor = 1.0f;
             if (opts.scaleByRadius > 0.0f) {
                 float ratio = (seg.radius > 0.0f) ? (seg.radius / refRadius) : 1.0f;
