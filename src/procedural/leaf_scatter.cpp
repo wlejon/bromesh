@@ -31,25 +31,29 @@ Vec3 perpendicularUnit(Vec3 t) {
 void writeMatrix(std::vector<float>& out,
                  Vec3 sideAxis, Vec3 normal, Vec3 forward,
                  Vec3 origin, float scale) {
-    // Column-major 4x4: cols are X-basis, Y-basis, Z-basis, translation.
+    // InstancedMeshNode canonical layout (16 floats per instance):
+    // o[ 0..3 ] = row 0 of 3x4 affine matrix: r00, r01, r02, px
+    // o[ 4..7 ] = row 1 of 3x4 affine matrix: r10, r11, r12, py
+    // o[ 8..11] = row 2 of 3x4 affine matrix: r20, r21, r22, pz
+    // o[12..15] = instance tint color (r, g, b, a) = (1, 1, 1, 1)
     out.push_back(sideAxis.x * scale);
-    out.push_back(sideAxis.y * scale);
-    out.push_back(sideAxis.z * scale);
-    out.push_back(0.0f);
-
     out.push_back(normal.x * scale);
-    out.push_back(normal.y * scale);
-    out.push_back(normal.z * scale);
-    out.push_back(0.0f);
-
     out.push_back(forward.x * scale);
-    out.push_back(forward.y * scale);
-    out.push_back(forward.z * scale);
-    out.push_back(0.0f);
-
     out.push_back(origin.x);
+
+    out.push_back(sideAxis.y * scale);
+    out.push_back(normal.y * scale);
+    out.push_back(forward.y * scale);
     out.push_back(origin.y);
+
+    out.push_back(sideAxis.z * scale);
+    out.push_back(normal.z * scale);
+    out.push_back(forward.z * scale);
     out.push_back(origin.z);
+
+    out.push_back(1.0f);
+    out.push_back(1.0f);
+    out.push_back(1.0f);
     out.push_back(1.0f);
 }
 
@@ -70,48 +74,51 @@ LeafPlacements placeLeavesOnBranches(
         }
     }
 
-    std::mt19937_64 rng(opts.seed);
-    std::uniform_real_distribution<float> uni01(0.0f, 1.0f);
-
-    SpatialHash3D dedupHash(opts.dedupRadius > 0.0f
-                                ? opts.dedupRadius
-                                : 1.0f);
-    int32_t dedupId = 0;
-    std::vector<int32_t> nearby;
-
     const Vec3 worldUp{0, 1, 0};
     const float refRadius = (opts.maxRadius > 1e-8f) ? opts.maxRadius : 1.0f;
+    const size_t segCount = segments.size();
 
-    for (size_t i = 0; i < segments.size(); ++i) {
-        const BranchSegment& seg = segments[i];
+    std::vector<std::vector<float>> segTransforms(segCount);
+    std::vector<std::vector<float>> segRadius(segCount);
+    std::vector<std::vector<int>> segDepth(segCount);
+
+    #pragma omp parallel for schedule(dynamic, 16) if(segCount > 32)
+    for (int i = 0; i < static_cast<int>(segCount); ++i) {
+        const BranchSegment& seg = segments[static_cast<size_t>(i)];
         Vec3 d = seg.to - seg.from;
         float length = vlen(d);
         if (length < 1e-6f) continue;
         if (seg.depth < opts.minDepth) continue;
         if (seg.radius > 0.0f && seg.radius > opts.maxRadius) continue;
-        if (opts.terminalOnly && childCount[i] > 0) continue;
+        if (opts.terminalOnly && childCount[static_cast<size_t>(i)] > 0) continue;
 
         Vec3 T = d * (1.0f / length);
 
-        // Per-segment density multiplier (light / vigor / maturity driven).
-        // Empty weight vector = uniform; a zero weight skips the segment.
         float weight = 1.0f;
         if (!opts.densityWeight.empty()) {
-            weight = (i < opts.densityWeight.size())
-                         ? std::max(0.0f, opts.densityWeight[i])
+            weight = (static_cast<size_t>(i) < opts.densityWeight.size())
+                         ? std::max(0.0f, opts.densityWeight[static_cast<size_t>(i)])
                          : 0.0f;
             if (weight <= 0.0f) continue;
         }
 
+        uint64_t segSeed = opts.seed ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL);
+        std::mt19937_64 rng(segSeed);
+        std::uniform_real_distribution<float> uni01(0.0f, 1.0f);
+
         float expected = length * opts.perUnitLength * weight;
-        // Stochastic rounding so very short segments still occasionally place.
         int sampleCount = static_cast<int>(std::floor(expected));
         if (uni01(rng) < (expected - static_cast<float>(sampleCount))) {
             ++sampleCount;
         }
         if (sampleCount <= 0) continue;
 
-        const int selfTag = static_cast<int>(i);
+        auto& transforms = segTransforms[static_cast<size_t>(i)];
+        auto& radii = segRadius[static_cast<size_t>(i)];
+        auto& depths = segDepth[static_cast<size_t>(i)];
+        transforms.reserve(static_cast<size_t>(sampleCount) * 16);
+        radii.reserve(static_cast<size_t>(sampleCount));
+        depths.reserve(static_cast<size_t>(sampleCount));
 
         for (int s = 0; s < sampleCount; ++s) {
             float u = uni01(rng);
@@ -120,10 +127,12 @@ LeafPlacements placeLeavesOnBranches(
                 : u;
             Vec3 P = seg.from + d * t;
 
-            // Obstacle test on the candidate origin. Excludes the
-            // candidate's own segment via tag. With pushout, slide outward
-            // along the nearest surface normal once and re-test; otherwise
-            // hard-reject. Keep-out spheres are always tested (no exclusion).
+            // Obstacle test on the candidate origin. Excludes the candidate's
+            // own segment via tag. With pushout, slide outward along the
+            // nearest surface normal once and re-test; otherwise hard-reject.
+            // Keep-out spheres are always tested (no exclusion). All queries
+            // are const, so this is safe to run in the parallel segment loop.
+            const int selfTag = static_cast<int>(i);
             if (opts.avoid != nullptr && !opts.avoid->empty()) {
                 if (opts.avoid->tooClose(P, opts.obstacleClearance, selfTag)) {
                     if (opts.obstaclePushout > 0.0f) {
@@ -149,24 +158,20 @@ LeafPlacements placeLeavesOnBranches(
                 if (blocked) continue;
             }
 
-            // Azimuth around the branch.
             float phi = uni01(rng) * kTwoPi;
             Vec3 e1 = perpendicularUnit(T);
             Vec3 e2 = vcross(T, e1);
             Vec3 R = e1 * std::cos(phi) + e2 * std::sin(phi);
 
-            // Forward = blend(radial, world up).
             Vec3 Fraw = R * (1.0f - opts.upBias) + worldUp * opts.upBias;
             Vec3 F = vnormOr(Fraw, R);
 
-            // Tilt: pitch F forward/back along T using axis perpendicular to F and T.
             if (opts.tiltJitter > 0.0f) {
                 float tiltAng = (uni01(rng) * 2.0f - 1.0f) * opts.tiltJitter;
                 Vec3 tiltAxis = vnormOr(vcross(F, T), e2);
                 F = vnorm(qrotate(qaxisAngle(tiltAxis, tiltAng), F));
             }
 
-            // Side / normal — N points roughly upward when F is roughly horizontal.
             Vec3 sideAxis = vcross(F, worldUp);
             if (vdot(sideAxis, sideAxis) < 1e-8f) {
                 sideAxis = vcross(F, Vec3{1, 0, 0});
@@ -174,7 +179,6 @@ LeafPlacements placeLeavesOnBranches(
             sideAxis = vnorm(sideAxis);
             Vec3 N = vnorm(vcross(sideAxis, F));
 
-            // Roll around F.
             if (opts.rollJitter > 0.0f) {
                 float rollAng = (uni01(rng) * 2.0f - 1.0f) * opts.rollJitter;
                 Quat q = qaxisAngle(F, rollAng);
@@ -182,7 +186,6 @@ LeafPlacements placeLeavesOnBranches(
                 N = vnorm(qrotate(q, N));
             }
 
-            // Scale.
             float jitter = (uni01(rng) * 2.0f - 1.0f) * opts.scaleJitter;
             float radiusFactor = 1.0f;
             if (opts.scaleByRadius > 0.0f) {
@@ -193,58 +196,53 @@ LeafPlacements placeLeavesOnBranches(
             float scale = opts.baseScale * (1.0f + jitter) * radiusFactor;
             if (scale < 1e-6f) continue;
 
-            // Dedup.
-            if (opts.dedupRadius > 0.0f) {
+            writeMatrix(transforms, sideAxis, N, F, P, scale);
+            radii.push_back(seg.radius);
+            depths.push_back(seg.depth);
+        }
+    }
+
+    size_t totalTransforms = 0;
+    for (size_t i = 0; i < segCount; ++i) {
+        totalTransforms += segRadius[i].size();
+    }
+    out.transforms.reserve(totalTransforms * 16);
+    out.branchRadius.reserve(totalTransforms);
+    out.branchDepth.reserve(totalTransforms);
+
+    if (opts.dedupRadius > 0.0f) {
+        // Dedup mutates a shared spatial hash, so it can't live in the parallel
+        // loop. Run it here as a serial merge in segment order (first-come,
+        // first-kept — same policy as the pre-parallel implementation). The
+        // per-instance origin is the translation column (M[3], M[7], M[11]).
+        SpatialHash3D dedupHash(opts.dedupRadius);
+        int32_t dedupId = 0;
+        std::vector<int32_t> nearby;
+        for (size_t i = 0; i < segCount; ++i) {
+            const auto& transforms = segTransforms[i];
+            const size_t placed = segRadius[i].size();
+            for (size_t k = 0; k < placed; ++k) {
+                const float* M = transforms.data() + k * 16;
+                Vec3 P{M[3], M[7], M[11]};
                 nearby.clear();
                 dedupHash.radiusQuery(P, opts.dedupRadius, nearby);
                 if (!nearby.empty()) continue;
                 dedupHash.insert(P, dedupId++);
+                out.transforms.insert(out.transforms.end(), M, M + 16);
+                out.branchRadius.push_back(segRadius[i][k]);
+                out.branchDepth.push_back(segDepth[i][k]);
             }
-
-            writeMatrix(out.transforms, sideAxis, N, F, P, scale);
-            out.branchRadius.push_back(seg.radius);
-            out.branchDepth.push_back(seg.depth);
+        }
+    } else {
+        for (size_t i = 0; i < segCount; ++i) {
+            out.transforms.insert(out.transforms.end(), segTransforms[i].begin(), segTransforms[i].end());
+            out.branchRadius.insert(out.branchRadius.end(), segRadius[i].begin(), segRadius[i].end());
+            out.branchDepth.insert(out.branchDepth.end(), segDepth[i].begin(), segDepth[i].end());
         }
     }
 
     return out;
 }
-
-namespace {
-
-void transformLeafCopy(const MeshData& src, const float* M, MeshData& dst) {
-    size_t vcount = src.vertexCount();
-    dst.positions.resize(vcount * 3);
-    for (size_t i = 0; i < vcount; ++i) {
-        float x = src.positions[i * 3 + 0];
-        float y = src.positions[i * 3 + 1];
-        float z = src.positions[i * 3 + 2];
-        dst.positions[i * 3 + 0] = M[0]*x + M[4]*y + M[8]*z  + M[12];
-        dst.positions[i * 3 + 1] = M[1]*x + M[5]*y + M[9]*z  + M[13];
-        dst.positions[i * 3 + 2] = M[2]*x + M[6]*y + M[10]*z + M[14];
-    }
-    if (src.hasNormals()) {
-        dst.normals.resize(vcount * 3);
-        for (size_t i = 0; i < vcount; ++i) {
-            float x = src.normals[i * 3 + 0];
-            float y = src.normals[i * 3 + 1];
-            float z = src.normals[i * 3 + 2];
-            float nx = M[0]*x + M[4]*y + M[8]*z;
-            float ny = M[1]*x + M[5]*y + M[9]*z;
-            float nz = M[2]*x + M[6]*y + M[10]*z;
-            float L = std::sqrt(nx*nx + ny*ny + nz*nz);
-            if (L > 1e-8f) { nx /= L; ny /= L; nz /= L; }
-            dst.normals[i * 3 + 0] = nx;
-            dst.normals[i * 3 + 1] = ny;
-            dst.normals[i * 3 + 2] = nz;
-        }
-    }
-    dst.uvs = src.uvs;
-    dst.colors = src.colors;
-    dst.indices = src.indices;
-}
-
-} // namespace
 
 MeshData scatterLeaves(
     const std::vector<BranchSegment>& segments,
@@ -252,16 +250,72 @@ MeshData scatterLeaves(
     const LeafPlacementOptions& opts) {
     if (leaf.empty()) return {};
     LeafPlacements pl = placeLeavesOnBranches(segments, opts);
-    if (pl.count() == 0) return {};
+    const size_t count = pl.count();
+    if (count == 0) return {};
 
-    std::vector<MeshData> parts;
-    parts.reserve(pl.count());
-    MeshData stamped;
-    for (size_t i = 0; i < pl.count(); ++i) {
-        transformLeafCopy(leaf, &pl.transforms[i * 16], stamped);
-        parts.push_back(stamped);
+    const size_t srcVCount = leaf.vertexCount();
+    const size_t srcICount = leaf.indices.size();
+    const bool hasNormals  = leaf.hasNormals();
+    const bool hasUVs      = leaf.hasUVs();
+    const bool hasColors   = leaf.hasColors();
+
+    MeshData out;
+    out.positions.resize(count * srcVCount * 3);
+    if (hasNormals) out.normals.resize(count * srcVCount * 3);
+    if (hasUVs)     out.uvs.resize(count * srcVCount * 2);
+    if (hasColors)  out.colors.resize(count * srcVCount * 4);
+    out.indices.resize(count * srcICount);
+
+    for (size_t i = 0; i < count; ++i) {
+        const float* M = &pl.transforms[i * 16];
+        size_t vBase = i * srcVCount;
+        uint32_t indexOffset = static_cast<uint32_t>(vBase);
+
+        for (size_t v = 0; v < srcVCount; ++v) {
+            size_t destPos = (vBase + v) * 3;
+            float x = leaf.positions[v * 3 + 0];
+            float y = leaf.positions[v * 3 + 1];
+            float z = leaf.positions[v * 3 + 2];
+            // M is the canonical InstancedMeshNode record: rows 0..2 of a 3x4
+            // affine matrix at M[0..3], M[4..7], M[8..11] (translation in the
+            // 4th column); M[12..15] is the RGBA tint, not part of the transform.
+            out.positions[destPos + 0] = M[0]*x + M[1]*y + M[2]*z  + M[3];
+            out.positions[destPos + 1] = M[4]*x + M[5]*y + M[6]*z  + M[7];
+            out.positions[destPos + 2] = M[8]*x + M[9]*y + M[10]*z + M[11];
+
+            if (hasNormals) {
+                float nx = leaf.normals[v * 3 + 0];
+                float ny = leaf.normals[v * 3 + 1];
+                float nz = leaf.normals[v * 3 + 2];
+                float tx = M[0]*nx + M[1]*ny + M[2]*nz;
+                float ty = M[4]*nx + M[5]*ny + M[6]*nz;
+                float tz = M[8]*nx + M[9]*ny + M[10]*nz;
+                float L = std::sqrt(tx*tx + ty*ty + tz*tz);
+                if (L > 1e-8f) { tx /= L; ty /= L; tz /= L; }
+                out.normals[destPos + 0] = tx;
+                out.normals[destPos + 1] = ty;
+                out.normals[destPos + 2] = tz;
+            }
+
+            if (hasUVs) {
+                out.uvs[(vBase + v) * 2 + 0] = leaf.uvs[v * 2 + 0];
+                out.uvs[(vBase + v) * 2 + 1] = leaf.uvs[v * 2 + 1];
+            }
+            if (hasColors) {
+                out.colors[(vBase + v) * 4 + 0] = leaf.colors[v * 4 + 0];
+                out.colors[(vBase + v) * 4 + 1] = leaf.colors[v * 4 + 1];
+                out.colors[(vBase + v) * 4 + 2] = leaf.colors[v * 4 + 2];
+                out.colors[(vBase + v) * 4 + 3] = leaf.colors[v * 4 + 3];
+            }
+        }
+
+        size_t iBase = i * srcICount;
+        for (size_t idx = 0; idx < srcICount; ++idx) {
+            out.indices[iBase + idx] = leaf.indices[idx] + indexOffset;
+        }
     }
-    return mergeMeshes(parts);
+
+    return out;
 }
 
 std::vector<int> packAnchors(

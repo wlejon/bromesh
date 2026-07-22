@@ -433,9 +433,9 @@ TEST(leaf_scatter_dedup_enforces_spacing) {
     // Brute-force check spacing.
     bool ok = true;
     for (size_t i = 0; i < pl.count() && ok; ++i) {
-        Vec3 pi{pl.transforms[i*16+12], pl.transforms[i*16+13], pl.transforms[i*16+14]};
+        Vec3 pi{pl.transforms[i*16+3], pl.transforms[i*16+7], pl.transforms[i*16+11]};
         for (size_t j = i + 1; j < pl.count(); ++j) {
-            Vec3 pj{pl.transforms[j*16+12], pl.transforms[j*16+13], pl.transforms[j*16+14]};
+            Vec3 pj{pl.transforms[j*16+3], pl.transforms[j*16+7], pl.transforms[j*16+11]};
             if (vdist(pi, pj) < o.dedupRadius - 1e-5f) { ok = false; break; }
         }
     }
@@ -743,7 +743,7 @@ TEST(leaf_scatter_avoids_capsule) {
     // Without avoid, some origins land inside the blocker volume.
     int inside_before = 0;
     for (size_t i = 0; i < before.count(); ++i) {
-        Vec3 p{before.transforms[i*16+12], before.transforms[i*16+13], before.transforms[i*16+14]};
+        Vec3 p{before.transforms[i*16+3], before.transforms[i*16+7], before.transforms[i*16+11]};
         if (field.tooClose(p, 0.0f, 1)) ++inside_before;
     }
     ASSERT(inside_before > 0, "without avoid: collisions exist");
@@ -752,7 +752,7 @@ TEST(leaf_scatter_avoids_capsule) {
     LeafPlacements after = placeLeavesOnBranches(segs, o);
     int inside_after = 0;
     for (size_t i = 0; i < after.count(); ++i) {
-        Vec3 p{after.transforms[i*16+12], after.transforms[i*16+13], after.transforms[i*16+14]};
+        Vec3 p{after.transforms[i*16+3], after.transforms[i*16+7], after.transforms[i*16+11]};
         if (field.tooClose(p, 0.0f, 1)) ++inside_after;
     }
     ASSERT(inside_after == 0, "with avoid: no collisions");
@@ -779,7 +779,7 @@ TEST(leaf_scatter_keepout_spheres) {
     ASSERT(pl.count() > 0, "keepOut leaves something behind");
     bool ok = true;
     for (size_t i = 0; i < pl.count(); ++i) {
-        Vec3 p{pl.transforms[i*16+12], pl.transforms[i*16+13], pl.transforms[i*16+14]};
+        Vec3 p{pl.transforms[i*16+3], pl.transforms[i*16+7], pl.transforms[i*16+11]};
         Vec3 d = p - keep.center;
         if (vdot(d, d) <= keep.radius * keep.radius) { ok = false; break; }
     }
@@ -819,7 +819,7 @@ TEST(leaf_scatter_pushout_recovers_some) {
 
     bool ok = true;
     for (size_t i = 0; i < push.count(); ++i) {
-        Vec3 p{push.transforms[i*16+12], push.transforms[i*16+13], push.transforms[i*16+14]};
+        Vec3 p{push.transforms[i*16+3], push.transforms[i*16+7], push.transforms[i*16+11]};
         if (field.tooClose(p, 0.0f, 1)) { ok = false; break; }
     }
     ASSERT(ok, "after pushout no placement remains inside obstacle");
