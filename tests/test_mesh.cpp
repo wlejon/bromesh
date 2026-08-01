@@ -1728,6 +1728,26 @@ TEST(par_geodesic_sphere) {
     ASSERT(allOnSurface, "par_geod: vertices should be on sphere surface");
 }
 
+TEST(par_geodesic_sphere_topology) {
+    // A geodesic sphere at subdivision n has EXACTLY 10*4^n + 2 vertices and
+    // 20*4^n triangles. par_shapes builds it as an unwelded soup and welds the
+    // bit-identical duplicates afterwards; its stock weld epsilon exceeded the
+    // edge length past subdivision 6, merging DISTINCT vertices and dropping
+    // the collapsed triangles — a planet-scale sphere came back with 11% of
+    // its triangles, sliver facets and holes. The epsilon now scales with the
+    // subdivision order; this pins the exact counts at the resolutions that
+    // used to break (7, 8) and one that never did (5).
+    for (int n : {5, 7, 8}) {
+        auto mesh = bromesh::geodesicSphere(1.0f, n);
+        size_t expV = 10u * ((size_t)1 << (2 * n)) + 2u;
+        size_t expT = 20u * ((size_t)1 << (2 * n));
+        ASSERT(mesh.vertexCount() == expV,
+               "par_geod_topo: vertex count must be exactly 10*4^n + 2");
+        ASSERT(mesh.triangleCount() == expT,
+               "par_geod_topo: triangle count must be exactly 20*4^n");
+    }
+}
+
 TEST(par_cone) {
     const float r = 1.0f, h = 2.0f;
     auto mesh = bromesh::cone(r, h, 16, 4);

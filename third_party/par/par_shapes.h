@@ -1509,6 +1509,7 @@ par_shapes_mesh* par_shapes_create_subdivided_sphere(int nsubd)
     par_shapes_unweld(mesh, false);
     PAR_FREE(mesh->triangles);
     mesh->triangles = 0;
+    int order = nsubd;
     while (nsubd--) {
         par_shapes__subdivide(mesh);
     }
@@ -1519,8 +1520,32 @@ par_shapes_mesh* par_shapes_create_subdivided_sphere(int nsubd)
     for (int i = 0; i < mesh->ntriangles * 3; i++) {
         mesh->triangles[i] = i;
     }
+
+    // LOCAL FIX (bromesh): scale the weld epsilon with the subdivision order.
+    //
+    // This weld exists only to merge the duplicated corner vertices of the
+    // unwelded soup that par_shapes__subdivide produces. Those duplicates are
+    // BIT-IDENTICAL (mix3 at t=0.5 is commutative in IEEE float), so their
+    // distance is exactly zero and any positive epsilon merges them.
+    //
+    // Upstream passes a fixed 0.01 — and par_shapes__weld_points compares the
+    // SQUARED distance against the unsquared epsilon, in the weld's grid space
+    // where the unit sphere's AABB (extent 2) is scaled to gridsize-1 = 19
+    // cells. Effective weld radius: sqrt(0.01) = 0.1 grid units = 0.0105 on
+    // the unit sphere. The icosahedron edge chord is 1.05146 / 2^order, which
+    // drops BELOW that radius at order >= 7: distinct vertices are merged,
+    // triangles whose corners collapse are silently dropped, and the "sphere"
+    // comes back with holes and sliver facets (order 8: 68,266 of 655,362
+    // vertices and 144,764 of 1,310,720 triangles survived).
+    //
+    // Use a quarter-edge radius instead, expressed against the existing
+    // dist2 < epsilon convention, and never larger than upstream's radius so
+    // coarse spheres weld exactly as before.
+    float edge_grid = 9.5f * ldexpf(1.05146f, -order);  // chord, grid units
+    float radius = 0.25f * edge_grid;
+    if (radius > 0.1f) radius = 0.1f;
     par_shapes_mesh* tmp = mesh;
-    mesh = par_shapes_weld(mesh, 0.01, 0);
+    mesh = par_shapes_weld(mesh, radius * radius, 0);
     par_shapes_free_mesh(tmp);
     par_shapes_compute_normals(mesh);
     return mesh;
