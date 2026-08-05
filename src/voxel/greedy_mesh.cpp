@@ -218,4 +218,10 @@ MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
     return mesh;
 }
 
+MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
+                    float cellSize, int filterMaterial,
+                    int borderX, int borderY, int borderZ) {
+    return greedyMesh(voxels, gridX, gridY, gridZ, cellSize, nullptr, 0, filterMaterial, borderX, borderY, borderZ);
+}
+
 } // namespace bromesh

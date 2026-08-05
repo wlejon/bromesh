@@ -2,7 +2,9 @@
 
 #include "bromesh/mesh_data.h"
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace bromesh {
@@ -89,10 +91,9 @@ void computeSkinningMatrices(const Skeleton& skeleton,
                              std::vector<float>& outSkinning);
 
 /// Compute the world-space transform of a named socket given a pose.
-/// Returns false if not found. `outMatrix` is 16 floats column-major.
-bool socketWorldMatrix(const Skeleton& skeleton,
-                       const Pose& pose,
-                       const std::string& socketName,
-                       float* outMatrix);
+/// Returns nullopt if not found. Matrix is 16 floats column-major.
+std::optional<std::array<float, 16>> socketWorldMatrix(const Skeleton& skeleton,
+                                                      const Pose& pose,
+                                                      const std::string& socketName);
 
 } // namespace bromesh

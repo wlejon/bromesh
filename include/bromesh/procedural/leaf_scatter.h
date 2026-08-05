@@ -1,13 +1,15 @@
 #pragma once
 
+#include <cstdint>
+#include <vector>
+#include <optional>
+#include <functional>
+
 #include "bromesh/mesh_data.h"
 #include "bromesh/procedural/obstacle_field.h"
 #include "bromesh/procedural/space_colonization.h"
 
 #include <bromath/vec.h>
-
-#include <cstdint>
-#include <vector>
 
 namespace bromesh {
 
@@ -55,13 +57,19 @@ struct LeafPlacementOptions {
     /// Minimum distance between accepted leaf origins. 0 disables.
     float dedupRadius = 0.0f;
 
-    /// Optional obstacle field. Candidate leaves whose *origin* is within
-    /// `obstacleClearance` of any non-self capsule/sphere are rejected.
+    /// Optional borrowed obstacle field (null/nullopt = disabled).
+    /// Candidate leaves whose *origin* is within `obstacleClearance` of any
+    /// non-self capsule/sphere are rejected.
     /// "Self" exclusion uses the candidate's segment index as the tag, so
     /// callers should build the field via `CapsuleField::capsulesFromSegments(segs)`
     /// (or assign `tag = segment-index` manually) for the exclusion to work.
     /// `nullptr` disables obstacle testing entirely.
     const CapsuleField* avoid = nullptr;
+
+    /// Optional reference-wrapper helper to set `avoid`.
+    void setAvoid(std::optional<std::reference_wrapper<const CapsuleField>> field) {
+        avoid = field ? &field->get() : nullptr;
+    }
     /// Extra clearance added to every avoid test (effectively inflates every
     /// obstacle by this much). Lets you keep leaves a hair off stems.
     float obstacleClearance = 0.0f;

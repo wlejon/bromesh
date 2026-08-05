@@ -2,6 +2,8 @@
 
 #include "bromesh/mesh_data.h"
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -69,11 +71,18 @@ GltfScene loadGLTF(const std::string& path);
 bool saveGLTF(const MeshData& mesh, const std::string& path);
 
 /// Save a mesh with optional skin + skeleton + animations.
-/// If skin or skeleton is null, the output is unskinned. Animations are only
+/// If skin or skeleton is null/nullopt, the output is unskinned. Animations are only
 /// emitted when a skeleton is provided.
 bool saveGLTF(const MeshData& mesh,
               const SkinData* skin,
               const Skeleton* skeleton,
+              const std::vector<Animation>& animations,
+              const std::string& path);
+
+/// Overload using explicit std::optional reference wrappers for nullable skin and skeleton contracts.
+bool saveGLTF(const MeshData& mesh,
+              std::optional<std::reference_wrapper<const SkinData>> skin,
+              std::optional<std::reference_wrapper<const Skeleton>> skeleton,
               const std::vector<Animation>& animations,
               const std::string& path);
 

@@ -315,17 +315,18 @@ void computeSkinningMatrices(const Skeleton& skeleton, const Pose& pose,
     }
 }
 
-bool socketWorldMatrix(const Skeleton& skeleton, const Pose& pose,
-                       const std::string& socketName, float* outMatrix) {
+std::optional<std::array<float, 16>> socketWorldMatrix(const Skeleton& skeleton, const Pose& pose,
+                                                      const std::string& socketName) {
     int si = skeleton.findSocket(socketName);
-    if (si < 0) return false;
+    if (si < 0) return std::nullopt;
     const Socket& s = skeleton.sockets[si];
-    if (s.bone < 0 || s.bone >= (int)skeleton.bones.size()) return false;
+    if (s.bone < 0 || s.bone >= (int)skeleton.bones.size()) return std::nullopt;
 
     std::vector<float> world;
     computeWorldMatrices(skeleton, pose, world);
-    matMul(&world[s.bone * 16], s.offset, outMatrix);
-    return true;
+    std::array<float, 16> result;
+    matMul(&world[s.bone * 16], s.offset, result.data());
+    return result;
 }
 
 } // namespace bromesh

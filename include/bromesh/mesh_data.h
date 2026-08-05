@@ -27,6 +27,18 @@ struct MeshData {
     bool hasTangents() const { return tangents.size() / 4 == vertexCount(); }
     bool empty() const { return positions.empty(); }
 
+    /// Enforces size invariants across attribute streams and index buffer.
+    bool validate() const {
+        if (positions.size() % 3 != 0) return false;
+        size_t vc = vertexCount();
+        if (!normals.empty() && normals.size() != vc * 3) return false;
+        if (!uvs.empty() && uvs.size() != vc * 2) return false;
+        if (!colors.empty() && colors.size() != vc * 4) return false;
+        if (!tangents.empty() && tangents.size() != vc * 4) return false;
+        if (indices.size() % 3 != 0) return false;
+        return true;
+    }
+
     void clear() {
         positions.clear();
         normals.clear();
@@ -56,6 +68,14 @@ struct SkinData {
     std::vector<uint32_t> boneIndices; // 4 indices per vertex, stride 4
     std::vector<float> inverseBindMatrices; // 16 floats (mat4) per bone
     size_t boneCount = 0;
+
+    /// Enforces size invariants across bone weights and indices.
+    bool validate() const {
+        if (boneWeights.size() != boneIndices.size()) return false;
+        if (boneWeights.size() % 4 != 0) return false;
+        if (!inverseBindMatrices.empty() && inverseBindMatrices.size() != boneCount * 16) return false;
+        return true;
+    }
 };
 
 /// Morph target: per-vertex deltas.

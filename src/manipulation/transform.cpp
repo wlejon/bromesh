@@ -137,8 +137,8 @@ void mirrorMesh(MeshData& mesh, int axis) {
     }
 }
 
-void centerMesh(MeshData& mesh, float* outCenter) {
-    if (mesh.empty()) return;
+bromath::Vec3 centerMesh(MeshData& mesh) {
+    if (mesh.empty()) return {0.0f, 0.0f, 0.0f};
 
     const size_t vCount = mesh.vertexCount();
     float bmin[3] = {mesh.positions[0], mesh.positions[1], mesh.positions[2]};
@@ -154,13 +154,8 @@ void centerMesh(MeshData& mesh, float* outCenter) {
     float cy = (bmin[1] + bmax[1]) * 0.5f;
     float cz = (bmin[2] + bmax[2]) * 0.5f;
 
-    if (outCenter) {
-        outCenter[0] = cx;
-        outCenter[1] = cy;
-        outCenter[2] = cz;
-    }
-
     translateMesh(mesh, -cx, -cy, -cz);
+    return {cx, cy, cz};
 }
 
 } // namespace bromesh

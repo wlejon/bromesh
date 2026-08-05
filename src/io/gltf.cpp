@@ -802,6 +802,10 @@ GltfScene loadGLTF(const std::string&) { return {}; }
 bool saveGLTF(const MeshData&, const std::string&) { return false; }
 bool saveGLTF(const MeshData&, const SkinData*, const Skeleton*,
               const std::vector<Animation>&, const std::string&) { return false; }
+bool saveGLTF(const MeshData&,
+              std::optional<std::reference_wrapper<const SkinData>>,
+              std::optional<std::reference_wrapper<const Skeleton>>,
+              const std::vector<Animation>&, const std::string&) { return false; }
 #else
 bool saveGLTF(const MeshData& mesh, const std::string& path) {
     return saveGLTFImpl(mesh, nullptr, nullptr, {}, path);
@@ -812,6 +816,15 @@ bool saveGLTF(const MeshData& mesh,
               const std::vector<Animation>& animations,
               const std::string& path) {
     return saveGLTFImpl(mesh, skin, skeleton, animations, path);
+}
+bool saveGLTF(const MeshData& mesh,
+              std::optional<std::reference_wrapper<const SkinData>> skin,
+              std::optional<std::reference_wrapper<const Skeleton>> skeleton,
+              const std::vector<Animation>& animations,
+              const std::string& path) {
+    const SkinData* sk = skin ? &skin->get() : nullptr;
+    const Skeleton* skel = skeleton ? &skeleton->get() : nullptr;
+    return saveGLTFImpl(mesh, sk, skel, animations, path);
 }
 #endif
 

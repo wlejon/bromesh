@@ -29,4 +29,9 @@ MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
                     int paletteCount = 0, int filterMaterial = -1,
                     int borderX = 0, int borderY = 0, int borderZ = 0);
 
+/// Explicit overload for material-filtered meshing without a palette.
+MeshData greedyMesh(const uint8_t* voxels, int gridX, int gridY, int gridZ,
+                    float cellSize, int filterMaterial,
+                    int borderX = 0, int borderY = 0, int borderZ = 0);
+
 } // namespace bromesh

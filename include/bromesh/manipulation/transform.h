@@ -2,6 +2,8 @@
 
 #include "bromesh/mesh_data.h"
 
+#include <bromath/vec.h>
+
 namespace bromesh {
 
 /// Apply a 4x4 column-major transformation matrix to positions and normals.
@@ -28,6 +30,6 @@ void mirrorMesh(MeshData& mesh, int axis);
 
 /// Center the mesh so its bounding-box center is at the origin.
 /// Returns the translation that was applied (original center).
-void centerMesh(MeshData& mesh, float* outCenter = nullptr);
+bromath::Vec3 centerMesh(MeshData& mesh);
 
 } // namespace bromesh

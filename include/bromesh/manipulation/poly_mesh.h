@@ -125,8 +125,11 @@ public:
     bool isBoundaryVertex(int32_t vi) const;
 
     const std::vector<Vertex>&   vertices()  const { return vertices_; }
+    std::vector<Vertex>&         vertices()        { return vertices_; }
     const std::vector<HalfEdge>& halfEdges() const { return halfEdges_; }
+    std::vector<HalfEdge>&       halfEdges()       { return halfEdges_; }
     const std::vector<Face>&     faces()     const { return faces_; }
+    std::vector<Face>&           faces()           { return faces_; }
 
     /// Number of vertices bounding a face (3 for a triangle, 4 for a quad…).
     int faceVertexCount(int faceIdx) const;

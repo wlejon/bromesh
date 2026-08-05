@@ -43,6 +43,25 @@ struct GaussianSplatCloud {
     int shStride() const { return 3 * (shDegree + 1) * (shDegree + 1); }
     bool empty() const { return positions.empty(); }
 
+    /// Enforces size invariants across all component streams:
+    /// - positions size is a multiple of 3
+    /// - non-empty scales size == count() * 3
+    /// - non-empty rotations size == count() * 4
+    /// - non-empty opacities size == count()
+    /// - non-empty sh size == count() * (min(3, max(0, shDegree)) + 1)^2 * 3
+    bool validate() const {
+        if (positions.size() % 3 != 0) return false;
+        size_t c = count();
+        if (!scales.empty() && scales.size() != c * 3) return false;
+        if (!rotations.empty() && rotations.size() != c * 4) return false;
+        if (!opacities.empty() && opacities.size() != c) return false;
+        int deg = (shDegree < 0) ? 0 : ((shDegree > 3) ? 3 : shDegree);
+        int coeffs = (deg + 1) * (deg + 1);
+        size_t expectedShSize = c * static_cast<size_t>(coeffs * 3);
+        if (!sh.empty() && sh.size() != expectedShSize) return false;
+        return true;
+    }
+
     void clear() {
         positions.clear();
         scales.clear();
