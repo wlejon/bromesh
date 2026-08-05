@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -49,4 +50,8 @@ private:
 /// floats. Whitespace is ignored. Returns an empty vector on parse error.
 std::vector<Module> parseModules(std::string_view s);
 
+/// Serialize a module sequence to compact text form.
+std::string serializeModules(const std::vector<Module>& mods);
+
 } // namespace bromesh
+

@@ -1,4 +1,5 @@
 #include "bromesh/manipulation/subdivide.h"
+#include "bromesh/manipulation/weld.h"
 
 #include <algorithm>
 #include <cmath>
@@ -101,7 +102,7 @@ static MeshData subdivideMidpointOnce(const MeshData& mesh) {
 
 MeshData subdivideMidpoint(const MeshData& mesh, int iterations) {
     if (iterations <= 0) return mesh;
-    MeshData result = mesh;
+    MeshData result = weldVertices(mesh);
     for (int i = 0; i < iterations; ++i)
         result = subdivideMidpointOnce(result);
     return result;
@@ -302,7 +303,7 @@ static MeshData subdivideLoopOnce(const MeshData& mesh) {
 
 MeshData subdivideLoop(const MeshData& mesh, int iterations) {
     if (iterations <= 0) return mesh;
-    MeshData result = mesh;
+    MeshData result = weldVertices(mesh);
     for (int i = 0; i < iterations; ++i)
         result = subdivideLoopOnce(result);
     return result;
@@ -583,7 +584,7 @@ static MeshData subdivideCCOnce(const MeshData& mesh) {
 
 MeshData subdivideCatmullClark(const MeshData& mesh, int iterations) {
     if (iterations <= 0) return mesh;
-    MeshData result = mesh;
+    MeshData result = weldVertices(mesh);
     for (int i = 0; i < iterations; ++i)
         result = subdivideCCOnce(result);
     return result;

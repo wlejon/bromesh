@@ -1,4 +1,5 @@
 #include "bromesh/csg/boolean.h"
+#include "bromesh/manipulation/normals.h"
 
 #ifdef BROMESH_HAS_MANIFOLD
 #include <manifold/manifold.h>
@@ -113,7 +114,11 @@ MeshData booleanOp(const MeshData& a, const MeshData& b, BooleanOp op) {
         manifold::Manifold result = mA.Boolean(mB, toOpType(op));
         if (result.Status() != manifold::Manifold::Error::NoError) return {};
 
-        return fromMeshGL(result.GetMeshGL());
+        MeshData res = fromMeshGL(result.GetMeshGL());
+        if (!res.empty()) {
+            res = computeCreaseNormals(res);
+        }
+        return res;
     } catch (...) {
         return {};
     }
@@ -152,11 +157,11 @@ std::pair<MeshData, MeshData> splitByPlane(const MeshData& mesh,
 
         if (top.Status() == manifold::Manifold::Error::NoError &&
             top.NumTri() > 0) {
-            topMesh = fromMeshGL(top.GetMeshGL());
+            topMesh = computeCreaseNormals(fromMeshGL(top.GetMeshGL()));
         }
         if (bottom.Status() == manifold::Manifold::Error::NoError &&
             bottom.NumTri() > 0) {
-            bottomMesh = fromMeshGL(bottom.GetMeshGL());
+            bottomMesh = computeCreaseNormals(fromMeshGL(bottom.GetMeshGL()));
         }
 
         return {topMesh, bottomMesh};

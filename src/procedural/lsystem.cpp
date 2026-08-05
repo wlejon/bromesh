@@ -105,4 +105,24 @@ std::vector<Module> parseModules(std::string_view s) {
     return out;
 }
 
+std::string serializeModules(const std::vector<Module>& mods) {
+    std::string s;
+    s.reserve(mods.size() * 2);
+    char buf[64];
+    for (const auto& m : mods) {
+        s.push_back(m.symbol);
+        if (!m.params.empty()) {
+            s.push_back('(');
+            for (size_t i = 0; i < m.params.size(); i++) {
+                if (i) s.push_back(',');
+                std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(m.params[i]));
+                s += buf;
+            }
+            s.push_back(')');
+        }
+    }
+    return s;
+}
+
 } // namespace bromesh
+
