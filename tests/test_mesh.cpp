@@ -2182,9 +2182,16 @@ TEST(boolean_difference) {
     auto result = bromesh::booleanDifference(a, b);
     ASSERT(!result.empty(), "bool_diff: should produce non-empty result");
     ASSERT(result.triangleCount() > 0, "bool_diff: should have triangles");
-    // Result should have fewer vertices than the sum of both inputs
-    ASSERT(result.vertexCount() < a.vertexCount() + b.vertexCount(),
-           "bool_diff: should not just concatenate meshes");
+    // "Didn't just concatenate the inputs" is a volume property, not a vertex
+    // count one: booleanOp runs crease-normal splitting on its output, which
+    // duplicates vertices along the cut and can push the result past
+    // a.vertexCount() + b.vertexCount(). Concatenating A and B would sum their
+    // volumes; a real difference carves B's overlap out of A instead.
+    float volA = rawVolume(a);
+    float volResult = rawVolume(result);
+    ASSERT(volResult > 0.0f, "bool_diff: result should enclose positive volume");
+    ASSERT(volResult < volA - 0.01f,
+           "bool_diff: should remove B's overlap from A, not concatenate");
     // BBox should fit within A's bbox
     auto bboxA = bromesh::computeBBox(a);
     auto bboxR = bromesh::computeBBox(result);
@@ -3393,11 +3400,11 @@ TEST(transform_center) {
     auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
     bromesh::translateMesh(mesh, 10.0f, 20.0f, 30.0f);
 
-    float center[3];
-    bromesh::centerMesh(mesh, center);
+    bromath::Vec3 center = bromesh::centerMesh(mesh);
 
-    ASSERT(std::fabs(center[0] - 10.0f) < 0.01f, "center: original center X=10");
-    ASSERT(std::fabs(center[1] - 20.0f) < 0.01f, "center: original center Y=20");
+    ASSERT(std::fabs(center.x - 10.0f) < 0.01f, "center: original center X=10");
+    ASSERT(std::fabs(center.y - 20.0f) < 0.01f, "center: original center Y=20");
+    ASSERT(std::fabs(center.z - 30.0f) < 0.01f, "center: original center Z=30");
 
     // After centering, bbox center should be at origin
     auto bbox = bromesh::computeBBox(mesh);
