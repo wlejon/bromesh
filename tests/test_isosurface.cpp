@@ -38,6 +38,27 @@ TEST(marching_cubes_sphere) {
     ASSERT(mesh.vertexCount() <= 10000, "sphere should have at most 10000 vertices");
     ASSERT(mesh.triangleCount() >= 30, "sphere should have at least 30 triangles");
 
+    // Verify all vertices lie within 0.6 cellSize of analytic sphere surface
+    float cellSize = 1.0f;
+    bool allVertsNearSurface = true;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float dx = mesh.positions[v * 3 + 0] - cx;
+        float dy = mesh.positions[v * 3 + 1] - cy;
+        float dz = mesh.positions[v * 3 + 2] - cz;
+        float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::fabs(dist - radius) >= 0.6f * cellSize) {
+            allVertsNearSurface = false;
+            break;
+        }
+    }
+    ASSERT(allVertsNearSurface, "marching cubes: all vertices within 0.6 cellSize of sphere surface");
+
+    // Verify mesh volume matches analytic sphere volume V = 4/3 * pi * R^3 within 5%
+    float analyticVolume = (4.0f / 3.0f) * 3.14159265f * radius * radius * radius;
+    float meshVolume = bromesh::computeVolume(mesh);
+    ASSERT(std::fabs(meshVolume - analyticVolume) < 0.05f * analyticVolume,
+           "marching cubes: volume matches analytic sphere within 5%");
+
     // Verify normals are unit length
     bool allUnit = true;
     for (size_t v = 0; v < mesh.vertexCount(); ++v) {
@@ -106,6 +127,27 @@ TEST(surface_nets_sphere) {
     ASSERT(snMesh.vertexCount() >= 50, "surface nets sphere should have at least 50 vertices");
     ASSERT(snMesh.triangleCount() >= 50, "surface nets sphere should have at least 50 triangles");
 
+    // Verify all vertices lie within 0.6 cellSize of analytic sphere surface
+    float cellSize = 1.0f;
+    bool allVertsNearSurface = true;
+    for (size_t v = 0; v < snMesh.vertexCount(); ++v) {
+        float dx = snMesh.positions[v * 3 + 0] - cx;
+        float dy = snMesh.positions[v * 3 + 1] - cy;
+        float dz = snMesh.positions[v * 3 + 2] - cz;
+        float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::fabs(dist - radius) >= 0.6f * cellSize) {
+            allVertsNearSurface = false;
+            break;
+        }
+    }
+    ASSERT(allVertsNearSurface, "surface nets: all vertices within 0.6 cellSize of sphere surface");
+
+    // Verify mesh volume matches analytic sphere volume within 5%
+    float analyticVolume = (4.0f / 3.0f) * 3.14159265f * radius * radius * radius;
+    float meshVolume = bromesh::computeVolume(snMesh);
+    ASSERT(std::fabs(meshVolume - analyticVolume) < 0.05f * analyticVolume,
+           "surface nets: volume matches analytic sphere within 5%");
+
     // Now that marching cubes welds shared-edge vertices the two algorithms
     // produce comparable counts (surface nets: 1 vert per surface-containing
     // cell; welded MC: 1 vert per intersected cube edge). The original test
@@ -156,6 +198,27 @@ TEST(dual_contour_sphere) {
     ASSERT(mesh.vertexCount() >= 50, "dual contour sphere should have at least 50 vertices");
     ASSERT(mesh.triangleCount() >= 50, "dual contour sphere should have at least 50 triangles");
 
+    // Verify all vertices lie within 0.6 cellSize of analytic sphere surface
+    float cellSize = 1.0f;
+    bool allVertsNearSurface = true;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float dx = mesh.positions[v * 3 + 0] - cx;
+        float dy = mesh.positions[v * 3 + 1] - cy;
+        float dz = mesh.positions[v * 3 + 2] - cz;
+        float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::fabs(dist - radius) >= 0.6f * cellSize) {
+            allVertsNearSurface = false;
+            break;
+        }
+    }
+    ASSERT(allVertsNearSurface, "dual contour: all vertices within 0.6 cellSize of sphere surface");
+
+    // Verify mesh volume matches analytic sphere volume within 5%
+    float analyticVolume = (4.0f / 3.0f) * 3.14159265f * radius * radius * radius;
+    float meshVolume = bromesh::computeVolume(mesh);
+    ASSERT(std::fabs(meshVolume - analyticVolume) < 0.05f * analyticVolume,
+           "dual contour: volume matches analytic sphere within 5%");
+
     // Verify normals are unit length
     bool allUnit = true;
     for (size_t v = 0; v < mesh.vertexCount(); ++v) {
@@ -197,6 +260,30 @@ TEST(dual_contour_box_field) {
     ASSERT(mesh.hasNormals(), "dual contour box should have normals");
     ASSERT(mesh.vertexCount() >= 8, "dual contour box should have at least 8 vertices");
     ASSERT(mesh.triangleCount() >= 12, "dual contour box should have at least 12 triangles");
+
+    // Verify mesh volume matches analytic box volume (2*4)^3 = 512 within 5%
+    float analyticBoxVolume = (2.0f * halfExtent) * (2.0f * halfExtent) * (2.0f * halfExtent);
+    float meshVolume = bromesh::computeVolume(mesh);
+    ASSERT(std::fabs(meshVolume - analyticBoxVolume) < 0.05f * analyticBoxVolume,
+           "dual contour box: volume matches analytic box (512.0) within 5%");
+
+    // Assert that vertices lie near the bounding planes |x-cx| ~= 4.0, |y-cy| ~= 4.0, |z-cz| ~= 4.0 (within 0.5 cell size)
+    float cellSize = 1.0f;
+    bool allVertsNearBoxFaces = true;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float dx = std::fabs(mesh.positions[v * 3 + 0] - cx);
+        float dy = std::fabs(mesh.positions[v * 3 + 1] - cy);
+        float dz = std::fabs(mesh.positions[v * 3 + 2] - cz);
+        float maxD = std::max(dx, std::max(dy, dz));
+        if (std::fabs(maxD - halfExtent) > 0.5f * cellSize ||
+            dx > halfExtent + 0.5f * cellSize ||
+            dy > halfExtent + 0.5f * cellSize ||
+            dz > halfExtent + 0.5f * cellSize) {
+            allVertsNearBoxFaces = false;
+            break;
+        }
+    }
+    ASSERT(allVertsNearBoxFaces, "dual contour box: vertices lie near bounding planes within 0.5 cellSize");
 }
 
 TEST(transvoxel_uniform_lod) {
@@ -234,6 +321,27 @@ TEST(transvoxel_uniform_lod) {
            "transvoxel lod=0 no-neighbors should match marching cubes vertex count");
     ASSERT(tvMesh.triangleCount() == mcMesh.triangleCount(),
            "transvoxel lod=0 no-neighbors should match marching cubes triangle count");
+
+    // Verify all vertices lie within 0.6 cellSize of analytic sphere surface
+    float cellSize = 1.0f;
+    bool allVertsNearSurface = true;
+    for (size_t v = 0; v < tvMesh.vertexCount(); ++v) {
+        float dx = tvMesh.positions[v * 3 + 0] - cx;
+        float dy = tvMesh.positions[v * 3 + 1] - cy;
+        float dz = tvMesh.positions[v * 3 + 2] - cz;
+        float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::fabs(dist - radius) >= 0.6f * cellSize) {
+            allVertsNearSurface = false;
+            break;
+        }
+    }
+    ASSERT(allVertsNearSurface, "transvoxel: all vertices within 0.6 cellSize of sphere surface");
+
+    // Verify mesh volume matches analytic sphere volume V = 4/3 * pi * R^3 within 5%
+    float analyticVolume = (4.0f / 3.0f) * 3.14159265f * radius * radius * radius;
+    float meshVolume = bromesh::computeVolume(tvMesh);
+    ASSERT(std::fabs(meshVolume - analyticVolume) < 0.05f * analyticVolume,
+           "transvoxel: volume matches analytic sphere within 5%");
 }
 
 TEST(transvoxel_with_transition) {

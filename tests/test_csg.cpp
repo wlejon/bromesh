@@ -124,6 +124,89 @@ TEST(boolean_box_minus_sphere) {
            "bool_box_sphere: result should fit within cube bbox");
 }
 
+TEST(boolean_disjoint_cubes_exact_volume) {
+    // Cube A: size 1x1x1 at [-2.5, -1.5]^3 (center -2.0, volume 1.0)
+    auto a = bromesh::box(0.5f, 0.5f, 0.5f);
+    bromesh::translateMesh(a, -2.0f, -2.0f, -2.0f);
+
+    // Cube B: size 1x1x1 at [1.5, 2.5]^3 (center +2.0, volume 1.0)
+    auto b = bromesh::box(0.5f, 0.5f, 0.5f);
+    bromesh::translateMesh(b, 2.0f, 2.0f, 2.0f);
+
+    auto un = bromesh::booleanUnion(a, b);
+    ASSERT(std::fabs(rawVolume(un) - 2.0f) < 1e-3f, "disjoint union volume == 2.0");
+
+    auto isect = bromesh::booleanIntersection(a, b);
+    ASSERT(isect.empty() || isect.triangleCount() == 0 || rawVolume(isect) < 1e-3f,
+           "disjoint intersection is empty or volume == 0.0");
+
+    auto diff = bromesh::booleanDifference(a, b);
+    ASSERT(std::fabs(rawVolume(diff) - 1.0f) < 1e-3f, "disjoint difference volume == 1.0");
+}
+
+TEST(boolean_concentric_cubes_exact_volume) {
+    // Cube A: size 2x2x2 centered at origin (volume 8.0)
+    auto a = bromesh::box(1.0f, 1.0f, 1.0f);
+    // Cube B: size 1x1x1 centered at origin (volume 1.0)
+    auto b = bromesh::box(0.5f, 0.5f, 0.5f);
+
+    auto un = bromesh::booleanUnion(a, b);
+    ASSERT(std::fabs(rawVolume(un) - 8.0f) < 1e-3f, "concentric union volume == 8.0");
+
+    auto isect = bromesh::booleanIntersection(a, b);
+    ASSERT(std::fabs(rawVolume(isect) - 1.0f) < 1e-3f, "concentric intersection volume == 1.0");
+
+    auto diff = bromesh::booleanDifference(a, b);
+    ASSERT(std::fabs(rawVolume(diff) - 7.0f) < 1e-3f, "concentric difference volume == 7.0");
+}
+
+TEST(boolean_overlapping_cubes_exact_volume) {
+    // Box A at [-1, 1]^3 (size 2x2x2, volume 8.0)
+    auto a = bromesh::box(1.0f, 1.0f, 1.0f);
+    // Box B at [0, 2] x [-1, 1] x [-1, 1] (size 2x2x2, shifted +1 in X, volume 8.0)
+    auto b = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::translateMesh(b, 1.0f, 0.0f, 0.0f);
+
+    // Overlap is [0, 1] x [-1, 1] x [-1, 1] (volume 1 x 2 x 2 = 4.0)
+    auto un = bromesh::booleanUnion(a, b);
+    ASSERT(std::fabs(rawVolume(un) - 12.0f) < 1e-3f, "overlapping union volume == 12.0");
+
+    auto isect = bromesh::booleanIntersection(a, b);
+    ASSERT(std::fabs(rawVolume(isect) - 4.0f) < 1e-3f, "overlapping intersection volume == 4.0");
+
+    auto diff = bromesh::booleanDifference(a, b);
+    ASSERT(std::fabs(rawVolume(diff) - 4.0f) < 1e-3f, "overlapping difference volume == 4.0");
+}
+
+TEST(boolean_sphere_sphere_analytic_lens) {
+    // Two spheres of radius R=1.0 with center distance d=1.0
+    // Analytic lens volume V_lens = pi * (4R + d) * (2R - d)^2 / 12 = 5*pi/12 ~= 1.308997
+    // Analytic sphere volume V_s = 4/3 * pi * R^3 ~= 4.188790
+    auto a = bromesh::sphere(1.0f, 48, 32);
+    auto b = bromesh::sphere(1.0f, 48, 32);
+    bromesh::translateMesh(b, 1.0f, 0.0f, 0.0f);
+
+    const float expectedLens = 1.3089969f;
+    const float expectedSphere = 4.1887902f;
+    const float expectedUnion = 2.0f * expectedSphere - expectedLens; // ~= 7.0685835
+    const float expectedDiff = expectedSphere - expectedLens;        // ~= 2.8797933
+
+    auto isect = bromesh::booleanIntersection(a, b);
+    float volIsect = rawVolume(isect);
+    ASSERT(std::fabs(volIsect - expectedLens) < 0.05f * expectedLens,
+           "sphere lens intersection volume matches 5pi/12 within 5%");
+
+    auto un = bromesh::booleanUnion(a, b);
+    float volUnion = rawVolume(un);
+    ASSERT(std::fabs(volUnion - expectedUnion) < 0.05f * expectedUnion,
+           "sphere lens union volume matches 2*Vs - Vlens within 5%");
+
+    auto diff = bromesh::booleanDifference(a, b);
+    float volDiff = rawVolume(diff);
+    ASSERT(std::fabs(volDiff - expectedDiff) < 0.05f * expectedDiff,
+           "sphere lens difference volume matches Vs - Vlens within 5%");
+}
+
 TEST(polygon2d_square) {
     // A unit CCW square must triangulate into 2 triangles, 4 verts, area 1.
     std::vector<float> outer = {

@@ -344,6 +344,152 @@ TEST(subdivide_zero_iterations) {
            "subdiv_zero: 0 iterations should return same mesh");
 }
 
+TEST(subdivide_planar_patch_stays_on_plane) {
+    // Create planar quad in z=0 plane
+    bromesh::MeshData quad;
+    quad.positions = {
+        -1.0f, -1.0f, 0.0f,
+         1.0f, -1.0f, 0.0f,
+         1.0f,  1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f
+    };
+    quad.indices = {0, 1, 2,  0, 2, 3};
+
+    // Subdivide with Midpoint
+    auto midMesh = bromesh::subdivideMidpoint(quad, 2);
+    bool midOnPlane = true;
+    for (size_t v = 0; v < midMesh.vertexCount(); ++v) {
+        if (std::fabs(midMesh.positions[v * 3 + 2]) > 1e-5f) { midOnPlane = false; break; }
+    }
+    ASSERT(midOnPlane, "subdivide midpoint: all vertices stay on z=0 plane");
+
+    // Subdivide with Loop
+    auto loopMesh = bromesh::subdivideLoop(quad, 2);
+    bool loopOnPlane = true;
+    for (size_t v = 0; v < loopMesh.vertexCount(); ++v) {
+        if (std::fabs(loopMesh.positions[v * 3 + 2]) > 1e-5f) { loopOnPlane = false; break; }
+    }
+    ASSERT(loopOnPlane, "subdivide loop: all vertices stay on z=0 plane");
+
+    // Subdivide with Catmull-Clark
+    auto ccMesh = bromesh::subdivideCatmullClark(quad, 2);
+    bool ccOnPlane = true;
+    for (size_t v = 0; v < ccMesh.vertexCount(); ++v) {
+        if (std::fabs(ccMesh.positions[v * 3 + 2]) > 1e-5f) { ccOnPlane = false; break; }
+    }
+    ASSERT(ccOnPlane, "subdivide catmull-clark: all vertices stay on z=0 plane");
+}
+
+TEST(subdivide_catmull_clark_cube_position_validation) {
+    // Unit cube [-0.5, 0.5]^3
+    auto cube = bromesh::box(0.5f, 0.5f, 0.5f);
+    auto cc = bromesh::subdivideCatmullClark(cube, 1);
+
+    auto hasPoint = [&](float x, float y, float z, float tol = 1e-4f) -> bool {
+        for (size_t v = 0; v < cc.vertexCount(); ++v) {
+            float dx = std::fabs(cc.positions[v * 3 + 0] - x);
+            float dy = std::fabs(cc.positions[v * 3 + 1] - y);
+            float dz = std::fabs(cc.positions[v * 3 + 2] - z);
+            if (dx < tol && dy < tol && dz < tol) return true;
+        }
+        return false;
+    };
+
+    // Face centroid / diagonal edge points at (+-0.5, 0, 0), (0, +-0.5, 0), (0, 0, +-0.5)
+    float faceCentroids[6][3] = {
+        { 0.5f, 0.0f, 0.0f}, {-0.5f, 0.0f, 0.0f},
+        { 0.0f, 0.5f, 0.0f}, { 0.0f,-0.5f, 0.0f},
+        { 0.0f, 0.0f, 0.5f}, { 0.0f, 0.0f,-0.5f}
+    };
+    bool allFaceCentroidsPresent = true;
+    for (int i = 0; i < 6; ++i) {
+        if (!hasPoint(faceCentroids[i][0], faceCentroids[i][1], faceCentroids[i][2])) {
+            allFaceCentroidsPresent = false;
+            break;
+        }
+    }
+    ASSERT(allFaceCentroidsPresent, "catmull-clark cube: face centroids present at (+-0.5, 0, 0), (0, +-0.5, 0), (0, 0, +-0.5)");
+
+    // Face triangle centroids: (+-0.5, +-1/6, +-1/6) and permutations
+    const float oneSixth = 1.0f / 6.0f;
+    ASSERT(hasPoint(0.5f, -oneSixth, -oneSixth) && hasPoint(0.5f, oneSixth, oneSixth),
+           "catmull-clark cube: triangle centroids match 1/3*(v0+v1+v2)");
+
+    // All vertex positions in cc must match Catmull-Clark subdivision mask
+    // Output vertex count: 8 moved original + 18 edge points + 12 face points = 38
+    ASSERT(cc.vertexCount() == 38, "catmull-clark cube: 38 vertices (8 moved + 18 edge + 12 face)");
+    ASSERT(cc.triangleCount() == 72, "catmull-clark cube: 12 * 6 = 72 triangles");
+}
+
+TEST(subdivide_loop_octahedron_position_validation) {
+    // Octahedron with 6 vertices at (+-1, 0, 0), (0, +-1, 0), (0, 0, +-1)
+    bromesh::MeshData oct;
+    oct.positions = {
+         1.0f,  0.0f,  0.0f, // 0: +X
+        -1.0f,  0.0f,  0.0f, // 1: -X
+         0.0f,  1.0f,  0.0f, // 2: +Y
+         0.0f, -1.0f,  0.0f, // 3: -Y
+         0.0f,  0.0f,  1.0f, // 4: +Z
+         0.0f,  0.0f, -1.0f  // 5: -Z
+    };
+    oct.indices = {
+        4, 0, 2,   4, 2, 1,   4, 1, 3,   4, 3, 0,
+        5, 2, 0,   5, 1, 2,   5, 3, 1,   5, 0, 3
+    };
+
+    auto result = bromesh::subdivideLoop(oct, 1);
+    ASSERT(result.vertexCount() == 18, "subdivide loop octahedron: 6 original + 12 edge vertices = 18");
+    ASSERT(result.triangleCount() == 32, "subdivide loop octahedron: 8 * 4 = 32 triangles");
+
+    auto hasPoint = [&](float x, float y, float z, float tol = 1e-4f) -> bool {
+        for (size_t v = 0; v < result.vertexCount(); ++v) {
+            float dx = std::fabs(result.positions[v * 3 + 0] - x);
+            float dy = std::fabs(result.positions[v * 3 + 1] - y);
+            float dz = std::fabs(result.positions[v * 3 + 2] - z);
+            if (dx < tol && dy < tol && dz < tol) return true;
+        }
+        return false;
+    };
+
+    // For an octahedron, each vertex has valence n=4.
+    // Loop formula: beta = 3 / (8 * 4) = 3/32.
+    // Self weight = 1 - 4 * (3/32) = 20/32 = 5/8 = 0.625.
+    // Since the 4 neighbors sum to 0, v' = 0.625 * v.
+    float origMoved[6][3] = {
+        { 0.625f,  0.000f,  0.000f},
+        {-0.625f,  0.000f,  0.000f},
+        { 0.000f,  0.625f,  0.000f},
+        { 0.000f, -0.625f,  0.000f},
+        { 0.000f,  0.000f,  0.625f},
+        { 0.000f,  0.000f, -0.625f}
+    };
+    bool allMovedOrigMatch = true;
+    for (int i = 0; i < 6; ++i) {
+        if (!hasPoint(origMoved[i][0], origMoved[i][1], origMoved[i][2])) {
+            allMovedOrigMatch = false;
+            break;
+        }
+    }
+    ASSERT(allMovedOrigMatch, "subdivide loop octahedron: moved original vertices match 0.625 * v");
+
+    // Edge points: for edge between a and b with opposite vertices c and d:
+    // e' = 3/8*(a + b) + 1/8*(c + d) = 3/8*(a + b) + 1/8*(0) = 0.375*(a + b).
+    // The 12 edge points are (+-0.375, +-0.375, 0), (+-0.375, 0, +-0.375), (0, +-0.375, +-0.375).
+    float signs[2] = {-1.0f, 1.0f};
+    bool allEdgePointsMatch = true;
+    for (float sx : signs) {
+        for (float sy : signs) {
+            if (!hasPoint(sx * 0.375f, sy * 0.375f, 0.0f) ||
+                !hasPoint(sx * 0.375f, 0.0f, sy * 0.375f) ||
+                !hasPoint(0.0f, sx * 0.375f, sy * 0.375f)) {
+                allEdgePointsMatch = false;
+                break;
+            }
+        }
+    }
+    ASSERT(allEdgePointsMatch, "subdivide loop octahedron: edge points match 3/8*(a+b) = (+-0.375, +-0.375, 0) etc.");
+}
+
 TEST(smooth_laplacian_sphere) {
     auto mesh = bromesh::sphere(1.0f, 8, 6);
     bromesh::computeNormals(mesh);
