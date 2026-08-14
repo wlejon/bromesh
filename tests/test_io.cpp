@@ -81,6 +81,9 @@ TEST(obj_roundtrip) {
     ASSERT(loaded.triangleCount() == origTris, "OBJ roundtrip triangle count should match");
     ASSERT(loaded.hasNormals(), "OBJ roundtrip should preserve normals");
     ASSERT(loaded.hasUVs(), "OBJ roundtrip should preserve UVs");
+    ASSERT(positionsMatch(b, loaded, 1e-4f), "OBJ roundtrip positions match elementwise");
+    ASSERT(normalsMatch(b, loaded, 1e-3f), "OBJ roundtrip normals match elementwise");
+    ASSERT(uvsMatch(b, loaded, 1e-4f), "OBJ roundtrip UVs match elementwise");
 
     std::remove(objPath.c_str());
 }
@@ -471,329 +474,6 @@ TEST(stl_rt_greedy_mesh_voxel_block) {
     std::remove(path.c_str());
 }
 
-
-#if BROMESH_HAS_GLTF
-TEST(gltf_rt_box_with_all_uv_types) {
-    // Box -> each UV projection type -> glTF roundtrip
-    bromesh::ProjectionType types[] = {
-        bromesh::ProjectionType::Box,
-        bromesh::ProjectionType::PlanarXY,
-        bromesh::ProjectionType::PlanarXZ,
-        bromesh::ProjectionType::PlanarYZ,
-        bromesh::ProjectionType::Cylindrical,
-        bromesh::ProjectionType::Spherical
-    };
-    const char* names[] = { "Box", "PlanarXY", "PlanarXZ", "PlanarYZ", "Cylindrical", "Spherical" };
-
-    for (int t = 0; t < 6; ++t) {
-        auto mesh = bromesh::box(1.0f, 1.5f, 2.0f);
-        mesh.uvs.clear();
-        bromesh::projectUVs(mesh, types[t], 1.0f);
-        ASSERT(mesh.hasUVs(), "gltf_rt_box_uvs: has UVs");
-
-        std::string path = std::string(testDir) + "rt_box_" + names[t] + ".glb";
-        ASSERT(bromesh::saveGLTF(mesh, path), "gltf_rt_box_uvs: save");
-        auto scene = bromesh::loadGLTF(path);
-        ASSERT(!scene.meshes.empty(), "gltf_rt_box_uvs: loaded scene has meshes");
-        auto& loaded = scene.meshes[0];
-        ASSERT(loaded.vertexCount() == mesh.vertexCount(),
-               "gltf_rt_box_uvs: vertex count");
-        ASSERT(loaded.triangleCount() == mesh.triangleCount(),
-               "gltf_rt_box_uvs: tri count");
-        ASSERT(positionsMatch(mesh, loaded, 1e-4f),
-               "gltf_rt_box_uvs: positions match");
-        ASSERT(loaded.hasNormals(), "gltf_rt_box_uvs: normals preserved");
-        ASSERT(loaded.hasUVs(), "gltf_rt_box_uvs: UVs preserved");
-        ASSERT(uvsMatch(mesh, loaded, 1e-4f), "gltf_rt_box_uvs: UVs match");
-        std::remove(path.c_str());
-    }
-}
-
-TEST(gltf_rt_sphere_simplified_cylindrical) {
-    // Sphere -> simplify -> recompute normals -> cylindrical UVs -> glTF roundtrip
-    auto mesh = bromesh::sphere(2.5f, 32, 24);
-    mesh = bromesh::simplify(mesh, 0.4f);
-    bromesh::computeNormals(mesh);
-    mesh.uvs.clear();
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::Cylindrical, 1.0f);
-
-    std::string path = std::string(testDir) + "rt_sphere_simp.glb";
-    ASSERT(bromesh::saveGLTF(mesh, path), "gltf_rt_sphere_simp: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_sphere_simp: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == mesh.vertexCount(), "gltf_rt_sphere_simp: vertex count");
-    ASSERT(loaded.triangleCount() == mesh.triangleCount(), "gltf_rt_sphere_simp: tri count");
-    ASSERT(positionsMatch(mesh, loaded, 1e-4f), "gltf_rt_sphere_simp: positions");
-    ASSERT(normalsMatch(mesh, loaded, 1e-3f), "gltf_rt_sphere_simp: normals");
-    ASSERT(uvsMatch(mesh, loaded, 1e-4f), "gltf_rt_sphere_simp: UVs");
-    std::remove(path.c_str());
-}
-
-TEST(gltf_rt_torus_flat_normals_optimized) {
-    // Torus -> flat normals -> vertex cache + fetch optimize -> box UVs -> glTF
-    auto mesh = bromesh::torus(2.0f, 0.7f, 24, 12);
-    mesh = bromesh::computeFlatNormals(mesh);
-    bromesh::optimizeVertexCache(mesh);
-    bromesh::optimizeVertexFetch(mesh);
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::Box, 1.0f);
-
-    std::string path = std::string(testDir) + "rt_torus_flat_opt.glb";
-    ASSERT(bromesh::saveGLTF(mesh, path), "gltf_rt_torus_flat: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_torus_flat: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == mesh.vertexCount(), "gltf_rt_torus_flat: vertex count");
-    ASSERT(loaded.triangleCount() == mesh.triangleCount(), "gltf_rt_torus_flat: tri count");
-    ASSERT(positionsMatch(mesh, loaded, 1e-4f), "gltf_rt_torus_flat: positions");
-    ASSERT(normalsMatch(mesh, loaded, 1e-3f), "gltf_rt_torus_flat: normals");
-    std::remove(path.c_str());
-}
-
-TEST(gltf_rt_marching_cubes_welded) {
-    // Marching cubes -> weld -> recompute normals -> spherical UVs -> glTF
-    const int N = 16;
-    float field[N * N * N];
-    fillSphereField(field, N, 5.0f);
-    auto mesh = bromesh::marchingCubes(field, N, N, N, 0.0f, 1.0f);
-    mesh = bromesh::weldVertices(mesh, 1e-5f);
-    bromesh::computeNormals(mesh);
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::Spherical, 1.0f);
-
-    std::string path = std::string(testDir) + "rt_mc_weld.glb";
-    ASSERT(bromesh::saveGLTF(mesh, path), "gltf_rt_mc_weld: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_mc_weld: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == mesh.vertexCount(), "gltf_rt_mc_weld: vertex count");
-    ASSERT(loaded.triangleCount() == mesh.triangleCount(), "gltf_rt_mc_weld: tri count");
-    ASSERT(positionsMatch(mesh, loaded, 1e-4f), "gltf_rt_mc_weld: positions");
-    ASSERT(loaded.hasNormals(), "gltf_rt_mc_weld: normals");
-    ASSERT(loaded.hasUVs(), "gltf_rt_mc_weld: UVs");
-    std::remove(path.c_str());
-}
-
-TEST(gltf_rt_surface_nets_lod_chain) {
-    // Surface nets -> LOD chain -> LOD 0 -> recompute normals -> glTF
-    const int N = 16;
-    float field[N * N * N];
-    fillSphereField(field, N, 5.0f);
-    auto mesh = bromesh::surfaceNets(field, N, N, N, 0.0f, 1.0f);
-    float ratios[] = { 0.5f };
-    auto chain = bromesh::generateLODChain(mesh, ratios, 1);
-    ASSERT(!chain.empty() && !chain[0].empty(), "gltf_rt_sn_lod: chain not empty");
-    auto& lod = chain[0];
-    bromesh::computeNormals(lod);
-    bromesh::projectUVs(lod, bromesh::ProjectionType::Cylindrical, 1.0f);
-
-    std::string path = std::string(testDir) + "rt_sn_lod.glb";
-    ASSERT(bromesh::saveGLTF(lod, path), "gltf_rt_sn_lod: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_sn_lod: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == lod.vertexCount(), "gltf_rt_sn_lod: vertex count");
-    ASSERT(loaded.triangleCount() == lod.triangleCount(), "gltf_rt_sn_lod: tri count");
-    ASSERT(positionsMatch(lod, loaded, 1e-4f), "gltf_rt_sn_lod: positions");
-    ASSERT(loaded.hasNormals(), "gltf_rt_sn_lod: normals");
-    std::remove(path.c_str());
-}
-
-TEST(gltf_rt_dual_contour_overdraw_opt) {
-    // Dual contour -> overdraw optimize -> planar XY UVs -> glTF
-    const int N = 16;
-    float field[N * N * N];
-    fillSphereField(field, N, 5.0f);
-    auto mesh = bromesh::dualContour(field, N, N, N, 0.0f, 1.0f);
-    bromesh::computeNormals(mesh);
-    bromesh::optimizeOverdraw(mesh, 1.05f);
-    mesh.uvs.clear();
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::PlanarXY, 1.0f);
-
-    std::string path = std::string(testDir) + "rt_dc_od.glb";
-    ASSERT(bromesh::saveGLTF(mesh, path), "gltf_rt_dc_od: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_dc_od: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == mesh.vertexCount(), "gltf_rt_dc_od: vertex count");
-    ASSERT(loaded.triangleCount() == mesh.triangleCount(), "gltf_rt_dc_od: tri count");
-    ASSERT(positionsMatch(mesh, loaded, 1e-4f), "gltf_rt_dc_od: positions");
-    ASSERT(loaded.hasUVs(), "gltf_rt_dc_od: UVs preserved");
-    std::remove(path.c_str());
-}
-
-TEST(gltf_rt_capsule_full_pipeline) {
-    // Capsule -> weld -> simplify -> flat normals -> all optimizations -> glTF
-    auto mesh = bromesh::capsule(1.0f, 2.0f, 24, 12);
-    mesh = bromesh::weldVertices(mesh, 1e-5f);
-    mesh = bromesh::simplify(mesh, 0.5f);
-    mesh = bromesh::computeFlatNormals(mesh);
-    bromesh::optimizeVertexCache(mesh);
-    bromesh::optimizeOverdraw(mesh, 1.05f);
-    bromesh::optimizeVertexFetch(mesh);
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::Spherical, 1.0f);
-
-    std::string path = std::string(testDir) + "rt_capsule_full.glb";
-    ASSERT(bromesh::saveGLTF(mesh, path), "gltf_rt_capsule_full: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_capsule_full: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == mesh.vertexCount(), "gltf_rt_capsule_full: vertex count");
-    ASSERT(loaded.triangleCount() == mesh.triangleCount(), "gltf_rt_capsule_full: tri count");
-    ASSERT(positionsMatch(mesh, loaded, 1e-4f), "gltf_rt_capsule_full: positions");
-    ASSERT(normalsMatch(mesh, loaded, 1e-3f), "gltf_rt_capsule_full: normals");
-    ASSERT(uvsMatch(mesh, loaded, 1e-4f), "gltf_rt_capsule_full: UVs");
-    std::remove(path.c_str());
-}
-
-TEST(gltf_rt_heightmap_simplified) {
-    // Heightmap -> simplify -> recompute normals -> box UVs -> glTF
-    float heights[49];
-    for (int i = 0; i < 49; ++i)
-        heights[i] = std::sin(i * 0.4f) * std::cos(i * 0.2f) * 3.0f;
-    auto mesh = bromesh::heightmapGrid(heights, 7, 7, 0.5f);
-    mesh = bromesh::simplify(mesh, 0.5f);
-    bromesh::computeNormals(mesh);
-    mesh.uvs.clear();
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::Box, 1.0f);
-
-    std::string path = std::string(testDir) + "rt_hm_simp.glb";
-    ASSERT(bromesh::saveGLTF(mesh, path), "gltf_rt_hm_simp: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_hm_simp: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == mesh.vertexCount(), "gltf_rt_hm_simp: vertex count");
-    ASSERT(loaded.triangleCount() == mesh.triangleCount(), "gltf_rt_hm_simp: tri count");
-    ASSERT(positionsMatch(mesh, loaded, 1e-4f), "gltf_rt_hm_simp: positions");
-    ASSERT(loaded.hasNormals(), "gltf_rt_hm_simp: normals");
-    ASSERT(loaded.hasUVs(), "gltf_rt_hm_simp: UVs");
-    std::remove(path.c_str());
-}
-
-TEST(gltf_rt_transvoxel_with_transition) {
-    // Transvoxel with LOD transition -> weld -> normals -> glTF
-    const int N = 17;
-    float field[N * N * N];
-    fillSphereField(field, N, 6.0f);
-    int neighborLods[6] = { 1, -1, -1, -1, -1, -1 };
-    auto mesh = bromesh::transvoxel(field, N, 0, neighborLods, 0.0f, 1.0f);
-    mesh = bromesh::weldVertices(mesh, 1e-4f);
-    bromesh::computeNormals(mesh);
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::PlanarXZ, 1.0f);
-
-    std::string path = std::string(testDir) + "rt_tv_trans.glb";
-    ASSERT(bromesh::saveGLTF(mesh, path), "gltf_rt_tv_trans: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_tv_trans: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == mesh.vertexCount(), "gltf_rt_tv_trans: vertex count");
-    ASSERT(loaded.triangleCount() == mesh.triangleCount(), "gltf_rt_tv_trans: tri count");
-    ASSERT(positionsMatch(mesh, loaded, 1e-4f), "gltf_rt_tv_trans: positions");
-    ASSERT(loaded.hasNormals(), "gltf_rt_tv_trans: normals");
-    std::remove(path.c_str());
-}
-
-TEST(gltf_rt_greedy_mesh_voxel) {
-    // Greedy mesh single voxel -> strip colors -> add normals + UVs -> glTF
-    uint8_t voxels[27] = {};
-    voxels[1 * 3 * 3 + 1 * 3 + 1] = 1;
-    auto mesh = bromesh::greedyMesh(voxels, 3, 3, 3, 1.0f);
-    mesh.colors.clear(); // glTF saver doesn't write colors, strip them
-    bromesh::computeNormals(mesh);
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::Box, 1.0f);
-
-    std::string path = std::string(testDir) + "rt_greedy.glb";
-    ASSERT(bromesh::saveGLTF(mesh, path), "gltf_rt_greedy: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_greedy: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == mesh.vertexCount(), "gltf_rt_greedy: vertex count");
-    ASSERT(loaded.triangleCount() == mesh.triangleCount(), "gltf_rt_greedy: tri count");
-    ASSERT(positionsMatch(mesh, loaded, 1e-4f), "gltf_rt_greedy: positions");
-    ASSERT(loaded.hasNormals(), "gltf_rt_greedy: normals");
-    ASSERT(loaded.hasUVs(), "gltf_rt_greedy: UVs");
-    std::remove(path.c_str());
-}
-
-TEST(gltf_rt_plane_subdivided_all_ops) {
-    // Plane 8x8 -> smooth normals -> spherical UVs -> all optimizations -> glTF
-    auto mesh = bromesh::plane(4.0f, 4.0f, 8, 8);
-    bromesh::computeNormals(mesh);
-    mesh.uvs.clear();
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::Spherical, 1.0f);
-    bromesh::optimizeVertexCache(mesh);
-    bromesh::optimizeOverdraw(mesh, 1.05f);
-    bromesh::optimizeVertexFetch(mesh);
-
-    std::string path = std::string(testDir) + "rt_plane_all.glb";
-    ASSERT(bromesh::saveGLTF(mesh, path), "gltf_rt_plane_all: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_plane_all: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == mesh.vertexCount(), "gltf_rt_plane_all: vertex count");
-    ASSERT(loaded.triangleCount() == mesh.triangleCount(), "gltf_rt_plane_all: tri count");
-    ASSERT(positionsMatch(mesh, loaded, 1e-4f), "gltf_rt_plane_all: positions");
-    ASSERT(normalsMatch(mesh, loaded, 1e-3f), "gltf_rt_plane_all: normals");
-    ASSERT(uvsMatch(mesh, loaded, 1e-4f), "gltf_rt_plane_all: UVs");
-    std::remove(path.c_str());
-}
-
-TEST(gltf_rt_cylinder_weld_simplify_lod) {
-    // Cylinder -> weld -> simplify -> LOD chain -> LOD 1 -> normals + UVs -> glTF
-    auto mesh = bromesh::cylinder(2.0f, 3.0f, 32);
-    mesh = bromesh::weldVertices(mesh, 1e-5f);
-    float ratios[] = { 0.6f, 0.3f };
-    auto chain = bromesh::generateLODChain(mesh, ratios, 2);
-    ASSERT(chain.size() == 2, "gltf_rt_cyl_lod: 2 LOD levels");
-    auto& lod = chain[1];
-    bromesh::computeNormals(lod);
-    bromesh::projectUVs(lod, bromesh::ProjectionType::Cylindrical, 1.0f);
-
-    std::string path = std::string(testDir) + "rt_cyl_lod1.glb";
-    ASSERT(bromesh::saveGLTF(lod, path), "gltf_rt_cyl_lod: save");
-    auto scene = bromesh::loadGLTF(path);
-    ASSERT(!scene.meshes.empty(), "gltf_rt_cyl_lod: has meshes");
-    auto& loaded = scene.meshes[0];
-    ASSERT(loaded.vertexCount() == lod.vertexCount(), "gltf_rt_cyl_lod: vertex count");
-    ASSERT(loaded.triangleCount() == lod.triangleCount(), "gltf_rt_cyl_lod: tri count");
-    ASSERT(positionsMatch(lod, loaded, 1e-4f), "gltf_rt_cyl_lod: positions");
-    ASSERT(loaded.hasNormals(), "gltf_rt_cyl_lod: normals");
-    ASSERT(loaded.hasUVs(), "gltf_rt_cyl_lod: UVs");
-    std::remove(path.c_str());
-}
-
-TEST(glb_vs_gltf_consistency) {
-    // Same mesh saved as .glb and .gltf should load identically
-    auto mesh = bromesh::torus(1.5f, 0.5f, 16, 8);
-    bromesh::computeNormals(mesh);
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::Box, 1.0f);
-
-    std::string glbPath = std::string(testDir) + "rt_consistency.glb";
-    std::string gltfPath = std::string(testDir) + "rt_consistency.gltf";
-    ASSERT(bromesh::saveGLTF(mesh, glbPath), "glb_vs_gltf: save glb");
-    ASSERT(bromesh::saveGLTF(mesh, gltfPath), "glb_vs_gltf: save gltf");
-
-    auto glbScene = bromesh::loadGLTF(glbPath);
-    auto gltfScene = bromesh::loadGLTF(gltfPath);
-    ASSERT(!glbScene.meshes.empty(), "glb_vs_gltf: glb loaded");
-    ASSERT(!gltfScene.meshes.empty(), "glb_vs_gltf: gltf loaded");
-
-    auto& glbMesh = glbScene.meshes[0];
-    auto& gltfMesh = gltfScene.meshes[0];
-    ASSERT(glbMesh.vertexCount() == gltfMesh.vertexCount(), "glb_vs_gltf: vertex count");
-    ASSERT(glbMesh.triangleCount() == gltfMesh.triangleCount(), "glb_vs_gltf: tri count");
-    ASSERT(positionsMatch(glbMesh, gltfMesh, 1e-5f), "glb_vs_gltf: positions match");
-    ASSERT(normalsMatch(glbMesh, gltfMesh, 1e-5f), "glb_vs_gltf: normals match");
-    ASSERT(uvsMatch(glbMesh, gltfMesh, 1e-5f), "glb_vs_gltf: UVs match");
-
-    std::remove(glbPath.c_str());
-    std::remove(gltfPath.c_str());
-    // Also remove the .bin sidecar from gltf save
-    std::string binPath = std::string(testDir) + "rt_consistency.bin";
-    std::remove(binPath.c_str());
-}
-
-#endif // BROMESH_HAS_GLTF
-
 TEST(cross_format_obj_stl_obj) {
     // Sphere -> OBJ -> load -> STL -> load -> compare bboxes and volume
     auto mesh = bromesh::sphere(2.0f, 24, 16);
@@ -821,46 +501,6 @@ TEST(cross_format_obj_stl_obj) {
     std::remove(stlPath.c_str());
 }
 
-
-#if BROMESH_HAS_GLTF
-TEST(cross_format_gltf_obj_stl) {
-    // Complex pipeline -> glTF -> OBJ -> STL -> compare
-    auto mesh = bromesh::capsule(1.5f, 2.0f, 20, 10);
-    mesh = bromesh::simplify(mesh, 0.6f);
-    bromesh::computeNormals(mesh);
-    bromesh::projectUVs(mesh, bromesh::ProjectionType::Box, 1.0f);
-    auto origBBox = meshBBox(mesh);
-
-    std::string glbPath = std::string(testDir) + "rt_cross2.glb";
-    std::string objPath = std::string(testDir) + "rt_cross2.obj";
-    std::string stlPath = std::string(testDir) + "rt_cross2.stl";
-
-    // Save as glTF, reload
-    ASSERT(bromesh::saveGLTF(mesh, glbPath), "cross_gltf: save glb");
-    auto scene = bromesh::loadGLTF(glbPath);
-    ASSERT(!scene.meshes.empty(), "cross_gltf: load glb");
-    auto& fromGltf = scene.meshes[0];
-    ASSERT(positionsMatch(mesh, fromGltf, 1e-4f), "cross_gltf: glb positions");
-
-    // Save glTF result as OBJ, reload
-    bromesh::projectUVs(fromGltf, bromesh::ProjectionType::Box, 1.0f);
-    ASSERT(bromesh::saveOBJ(fromGltf, objPath), "cross_gltf: save obj");
-    auto fromObj = bromesh::loadOBJ(objPath);
-    ASSERT(fromObj.vertexCount() == fromGltf.vertexCount(), "cross_gltf: obj vertex count");
-
-    // Save OBJ result as STL, reload
-    ASSERT(bromesh::saveSTL(fromObj, stlPath), "cross_gltf: save stl");
-    auto fromStl = bromesh::loadSTL(stlPath);
-    auto stlBBox = meshBBox(fromStl);
-    ASSERT(bboxMatch(origBBox, stlBBox, 0.05f), "cross_gltf: bbox through gltf->obj->stl");
-
-    std::remove(glbPath.c_str());
-    std::remove(objPath.c_str());
-    std::remove(stlPath.c_str());
-}
-
-#endif // BROMESH_HAS_GLTF
-
 TEST(ply_roundtrip_box) {
     auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
     bromesh::computeNormals(mesh);
@@ -875,6 +515,8 @@ TEST(ply_roundtrip_box) {
     ASSERT(loaded.triangleCount() == mesh.triangleCount(),
            "ply_roundtrip: triangle count should match");
     ASSERT(loaded.hasNormals(), "ply_roundtrip: should have normals");
+    ASSERT(positionsMatch(mesh, loaded, 1e-4f), "ply_roundtrip: positions match elementwise");
+    ASSERT(normalsMatch(mesh, loaded, 1e-3f), "ply_roundtrip: normals match elementwise");
 
     std::remove("test_box.ply");
 }
@@ -917,7 +559,6 @@ TEST(ply_cross_format_obj_to_ply) {
     std::remove("test_sphere.ply");
 }
 
-
 #ifdef BROMESH_HAS_OPENFBX
 TEST(fbx_api_smoke) {
     // Just verify the API compiles and doesn't crash on non-existent file
@@ -925,4 +566,60 @@ TEST(fbx_api_smoke) {
     ASSERT(meshes.empty(), "fbx_smoke: non-existent file should return empty");
 }
 
+TEST(fbx_parsing_valid_file) {
+    // Load existing test FBX file from third_party/OpenFBX/runtime/b.fbx
+    const char* candidates[] = {
+        "third_party/OpenFBX/runtime/b.fbx",
+        "../third_party/OpenFBX/runtime/b.fbx",
+        "../../third_party/OpenFBX/runtime/b.fbx"
+    };
+    std::string foundPath;
+    for (const char* p : candidates) {
+        if (std::filesystem::exists(p)) {
+            foundPath = p;
+            break;
+        }
+    }
+    if (foundPath.empty()) {
+        // If file not found on disk, create minimal synthetic FBX ASCII file for test
+        foundPath = testFile("test_synthetic.fbx");
+        FILE* f = std::fopen(foundPath.c_str(), "w");
+        if (f) {
+            std::fputs(
+                "; FBX 7.4.0 project file\n"
+                "FBXHeaderExtension: {\n"
+                "  FBXHeaderVersion: 1003\n"
+                "  FBXVersion: 7400\n"
+                "}\n"
+                "Definitions: {\n"
+                "  Count: 1\n"
+                "  ObjectType: \"Geometry\" {\n"
+                "    Count: 1\n"
+                "  }\n"
+                "}\n"
+                "Objects: {\n"
+                "  Geometry: 1000, \"Geometry::Mesh\", \"Mesh\" {\n"
+                "    Vertices: *9 {\n"
+                "      a: 0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0,0.0\n"
+                "    }\n"
+                "    PolygonVertexIndex: *3 {\n"
+                "      a: 0,1,-3\n"
+                "    }\n"
+                "  }\n"
+                "}\n", f);
+            std::fclose(f);
+        }
+    }
+
+    auto meshes = bromesh::loadFBX(foundPath);
+    ASSERT(!meshes.empty(), "fbx_parsing: meshes should not be empty");
+    if (!meshes.empty()) {
+        ASSERT(meshes[0].vertexCount() > 0, "fbx_parsing: vertex count > 0");
+        ASSERT(meshes[0].triangleCount() > 0, "fbx_parsing: triangle count > 0");
+        ASSERT(!meshes[0].positions.empty(), "fbx_parsing: has positions");
+        auto bbox = bromesh::computeBBox(meshes[0]);
+        auto ext = bromath::aextent(bbox);
+        ASSERT(ext.x > 0.0f || ext.y > 0.0f || ext.z > 0.0f, "fbx_parsing: valid non-zero bounding box");
+    }
+}
 #endif // BROMESH_HAS_OPENFBX

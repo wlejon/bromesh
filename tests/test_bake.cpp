@@ -150,3 +150,193 @@ TEST(bake_texture_at_method) {
     ASSERT(tex.at(0, 8) == nullptr, "tex.at: out-of-bounds returns null");
 }
 
+TEST(bake_thickness_box_analytic) {
+    // A box of half-extents 1.0 is [-1, 1]^3 with size 2.0x2.0x2.0.
+    // The analytic thickness along face normals is exactly 2.0.
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(mesh);
+    bromesh::projectUVs(mesh, bromesh::ProjectionType::Box, 1.0f);
+
+    const float maxDist = 4.0f;
+    // 1 ray is shot along the inverted normal (sample 0 in golden spiral is dir = invN)
+    bromesh::bakeThickness(mesh, 1, maxDist);
+    ASSERT(mesh.hasColors(), "bake_thickness_box_analytic: has colors");
+
+    bool allCloseTo2 = true;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float rawThickness = mesh.colors[v * 4 + 0] * maxDist;
+        if (std::fabs(rawThickness - 2.0f) > 0.1f) {
+            allCloseTo2 = false;
+            break;
+        }
+    }
+    ASSERT(allCloseTo2, "bake_thickness_box_analytic: vertex thickness along face normals is 2.0 +- 0.1");
+
+    auto tex = bromesh::bakeThicknessToTexture(mesh, 16, 16, 1, maxDist);
+    ASSERT(!tex.pixels.empty(), "bake_thickness_box_analytic: tex has pixels");
+    bool texelsCloseTo2 = true;
+    int coveredCount = 0;
+    for (int y = 0; y < tex.height; ++y) {
+        for (int x = 0; x < tex.width; ++x) {
+            float val = *tex.at(x, y);
+            // Default uncovered texels are 1.0f
+            float rawThickness = val * maxDist;
+            if (std::fabs(rawThickness - 2.0f) <= 0.1f) {
+                coveredCount++;
+            } else if (std::fabs(val - 1.0f) > 1e-4f) {
+                texelsCloseTo2 = false;
+            }
+        }
+    }
+    ASSERT(coveredCount > 0, "bake_thickness_box_analytic: covered texels exist");
+    ASSERT(texelsCloseTo2, "bake_thickness_box_analytic: covered texels have thickness 2.0 +- 0.1");
+}
+
+TEST(bake_ao_sphere_analytic) {
+    // 1. Isolated convex sphere: no self-occluders, AO must be ~1.0 (> 0.85)
+    auto sphere = bromesh::sphere(1.0f, 16, 16);
+    bromesh::computeNormals(sphere);
+    bromesh::projectUVs(sphere, bromesh::ProjectionType::Spherical, 1.0f);
+
+    bromesh::bakeAmbientOcclusion(sphere, 32, 0.0f);
+    bool sphereAoUnoccluded = true;
+    for (size_t v = 0; v < sphere.vertexCount(); ++v) {
+        if (sphere.colors[v * 4 + 0] < 0.85f) {
+            sphereAoUnoccluded = false;
+            break;
+        }
+    }
+    ASSERT(sphereAoUnoccluded, "bake_ao_sphere_analytic: convex sphere AO > 0.85");
+
+    auto sphereTex = bromesh::bakeAmbientOcclusionToTexture(sphere, 16, 16, 32, 0.0f);
+    bool sphereTexAoHigh = true;
+    for (float ao : sphereTex.pixels) {
+        // Uncovered texels are 0, covered should be > 0.85
+        if (ao > 0.01f && ao < 0.85f) {
+            sphereTexAoHigh = false;
+            break;
+        }
+    }
+    ASSERT(sphereTexAoHigh, "bake_ao_sphere_analytic: sphere texture AO > 0.85");
+
+    // 2. Enclosed cavity / two parallel close planes facing each other along Y
+    // Plane 1 at y=0 with normal +Y
+    auto p1 = bromesh::plane(2.0f, 2.0f, 4, 4);
+    // Plane 2 at y=0.2 with normal -Y
+    auto p2 = bromesh::plane(2.0f, 2.0f, 4, 4);
+    bromesh::translateMesh(p2, 0.0f, 0.2f, 0.0f);
+    // Flip p2 triangles so normal points towards -Y (facing p1)
+    for (size_t t = 0; t < p2.triangleCount(); ++t) {
+        std::swap(p2.indices[t * 3 + 1], p2.indices[t * 3 + 2]);
+    }
+    auto merged = bromesh::mergeMeshes({p1, p2});
+    bromesh::computeNormals(merged);
+
+    bromesh::bakeAmbientOcclusion(merged, 32, 1.0f);
+    // Inner vertices of p1 should be occluded by p2, so average AO is significantly lower (< 0.6)
+    float totalAO = 0.0f;
+    for (size_t v = 0; v < merged.vertexCount(); ++v) {
+        totalAO += merged.colors[v * 4 + 0];
+    }
+    float avgAO = totalAO / merged.vertexCount();
+    ASSERT(avgAO < 0.6f, "bake_ao_sphere_analytic: parallel facing planes have low AO (< 0.6)");
+}
+
+TEST(bake_normals_analytic) {
+    // Construct a quad flat in XY (z=0) with normal (0, 0, 1) and standard UVs [0, 1]
+    bromesh::MeshData plane;
+    plane.positions = {
+        -1.0f, -1.0f, 0.0f,
+         1.0f, -1.0f, 0.0f,
+         1.0f,  1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f
+    };
+    plane.normals = {
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f
+    };
+    plane.uvs = {
+        0.0f, 0.0f,
+        1.0f, 0.0f,
+        1.0f, 1.0f,
+        0.0f, 1.0f
+    };
+    plane.indices = { 0, 1, 2, 0, 2, 3 };
+
+    // World-space normal bake
+    auto worldNormTex = bromesh::bakeNormalsToTexture(plane, 16, 16);
+    ASSERT(worldNormTex.channels == 4, "bake_normals_analytic: 4 channels");
+    bool worldNormalsFlat = true;
+    int covered = 0;
+    for (int i = 0; i < 16 * 16; ++i) {
+        if (worldNormTex.pixels[i * 4 + 3] > 0.5f) {
+            covered++;
+            float r = worldNormTex.pixels[i * 4 + 0];
+            float g = worldNormTex.pixels[i * 4 + 1];
+            float b = worldNormTex.pixels[i * 4 + 2];
+            int ir = static_cast<int>(std::round(r * 255.0f));
+            int ig = static_cast<int>(std::round(g * 255.0f));
+            int ib = static_cast<int>(std::round(b * 255.0f));
+            if (std::abs(ir - 128) > 2 || std::abs(ig - 128) > 2 || std::abs(ib - 255) > 2) {
+                worldNormalsFlat = false;
+            }
+        }
+    }
+    ASSERT(covered > 0, "bake_normals_analytic: covered texels in world normal map");
+    ASSERT(worldNormalsFlat, "bake_normals_analytic: world normal map texels match RGB (128, 128, 255) +- 2");
+
+    // Tangent-space normal bake from reference
+    auto tsNormTex = bromesh::bakeNormalsFromReference(plane, plane, 16, 16, 0.5f);
+    bool tsNormalsFlat = true;
+    covered = 0;
+    for (int i = 0; i < 16 * 16; ++i) {
+        if (tsNormTex.pixels[i * 4 + 3] > 0.5f) {
+            covered++;
+            float r = tsNormTex.pixels[i * 4 + 0];
+            float g = tsNormTex.pixels[i * 4 + 1];
+            float b = tsNormTex.pixels[i * 4 + 2];
+            int ir = static_cast<int>(std::round(r * 255.0f));
+            int ig = static_cast<int>(std::round(g * 255.0f));
+            int ib = static_cast<int>(std::round(b * 255.0f));
+            if (std::abs(ir - 128) > 2 || std::abs(ig - 128) > 2 || std::abs(ib - 255) > 2) {
+                tsNormalsFlat = false;
+            }
+        }
+    }
+    ASSERT(covered > 0, "bake_normals_analytic: covered texels in TS normal map");
+    ASSERT(tsNormalsFlat, "bake_normals_analytic: tangent space normal map texels match RGB (128, 128, 255) +- 2");
+}
+
+TEST(bake_curvature_sphere_analytic) {
+    // Sphere of radius R = 2.0 has mean curvature 1/R = 0.5
+    auto mesh = bromesh::sphere(2.0f, 32, 32);
+    bromesh::computeNormals(mesh);
+    bromesh::projectUVs(mesh, bromesh::ProjectionType::Spherical, 1.0f);
+
+    bromesh::bakeCurvature(mesh, 1.0f);
+    ASSERT(mesh.hasColors(), "bake_curvature_sphere_analytic: has colors");
+
+    // For a uniform convex sphere, bakeCurvature produces positive convex curvature
+    bool validColors = true;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float c = mesh.colors[v * 4 + 0];
+        if (c < -0.01f || c > 1.01f) {
+            validColors = false;
+            break;
+        }
+    }
+    ASSERT(validColors, "bake_curvature_sphere_analytic: sphere colors in [0, 1]");
+
+    auto tex = bromesh::bakeCurvatureToTexture(mesh, 16, 16, 1.0f);
+    ASSERT(tex.width == 16, "bake_curvature_sphere_analytic: tex width 16");
+    bool validTex = true;
+    for (float v : tex.pixels) {
+        if (v < -0.01f || v > 1.01f) {
+            validTex = false;
+            break;
+        }
+    }
+    ASSERT(validTex, "bake_curvature_sphere_analytic: tex pixels in [0, 1]");
+}

@@ -112,6 +112,45 @@ TEST(skeleton_fit_humanoid) {
     ASSERT(hasRoot, "skeleton has a root");
 }
 
+TEST(skeleton_fit_humanoid_bone_positions) {
+    auto spec = bromesh::builtinHumanoidSpec();
+    auto lm = makeHumanoidLandmarks();
+    auto mesh = makeSyntheticHumanoid();
+    auto skel = bromesh::fitSkeleton(spec, lm, mesh);
+
+    auto pose = bromesh::bindPose(skel);
+    std::vector<float> world;
+    bromesh::computeWorldMatrices(skel, pose, world);
+
+    auto getBonePos = [&](const std::string& name) -> std::array<float, 3> {
+        int idx = skel.findBone(name);
+        if (idx < 0) return {9999.0f, 9999.0f, 9999.0f};
+        return { world[idx * 16 + 12], world[idx * 16 + 13], world[idx * 16 + 14] };
+    };
+
+    auto assertClose = [](std::array<float, 3> actual, std::array<float, 3> expected, float tol, const char* msg) {
+        float dx = std::fabs(actual[0] - expected[0]);
+        float dy = std::fabs(actual[1] - expected[1]);
+        float dz = std::fabs(actual[2] - expected[2]);
+        ASSERT(dx <= tol && dy <= tol && dz <= tol, msg);
+    };
+
+    // wrist_L -> hand_L bone head is landmark:wrist_L (-0.50, 0.45, 0.0)
+    assertClose(getBonePos("hand_L"), {-0.50f, 0.45f, 0.00f}, 1e-4f, "hand_L bone at wrist_L landmark");
+    // wrist_R -> hand_R bone head is landmark:wrist_R (0.50, 0.45, 0.0)
+    assertClose(getBonePos("hand_R"), {0.50f, 0.45f, 0.00f}, 1e-4f, "hand_R bone at wrist_R landmark");
+    // ankle_L -> foot_L bone head is landmark:ankle_L (-0.09, -0.88, 0.0)
+    assertClose(getBonePos("foot_L"), {-0.09f, -0.88f, 0.00f}, 1e-4f, "foot_L bone at ankle_L landmark");
+    // ankle_R -> foot_R bone head is landmark:ankle_R (0.09, -0.88, 0.0)
+    assertClose(getBonePos("foot_R"), {0.09f, -0.88f, 0.00f}, 1e-4f, "foot_R bone at ankle_R landmark");
+    // head bone head is lerp:neck_base,crown,0.5 -> (0.0, 0.5*(0.55+0.80), 0.0) = (0.0, 0.675, 0.0)
+    assertClose(getBonePos("head"), {0.00f, 0.675f, 0.00f}, 1e-4f, "head bone at lerp(neck_base, crown, 0.5)");
+    // upper_arm_L head is landmark:shoulder_L (-0.18, 0.50, 0.0)
+    assertClose(getBonePos("upper_arm_L"), {-0.18f, 0.50f, 0.00f}, 1e-4f, "upper_arm_L bone at shoulder_L");
+    // forearm_L head is landmark:elbow_L (-0.35, 0.45, 0.0)
+    assertClose(getBonePos("forearm_L"), {-0.35f, 0.45f, 0.00f}, 1e-4f, "forearm_L bone at elbow_L");
+}
+
 TEST(auto_rig_end_to_end) {
     auto spec = bromesh::builtinHumanoidSpec();
     auto lm = makeHumanoidLandmarks();
@@ -252,6 +291,60 @@ TEST(bone_heat_deterministic) {
     ASSERT(a.boneIndices == b.boneIndices, "bone-heat indices deterministic");
 }
 
+TEST(bone_heat_spatial_gradient) {
+    auto mesh = bromesh::box(0.1f, 1.0f, 0.1f);
+    bromesh::translateMesh(mesh, 0.0f, 1.0f, 0.0f); // y in [0, 2]
+    mesh = bromesh::weldVertices(mesh, 1e-4f);
+    mesh = bromesh::subdivideMidpoint(mesh, 3); // vertices at y = 0, 0.25, 0.5, 0.75, 1.0, ...
+
+    bromesh::Skeleton skel;
+    bromesh::Bone b0; b0.name = "bone0"; b0.parent = -1;
+    // inverseBind is identity -> head at (0, 0, 0)
+    float ib0[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    std::memcpy(b0.inverseBind, ib0, sizeof(ib0));
+
+    bromesh::Bone b1; b1.name = "bone1"; b1.parent = 0;
+    b1.localT[0] = 0; b1.localT[1] = 1.0f; b1.localT[2] = 0;
+    // inverseBind translate(0, -1, 0) -> head at (0, 1, 0)
+    float ib1[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,-1.0f,0,1};
+    std::memcpy(b1.inverseBind, ib1, sizeof(ib1));
+
+    skel.bones.push_back(b0);
+    skel.bones.push_back(b1);
+
+    bromesh::BoneHeatOptions opts;
+    opts.heatStrength = 20.0f;
+    auto skin = bromesh::boneHeatWeights(mesh, skel, opts);
+    ASSERT(skin.boneCount == 2, "bone_heat_gradient: 2 bones");
+
+    // Check vertices near y = 0.2 (proximal to bone 0, far from bone 1)
+    // and near y = 1.8 (proximal to bone 1, far from bone 0)
+    int checkedNear0 = 0;
+    int checkedNear1 = 0;
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
+        float y = mesh.positions[v * 3 + 1];
+        float w0 = 0.0f, w1 = 0.0f;
+        for (int k = 0; k < 4; ++k) {
+            uint32_t bi = skin.boneIndices[v * 4 + k];
+            float w = skin.boneWeights[v * 4 + k];
+            if (bi == 0) w0 += w;
+            if (bi == 1) w1 += w;
+        }
+        if (y <= 0.25f) {
+            checkedNear0++;
+            ASSERT(w0 > 0.85f, "bone_heat_gradient: y near 0.2 has bone 0 weight > 0.85");
+            ASSERT(w1 < 0.15f, "bone_heat_gradient: y near 0.2 has bone 1 weight < 0.15");
+        }
+        if (y >= 1.75f) {
+            checkedNear1++;
+            ASSERT(w1 > 0.85f, "bone_heat_gradient: y near 1.8 has bone 1 weight > 0.85");
+            ASSERT(w0 < 0.15f, "bone_heat_gradient: y near 1.8 has bone 0 weight < 0.15");
+        }
+    }
+    ASSERT(checkedNear0 > 0, "bone_heat_gradient: checked vertices near y=0.2");
+    ASSERT(checkedNear1 > 0, "bone_heat_gradient: checked vertices near y=1.8");
+}
+
 TEST(bbw_weights_valid) {
     auto mesh = makeManifoldCapsule();
     auto skel = makeTwoBoneSkeleton();
@@ -349,361 +442,6 @@ TEST(auto_rig_new_options_path_compat) {
            "new/legacy autoRig produce same weights");
     ASSERT(legacy.methodUsed == bromesh::WeightingMethod::VoxelBind,
            "legacy path reports VoxelBind");
-}
-
-// --- Phase-2: non-humanoid rig specs ---------------------------------------
-//
-// The tests below verify that the data-driven RigSpec schema generalizes to
-// quadruped / hexapod / octopod rigs without any change to fitSkeleton,
-// voxelBindWeights, or autoRig. Each creature gets a synthetic box-assembly
-// mesh, a full landmark dict, and the same four assertions: spec shape, JSON
-// roundtrip, skeleton fit, and end-to-end autoRig weight validity.
-
-namespace phase2 {
-
-static bromesh::MeshData boxAt(float cx, float cy, float cz,
-                               float hx, float hy, float hz) {
-    auto m = bromesh::box(hx, hy, hz);
-    bromesh::translateMesh(m, cx, cy, cz);
-    return m;
-}
-
-// ---- Quadruped ------------------------------------------------------------
-
-static bromesh::MeshData makeSyntheticQuadruped() {
-    std::vector<bromesh::MeshData> parts;
-    // Torso (body runs along Z).
-    parts.push_back(boxAt(0.00f, 0.45f, 0.00f, 0.12f, 0.12f, 0.30f));
-    // Head.
-    parts.push_back(boxAt(0.00f, 0.55f, 0.40f, 0.08f, 0.08f, 0.10f));
-    // Tail.
-    parts.push_back(boxAt(0.00f, 0.50f,-0.45f, 0.03f, 0.03f, 0.15f));
-    // Front legs (z = +0.20).
-    parts.push_back(boxAt(-0.08f, 0.18f, 0.20f, 0.04f, 0.27f, 0.04f));
-    parts.push_back(boxAt( 0.08f, 0.18f, 0.20f, 0.04f, 0.27f, 0.04f));
-    // Hind legs (z = -0.20).
-    parts.push_back(boxAt(-0.08f, 0.18f,-0.20f, 0.04f, 0.27f, 0.04f));
-    parts.push_back(boxAt( 0.08f, 0.18f,-0.20f, 0.04f, 0.27f, 0.04f));
-    return bromesh::mergeMeshes(parts);
-}
-
-static bromesh::Landmarks makeQuadrupedLandmarks() {
-    bromesh::Landmarks lm;
-    lm.set("pelvis",     0.00f, 0.45f, -0.22f);
-    lm.set("chest",      0.00f, 0.45f,  0.22f);
-    lm.set("neck_base",  0.00f, 0.52f,  0.28f);
-    lm.set("crown",      0.00f, 0.58f,  0.40f);
-    lm.set("muzzle",     0.00f, 0.55f,  0.50f);
-    lm.set("tail_base",  0.00f, 0.50f, -0.30f);
-    lm.set("tail_tip",   0.00f, 0.50f, -0.60f);
-    lm.set("fshoulder_L",-0.10f, 0.42f,  0.22f);
-    lm.set("fshoulder_R", 0.10f, 0.42f,  0.22f);
-    lm.set("felbow_L",   -0.08f, 0.18f,  0.20f);
-    lm.set("felbow_R",    0.08f, 0.18f,  0.20f);
-    lm.set("fpaw_L",     -0.08f,-0.08f,  0.20f);
-    lm.set("fpaw_R",      0.08f,-0.08f,  0.20f);
-    lm.set("hip_L",      -0.10f, 0.42f, -0.20f);
-    lm.set("hip_R",       0.10f, 0.42f, -0.20f);
-    lm.set("hknee_L",    -0.08f, 0.18f, -0.20f);
-    lm.set("hknee_R",     0.08f, 0.18f, -0.20f);
-    lm.set("hpaw_L",     -0.08f,-0.08f, -0.20f);
-    lm.set("hpaw_R",      0.08f,-0.08f, -0.20f);
-    return lm;
-}
-
-// ---- Hexapod --------------------------------------------------------------
-
-static bromesh::MeshData makeSyntheticHexapod() {
-    std::vector<bromesh::MeshData> parts;
-    // Abdomen (rear segment), thorax (mid), head (front).
-    parts.push_back(boxAt(0.00f, 0.20f,-0.20f, 0.08f, 0.08f, 0.15f));
-    parts.push_back(boxAt(0.00f, 0.20f, 0.00f, 0.10f, 0.10f, 0.12f));
-    parts.push_back(boxAt(0.00f, 0.20f, 0.18f, 0.06f, 0.06f, 0.06f));
-    // Six legs attached to the thorax, three per side, roughly at z = +0.08 / 0 / -0.08.
-    for (int side = 0; side < 2; ++side) {
-        float sx = (side == 0) ? -1.0f : 1.0f;
-        for (int row = 0; row < 3; ++row) {
-            float z = 0.08f - row * 0.08f;
-            parts.push_back(boxAt(sx * 0.12f, 0.10f, z, 0.03f, 0.15f, 0.03f));
-        }
-    }
-    return bromesh::mergeMeshes(parts);
-}
-
-static bromesh::Landmarks makeHexapodLandmarks() {
-    bromesh::Landmarks lm;
-    lm.set("abdomen_tip", 0.00f, 0.20f, -0.35f);
-    lm.set("abdomen",     0.00f, 0.20f, -0.18f);
-    lm.set("thorax",      0.00f, 0.20f,  0.05f);
-    lm.set("head",        0.00f, 0.20f,  0.15f);
-    lm.set("head_tip",    0.00f, 0.20f,  0.25f);
-    const char* prefixes[3] = { "front", "mid", "rear" };
-    float rowZ[3] = { 0.08f, 0.00f, -0.08f };
-    for (int i = 0; i < 3; ++i) {
-        float z = rowZ[i];
-        std::string p = prefixes[i];
-        lm.set((p + "_hip_L").c_str(),  -0.10f, 0.18f, z);
-        lm.set((p + "_hip_R").c_str(),   0.10f, 0.18f, z);
-        lm.set((p + "_knee_L").c_str(), -0.18f, 0.12f, z);
-        lm.set((p + "_knee_R").c_str(),  0.18f, 0.12f, z);
-        lm.set((p + "_foot_L").c_str(), -0.22f, 0.00f, z);
-        lm.set((p + "_foot_R").c_str(),  0.22f, 0.00f, z);
-    }
-    return lm;
-}
-
-// ---- Octopod --------------------------------------------------------------
-
-static bromesh::MeshData makeSyntheticOctopod() {
-    std::vector<bromesh::MeshData> parts;
-    // Round-ish body and a small "head" bump on top.
-    parts.push_back(boxAt(0.00f, 0.25f, 0.00f, 0.14f, 0.08f, 0.14f));
-    parts.push_back(boxAt(0.00f, 0.35f, 0.00f, 0.06f, 0.04f, 0.06f));
-    // Eight arms splay radially from the body; approximate as boxes at
-    // arm_a (z=+0.15), arm_b (z=+0.05), arm_c (z=-0.05), arm_d (z=-0.15),
-    // each with L/R pair on X axis.
-    float armZ[4] = { 0.15f, 0.05f, -0.05f, -0.15f };
-    for (int i = 0; i < 4; ++i) {
-        float z = armZ[i];
-        parts.push_back(boxAt(-0.22f, 0.15f, z, 0.08f, 0.03f, 0.03f));
-        parts.push_back(boxAt( 0.22f, 0.15f, z, 0.08f, 0.03f, 0.03f));
-    }
-    return bromesh::mergeMeshes(parts);
-}
-
-static bromesh::Landmarks makeOctopodLandmarks() {
-    bromesh::Landmarks lm;
-    lm.set("body", 0.00f, 0.25f, 0.00f);
-    lm.set("head", 0.00f, 0.38f, 0.00f);
-    const char* arms[4] = { "arm_a", "arm_b", "arm_c", "arm_d" };
-    float armZ[4] = { 0.15f, 0.05f, -0.05f, -0.15f };
-    for (int i = 0; i < 4; ++i) {
-        float z = armZ[i];
-        std::string a = arms[i];
-        lm.set((a + "_hip_L").c_str(), -0.14f, 0.22f, z);
-        lm.set((a + "_hip_R").c_str(),  0.14f, 0.22f, z);
-        lm.set((a + "_mid_L").c_str(), -0.22f, 0.15f, z);
-        lm.set((a + "_mid_R").c_str(),  0.22f, 0.15f, z);
-        lm.set((a + "_tip_L").c_str(), -0.30f, 0.10f, z);
-        lm.set((a + "_tip_R").c_str(),  0.30f, 0.10f, z);
-    }
-    return lm;
-}
-
-// ---- Parameterized assertions --------------------------------------------
-
-static void assertParentsResolve(const bromesh::RigSpec& spec) {
-    std::unordered_set<std::string> names;
-    for (const auto& b : spec.bones) names.insert(b.name);
-    for (const auto& b : spec.bones) {
-        if (b.parent.empty()) continue;
-        ASSERT(names.count(b.parent) == 1, "parent name resolves");
-    }
-}
-
-static void assertJsonRoundtrip(const bromesh::RigSpec& spec) {
-    std::string js = bromesh::serializeRigSpecJSON(spec);
-#if BROMESH_HAS_GLTF
-    ASSERT(!js.empty(), "rig spec JSON should not be empty");
-    auto parsed = bromesh::parseRigSpecJSON(js);
-    ASSERT(parsed.name == spec.name, "json roundtrip name");
-    ASSERT(parsed.bones.size() == spec.bones.size(), "json roundtrip bone count");
-    ASSERT(parsed.landmarks.size() == spec.landmarks.size(), "json roundtrip landmark count");
-    ASSERT(parsed.sockets.size() == spec.sockets.size(), "json roundtrip socket count");
-#else
-    ASSERT(js.empty(), "rig spec JSON empty when tinygltf not available");
-#endif
-}
-
-static void assertEndToEnd(const bromesh::RigSpec& spec,
-                           const bromesh::Landmarks& lm,
-                           const bromesh::MeshData& mesh) {
-    auto missing = bromesh::missingLandmarks(spec, lm);
-    ASSERT(missing.empty(), "no missing landmarks");
-
-    bromesh::VoxelBindOptions opts;
-    opts.maxResolution = 48;
-    auto r = bromesh::autoRig(mesh, spec, lm, opts);
-
-    ASSERT(r.missingLandmarks.empty(), "autoRig: no missing landmarks");
-    ASSERT(r.skeleton.bones.size() == spec.bones.size(), "skeleton bone count");
-    ASSERT(r.skin.boneCount == r.skeleton.bones.size(), "skin boneCount");
-    ASSERT(r.skin.boneWeights.size() == mesh.vertexCount() * 4, "weights sized");
-
-    // Parents topologically precede children.
-    for (size_t i = 0; i < r.skeleton.bones.size(); ++i) {
-        ASSERT(r.skeleton.bones[i].parent < (int)i, "parent precedes child");
-    }
-
-    // Weight sanity: sum ~1, no NaNs, no orphan vertices.
-    size_t bad = 0, orphan = 0;
-    for (size_t v = 0; v < mesh.vertexCount(); ++v) {
-        float sum = 0.0f; int nz = 0;
-        for (int k = 0; k < 4; ++k) {
-            float w = r.skin.boneWeights[v * 4 + k];
-            if (w != w) { bad++; break; }
-            sum += w;
-            if (w > 0.0f) ++nz;
-        }
-        if (std::fabs(sum - 1.0f) > 1e-3f) ++bad;
-        if (nz == 0) ++orphan;
-    }
-    ASSERT(bad == 0, "all vertices have valid weight sum");
-    ASSERT(orphan == 0, "no orphan vertices");
-
-    // Bind-pose skinning is identity.
-    auto pose = bromesh::bindPose(r.skeleton);
-    std::vector<float> world;
-    bromesh::computeWorldMatrices(r.skeleton, pose, world);
-    auto skinned = mesh;
-    bromesh::applySkinning(skinned, r.skin, world.data());
-    float maxDelta = 0.0f;
-    for (size_t i = 0; i < mesh.positions.size(); ++i) {
-        float d = std::fabs(skinned.positions[i] - mesh.positions[i]);
-        if (d > maxDelta) maxDelta = d;
-    }
-    ASSERT(maxDelta < 1e-3f, "bind pose skinning is identity");
-}
-
-} // namespace phase2
-
-TEST(rig_spec_quadruped_shape) {
-    auto spec = bromesh::builtinQuadrupedSpec();
-    ASSERT(spec.name == "quadruped", "spec name");
-    ASSERT(spec.symmetric, "quadruped is symmetric");
-    ASSERT(spec.bones.size() == 20, "quadruped has 20 bones");
-    ASSERT(spec.landmarks.size() == 19, "quadruped has 19 landmark decls");
-    ASSERT(spec.sockets.size() == 2, "quadruped has 2 default sockets");
-    phase2::assertParentsResolve(spec);
-}
-
-TEST(rig_spec_quadruped_json_roundtrip) {
-    phase2::assertJsonRoundtrip(bromesh::builtinQuadrupedSpec());
-}
-
-TEST(auto_rig_quadruped_end_to_end) {
-    phase2::assertEndToEnd(bromesh::builtinQuadrupedSpec(),
-                           phase2::makeQuadrupedLandmarks(),
-                           phase2::makeSyntheticQuadruped());
-}
-
-TEST(rig_spec_hexapod_shape) {
-    auto spec = bromesh::builtinHexapodSpec();
-    ASSERT(spec.name == "hexapod", "spec name");
-    ASSERT(spec.symmetric, "hexapod is symmetric");
-    ASSERT(spec.bones.size() == 21, "hexapod has 21 bones");
-    ASSERT(spec.landmarks.size() == 23, "hexapod has 23 landmark decls");
-    ASSERT(spec.sockets.size() == 1, "hexapod has 1 default socket");
-    phase2::assertParentsResolve(spec);
-}
-
-TEST(rig_spec_hexapod_json_roundtrip) {
-    phase2::assertJsonRoundtrip(bromesh::builtinHexapodSpec());
-}
-
-TEST(auto_rig_hexapod_end_to_end) {
-    phase2::assertEndToEnd(bromesh::builtinHexapodSpec(),
-                           phase2::makeHexapodLandmarks(),
-                           phase2::makeSyntheticHexapod());
-}
-
-TEST(rig_spec_octopod_shape) {
-    auto spec = bromesh::builtinOctopodSpec();
-    ASSERT(spec.name == "octopod", "spec name");
-    ASSERT(spec.symmetric, "octopod is symmetric");
-    ASSERT(spec.bones.size() == 18, "octopod has 18 bones");
-    ASSERT(spec.landmarks.size() == 26, "octopod has 26 landmark decls");
-    ASSERT(spec.sockets.size() == 1, "octopod has 1 default socket");
-    phase2::assertParentsResolve(spec);
-}
-
-TEST(rig_spec_octopod_json_roundtrip) {
-    phase2::assertJsonRoundtrip(bromesh::builtinOctopodSpec());
-}
-
-TEST(auto_rig_octopod_end_to_end) {
-    phase2::assertEndToEnd(bromesh::builtinOctopodSpec(),
-                           phase2::makeOctopodLandmarks(),
-                           phase2::makeSyntheticOctopod());
-}
-
-// --- Phase-5: heuristic quadruped landmark detection ---------------------
-
-TEST(detect_landmarks_quadruped_completeness) {
-    auto mesh = phase2::makeSyntheticQuadruped();
-    auto lm = bromesh::detectQuadrupedLandmarks(mesh);
-    auto spec = bromesh::builtinQuadrupedSpec();
-    auto missing = bromesh::missingLandmarks(spec, lm);
-    ASSERT(missing.empty(), "all 19 quadruped landmarks detected");
-}
-
-TEST(detect_landmarks_quadruped_near_reference) {
-    auto mesh = phase2::makeSyntheticQuadruped();
-    auto detected = bromesh::detectQuadrupedLandmarks(mesh);
-    auto reference = phase2::makeQuadrupedLandmarks();
-
-    auto bbox = bromesh::computeBBox(mesh);
-    auto bext = bromath::aextent(bbox);
-    float scale = std::max({bext.x, bext.y, bext.z});
-    float tol = 0.05f * scale;
-
-    int checked = 0;
-    for (const auto& [name, ref] : reference.points) {
-        if (!detected.has(name)) continue;
-        auto d = detected.points.at(name);
-        float dx = d[0]-ref[0], dy = d[1]-ref[1], dz = d[2]-ref[2];
-        float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
-        ASSERT(dist < tol, name.c_str());
-        ++checked;
-    }
-    ASSERT(checked == 19, "checked all 19 landmarks");
-}
-
-TEST(detect_landmarks_quadruped_end_to_end) {
-    auto mesh = phase2::makeSyntheticQuadruped();
-    auto spec = bromesh::builtinQuadrupedSpec();
-    auto lm = bromesh::detectQuadrupedLandmarks(mesh);
-
-    bromesh::VoxelBindOptions opts; opts.maxResolution = 48;
-    auto r = bromesh::autoRig(mesh, spec, lm, opts);
-    ASSERT(r.missingLandmarks.empty(), "no missing landmarks");
-    ASSERT(r.skeleton.bones.size() == spec.bones.size(), "bone count");
-
-    auto pose = bromesh::bindPose(r.skeleton);
-    std::vector<float> world;
-    bromesh::computeWorldMatrices(r.skeleton, pose, world);
-    auto skinned = mesh;
-    bromesh::applySkinning(skinned, r.skin, world.data());
-    float maxDelta = 0.0f;
-    for (size_t i = 0; i < mesh.positions.size(); ++i) {
-        float d = std::fabs(skinned.positions[i] - mesh.positions[i]);
-        if (d > maxDelta) maxDelta = d;
-    }
-    ASSERT(maxDelta < 1e-3f, "bind pose skinning is identity");
-}
-
-TEST(detect_landmarks_quadruped_deterministic) {
-    auto mesh = phase2::makeSyntheticQuadruped();
-    auto a = bromesh::detectQuadrupedLandmarks(mesh);
-    auto b = bromesh::detectQuadrupedLandmarks(mesh);
-    ASSERT(a.points.size() == b.points.size(), "same count");
-    for (const auto& [name, pa] : a.points) {
-        ASSERT(b.has(name), name.c_str());
-        auto pb = b.points[name];
-        ASSERT(pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2],
-               "same position both calls");
-    }
-}
-
-TEST(auto_rig_quadruped_deterministic) {
-    auto spec = bromesh::builtinQuadrupedSpec();
-    auto lm = phase2::makeQuadrupedLandmarks();
-    auto mesh = phase2::makeSyntheticQuadruped();
-    bromesh::VoxelBindOptions opts; opts.maxResolution = 48;
-    auto a = bromesh::autoRig(mesh, spec, lm, opts);
-    auto b = bromesh::autoRig(mesh, spec, lm, opts);
-    ASSERT(a.skin.boneWeights == b.skin.boneWeights, "weights deterministic");
-    ASSERT(a.skin.boneIndices == b.skin.boneIndices, "indices deterministic");
 }
 
 // --- Phase-4: weight post-processing (smoothing + outlier rejection) ----

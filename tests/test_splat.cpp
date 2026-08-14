@@ -155,3 +155,107 @@ TEST(splat_ply_rejects_plain_mesh) {
     ASSERT(m.vertexCount() == 3, "plain mesh still loads via loadPLY");
     std::remove(path);
 }
+
+TEST(splat_ply_degree1_channel_major_sh_and_activations) {
+    // Degree-1 ASCII 3DGS ply with 1 vertex.
+    // Tests:
+    // 1. Scale log -> linear activation (exp)
+    // 2. Opacity logit -> linear activation (sigmoid)
+    // 3. SH rest channel-major to interleaved transpose
+    // 4. Save and reload roundtrip
+    const char* path = "test_splat_deg1_analytic.ply";
+    FILE* f = std::fopen(path, "w");
+    ASSERT(f != nullptr, "open ascii deg1 splat ply");
+    if (!f) return;
+
+    std::fputs(
+        "ply\n"
+        "format ascii 1.0\n"
+        "element vertex 1\n"
+        "property float x\nproperty float y\nproperty float z\n"
+        "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n"
+        "property float f_rest_0\nproperty float f_rest_1\nproperty float f_rest_2\n"
+        "property float f_rest_3\nproperty float f_rest_4\nproperty float f_rest_5\n"
+        "property float f_rest_6\nproperty float f_rest_7\nproperty float f_rest_8\n"
+        "property float opacity\n"
+        "property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+        "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+        "end_header\n"
+        "1.0 2.0 3.0 "                         // x y z
+        "0.1 0.2 0.3 "                         // f_dc_0..2
+        "1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0 " // f_rest_0..8 (R1 R2 R3 G1 G2 G3 B1 B2 B3)
+        "1.386294 "                            // opacity logit(0.8) ~ 1.386294
+        "0.693147 -0.693147 0.0 "              // scale log(2.0), log(0.5), log(1.0)
+        "1.0 0.0 0.0 0.0\n",                   // rot w=1, x=0, y=0, z=0
+        f);
+    std::fclose(f);
+
+    auto c = bromesh::loadSplatPLY(path);
+    ASSERT(c.count() == 1, "splat_deg1: 1 splat");
+    ASSERT(c.shDegree == 1, "splat_deg1: shDegree is 1");
+    ASSERT(c.shStride() == 12, "splat_deg1: shStride is 12");
+
+    // Position verification
+    ASSERT(nearf(c.positions[0], 1.0f, 1e-4f), "splat_deg1: pos x");
+    ASSERT(nearf(c.positions[1], 2.0f, 1e-4f), "splat_deg1: pos y");
+    ASSERT(nearf(c.positions[2], 3.0f, 1e-4f), "splat_deg1: pos z");
+
+    // Scale verification: exp(ln(2.0))=2.0, exp(ln(0.5))=0.5, exp(0)=1.0
+    ASSERT(nearf(c.scales[0], 2.0f, 1e-3f), "splat_deg1: scale_0 activated to 2.0");
+    ASSERT(nearf(c.scales[1], 0.5f, 1e-3f), "splat_deg1: scale_1 activated to 0.5");
+    ASSERT(nearf(c.scales[2], 1.0f, 1e-3f), "splat_deg1: scale_2 activated to 1.0");
+
+    // Opacity verification: sigmoid(1.386294) = 0.80
+    ASSERT(nearf(c.opacities[0], 0.80f, 1e-3f), "splat_deg1: opacity sigmoid(logit(0.8)) = 0.8");
+
+    // Rotation verification: w-first in PLY (rot_0=w=1, rot_1=x=0, rot_2=y=0, rot_3=z=0)
+    // -> xyzw in GaussianSplatCloud
+    ASSERT(nearf(c.rotations[0], 0.0f, 1e-4f), "splat_deg1: rot x=0");
+    ASSERT(nearf(c.rotations[1], 0.0f, 1e-4f), "splat_deg1: rot y=0");
+    ASSERT(nearf(c.rotations[2], 0.0f, 1e-4f), "splat_deg1: rot z=0");
+    ASSERT(nearf(c.rotations[3], 1.0f, 1e-4f), "splat_deg1: rot w=1");
+
+    // SH DC verification
+    ASSERT(nearf(c.sh[0], 0.1f, 1e-4f), "splat_deg1: sh DC R = 0.1");
+    ASSERT(nearf(c.sh[1], 0.2f, 1e-4f), "splat_deg1: sh DC G = 0.2");
+    ASSERT(nearf(c.sh[2], 0.3f, 1e-4f), "splat_deg1: sh DC B = 0.3");
+
+    // SH rest channel-major to interleaved transpose verification:
+    // INRIA channel-major:
+    //   f_rest_0..2 = (R1, R2, R3) = (1, 2, 3)
+    //   f_rest_3..5 = (G1, G2, G3) = (4, 5, 6)
+    //   f_rest_6..8 = (B1, B2, B3) = (7, 8, 9)
+    // Interleaved layout c.sh[3..11]: (R1, G1, B1, R2, G2, B2, R3, G3, B3)
+    ASSERT(nearf(c.sh[3], 1.0f, 1e-4f), "splat_deg1: R1 = 1.0");
+    ASSERT(nearf(c.sh[4], 4.0f, 1e-4f), "splat_deg1: G1 = 4.0");
+    ASSERT(nearf(c.sh[5], 7.0f, 1e-4f), "splat_deg1: B1 = 7.0");
+    ASSERT(nearf(c.sh[6], 2.0f, 1e-4f), "splat_deg1: R2 = 2.0");
+    ASSERT(nearf(c.sh[7], 5.0f, 1e-4f), "splat_deg1: G2 = 5.0");
+    ASSERT(nearf(c.sh[8], 8.0f, 1e-4f), "splat_deg1: B2 = 8.0");
+    ASSERT(nearf(c.sh[9], 3.0f, 1e-4f), "splat_deg1: R3 = 3.0");
+    ASSERT(nearf(c.sh[10], 6.0f, 1e-4f), "splat_deg1: G3 = 6.0");
+    ASSERT(nearf(c.sh[11], 9.0f, 1e-4f), "splat_deg1: B3 = 9.0");
+
+    // Binary roundtrip save & reload
+    const char* binPath = "test_splat_deg1_roundtrip.ply";
+    ASSERT(bromesh::saveSplatPLY(c, binPath), "saveSplatPLY binary");
+    auto rt = bromesh::loadSplatPLY(binPath);
+    ASSERT(rt.count() == 1, "rt count");
+    ASSERT(rt.shDegree == 1, "rt shDegree");
+    ASSERT(rt.shStride() == 12, "rt shStride");
+    for (int a = 0; a < 3; ++a) {
+        ASSERT(nearf(rt.positions[a], c.positions[a], 1e-4f), "rt pos");
+        ASSERT(nearf(rt.scales[a], c.scales[a], 1e-4f), "rt scale");
+    }
+    ASSERT(nearf(rt.opacities[0], c.opacities[0], 1e-4f), "rt opacity");
+    for (int a = 0; a < 4; ++a) {
+        ASSERT(nearf(rt.rotations[a], c.rotations[a], 1e-4f), "rt rot");
+    }
+    for (int k = 0; k < 12; ++k) {
+        ASSERT(nearf(rt.sh[k], c.sh[k], 1e-4f), "rt sh");
+    }
+
+    std::remove(path);
+    std::remove(binPath);
+}
+

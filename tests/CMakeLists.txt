@@ -12,9 +12,11 @@ add_executable(bromesh_test
     test_csg.cpp
     test_reconstruction.cpp
     test_io.cpp
+    test_io_gltf.cpp
     test_skinning.cpp
     test_animation.cpp
     test_rigging.cpp
+    test_rigging_multiped.cpp
     test_procedural.cpp
     test_coverage.cpp
     test_coverage2.cpp
