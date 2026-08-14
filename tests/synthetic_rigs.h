@@ -77,14 +77,14 @@ inline bromesh::Landmarks makeQuadrupedLandmarks() {
     lm.set("tail_tip",   0.00f, 0.50f, -0.60f);
     lm.set("fshoulder_L",-0.10f, 0.42f,  0.22f);
     lm.set("fshoulder_R", 0.10f, 0.42f,  0.22f);
-    lm.set("felbow_L",   -0.08f, 0.25f,  0.20f);
-    lm.set("felbow_R",    0.08f, 0.25f,  0.20f);
+    lm.set("felbow_L",   -0.08f, 0.18f,  0.20f);
+    lm.set("felbow_R",    0.08f, 0.18f,  0.20f);
     lm.set("fpaw_L",     -0.08f,-0.08f,  0.20f);
     lm.set("fpaw_R",      0.08f,-0.08f,  0.20f);
     lm.set("hip_L",      -0.10f, 0.42f, -0.20f);
     lm.set("hip_R",       0.10f, 0.42f, -0.20f);
-    lm.set("hknee_L",    -0.08f, 0.25f, -0.20f);
-    lm.set("hknee_R",     0.08f, 0.25f, -0.20f);
+    lm.set("hknee_L",    -0.08f, 0.18f, -0.20f);
+    lm.set("hknee_R",     0.08f, 0.18f, -0.20f);
     lm.set("hpaw_L",     -0.08f,-0.08f, -0.20f);
     lm.set("hpaw_R",      0.08f,-0.08f, -0.20f);
     return lm;

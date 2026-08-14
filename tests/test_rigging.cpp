@@ -78,15 +78,16 @@ TEST(rig_spec_humanoid_shape) {
 TEST(rig_spec_json_roundtrip) {
     auto spec = bromesh::builtinHumanoidSpec();
     std::string js = bromesh::serializeRigSpecJSON(spec);
-    // With tinygltf-backed json.hpp the string is non-empty; without it we
-    // fall through — accept either to keep the test robust to the build
-    // configuration.
-    if (js.empty()) return;
+#if BROMESH_HAS_GLTF
+    ASSERT(!js.empty(), "rig spec JSON should not be empty");
     auto parsed = bromesh::parseRigSpecJSON(js);
     ASSERT(parsed.name == spec.name, "json roundtrip name");
     ASSERT(parsed.bones.size() == spec.bones.size(), "json roundtrip bone count");
     ASSERT(parsed.landmarks.size() == spec.landmarks.size(), "json roundtrip landmark count");
     ASSERT(parsed.sockets.size() == spec.sockets.size(), "json roundtrip socket count");
+#else
+    ASSERT(js.empty(), "rig spec JSON empty when tinygltf not available");
+#endif
 }
 
 TEST(skeleton_fit_humanoid) {
@@ -252,12 +253,12 @@ TEST(bone_heat_deterministic) {
 }
 
 TEST(bbw_weights_valid) {
-#if BROMESH_HAS_OSQP
     auto mesh = makeManifoldCapsule();
     auto skel = makeTwoBoneSkeleton();
     bromesh::BBWOptions opts;
     opts.anchorsPerBone = 2;
     opts.maxIter = 3000;
+#if BROMESH_HAS_OSQP
     auto skin = bromesh::bbwWeights(mesh, skel, opts);
 
     ASSERT(skin.boneCount == 2, "bbw boneCount");
@@ -273,6 +274,10 @@ TEST(bbw_weights_valid) {
         if (std::fabs(s - 1.0f) > 1e-2f) ++bad;
     }
     ASSERT(bad == 0, "BBW weights normalized and non-negative");
+#else
+    auto skin = bromesh::bbwWeights(mesh, skel, opts);
+    ASSERT(skin.boneCount == 0, "BBW without OSQP returns empty boneCount");
+    ASSERT(skin.boneWeights.empty(), "BBW without OSQP returns empty boneWeights");
 #endif
 }
 
@@ -393,14 +398,14 @@ static bromesh::Landmarks makeQuadrupedLandmarks() {
     lm.set("tail_tip",   0.00f, 0.50f, -0.60f);
     lm.set("fshoulder_L",-0.10f, 0.42f,  0.22f);
     lm.set("fshoulder_R", 0.10f, 0.42f,  0.22f);
-    lm.set("felbow_L",   -0.08f, 0.25f,  0.20f);
-    lm.set("felbow_R",    0.08f, 0.25f,  0.20f);
+    lm.set("felbow_L",   -0.08f, 0.18f,  0.20f);
+    lm.set("felbow_R",    0.08f, 0.18f,  0.20f);
     lm.set("fpaw_L",     -0.08f,-0.08f,  0.20f);
     lm.set("fpaw_R",      0.08f,-0.08f,  0.20f);
     lm.set("hip_L",      -0.10f, 0.42f, -0.20f);
     lm.set("hip_R",       0.10f, 0.42f, -0.20f);
-    lm.set("hknee_L",    -0.08f, 0.25f, -0.20f);
-    lm.set("hknee_R",     0.08f, 0.25f, -0.20f);
+    lm.set("hknee_L",    -0.08f, 0.18f, -0.20f);
+    lm.set("hknee_R",     0.08f, 0.18f, -0.20f);
     lm.set("hpaw_L",     -0.08f,-0.08f, -0.20f);
     lm.set("hpaw_R",      0.08f,-0.08f, -0.20f);
     return lm;
@@ -498,12 +503,16 @@ static void assertParentsResolve(const bromesh::RigSpec& spec) {
 
 static void assertJsonRoundtrip(const bromesh::RigSpec& spec) {
     std::string js = bromesh::serializeRigSpecJSON(spec);
-    if (js.empty()) return; // JSON support not compiled in
+#if BROMESH_HAS_GLTF
+    ASSERT(!js.empty(), "rig spec JSON should not be empty");
     auto parsed = bromesh::parseRigSpecJSON(js);
     ASSERT(parsed.name == spec.name, "json roundtrip name");
     ASSERT(parsed.bones.size() == spec.bones.size(), "json roundtrip bone count");
     ASSERT(parsed.landmarks.size() == spec.landmarks.size(), "json roundtrip landmark count");
     ASSERT(parsed.sockets.size() == spec.sockets.size(), "json roundtrip socket count");
+#else
+    ASSERT(js.empty(), "rig spec JSON empty when tinygltf not available");
+#endif
 }
 
 static void assertEndToEnd(const bromesh::RigSpec& spec,
@@ -633,17 +642,15 @@ TEST(detect_landmarks_quadruped_near_reference) {
     auto detected = bromesh::detectQuadrupedLandmarks(mesh);
     auto reference = phase2::makeQuadrupedLandmarks();
 
-    // Quadruped body is elongated along forward; tolerance tracks the
-    // largest extent so the bar doesn't vary wildly with species shape.
     auto bbox = bromesh::computeBBox(mesh);
     auto bext = bromath::aextent(bbox);
     float scale = std::max({bext.x, bext.y, bext.z});
-    float tol = 0.15f * scale;
+    float tol = 0.05f * scale;
 
     int checked = 0;
     for (const auto& [name, ref] : reference.points) {
         if (!detected.has(name)) continue;
-        auto d = detected.points[name];
+        auto d = detected.points.at(name);
         float dx = d[0]-ref[0], dy = d[1]-ref[1], dz = d[2]-ref[2];
         float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
         ASSERT(dist < tol, name.c_str());
@@ -852,17 +859,14 @@ TEST(detect_landmarks_humanoid_near_reference) {
     auto detected = bromesh::detectHumanoidLandmarks(mesh);
     auto reference = makeHumanoidLandmarks();
 
-    // Body height of the synthetic mesh is ~1.72. Accept landmarks within
-    // 15% of body height from the hand-authored reference — the detector is
-    // a geometric heuristic, not a pixel-perfect match.
     auto bbox = bromesh::computeBBox(mesh);
     float H = bromath::aextent(bbox).y;
-    float tol = 0.15f * H;
+    float tol = 0.05f * H;
 
     int checked = 0;
     for (const auto& [name, ref] : reference.points) {
         if (!detected.has(name)) continue;
-        auto d = detected.points[name];
+        auto d = detected.points.at(name);
         float dx = d[0]-ref[0], dy = d[1]-ref[1], dz = d[2]-ref[2];
         float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
         ASSERT(dist < tol, name.c_str());

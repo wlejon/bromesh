@@ -365,20 +365,31 @@ TEST(smooth_laplacian_sphere) {
 }
 
 TEST(smooth_taubin_box) {
-    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
-    bromesh::computeNormals(mesh);
+    auto base = bromesh::subdivideMidpoint(bromesh::weldVertices(bromesh::box(1.0f, 1.0f, 1.0f)), 2);
+    auto mesh_taubin = base;
+    bromesh::computeNormals(mesh_taubin);
+
+    auto mesh_lap = base;
+    bromesh::computeNormals(mesh_lap);
 
     // Measure initial bounding box
-    auto bbox1 = bromesh::computeBBox(mesh);
+    auto bbox1 = bromesh::computeBBox(mesh_taubin);
     float vol1 = (bbox1.max.x-bbox1.min.x) * (bbox1.max.y-bbox1.min.y) * (bbox1.max.z-bbox1.min.z);
 
-    bromesh::smoothTaubin(mesh, 0.5f, -0.53f, 5);
+    bromesh::smoothTaubin(mesh_taubin, 0.5f, -0.53f, 5);
 
-    auto bbox2 = bromesh::computeBBox(mesh);
-    float vol2 = (bbox2.max.x-bbox2.min.x) * (bbox2.max.y-bbox2.min.y) * (bbox2.max.z-bbox2.min.z);
+    auto bbox_taubin = bromesh::computeBBox(mesh_taubin);
+    float vol_taubin = (bbox_taubin.max.x-bbox_taubin.min.x) * (bbox_taubin.max.y-bbox_taubin.min.y) * (bbox_taubin.max.z-bbox_taubin.min.z);
 
-    // Taubin should not shrink significantly (unlike pure Laplacian)
-    ASSERT(vol2 > vol1 * 0.5f, "taubin: should not shrink excessively");
+    bromesh::smoothLaplacian(mesh_lap, 0.5f, 5);
+
+    auto bbox_lap = bromesh::computeBBox(mesh_lap);
+    float vol_laplacian = (bbox_lap.max.x-bbox_lap.min.x) * (bbox_lap.max.y-bbox_lap.min.y) * (bbox_lap.max.z-bbox_lap.min.z);
+
+    // Taubin should preserve volume (at least 95% of original)
+    ASSERT(vol_taubin >= vol1 * 0.95f, "taubin: preserves volume (>= 95%)");
+    // Laplacian causes noticeable shrinkage compared to Taubin
+    ASSERT(vol_laplacian < vol_taubin * 0.90f, "taubin: prevents shrinkage compared to laplacian");
 }
 
 TEST(remesh_isotropic_sphere) {

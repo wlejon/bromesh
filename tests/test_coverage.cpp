@@ -623,17 +623,21 @@ TEST(shrinkwrap_project_along_normal) {
 }
 
 TEST(shrinkwrap_project_along_axis) {
-    auto src = bromesh::sphere(2.0f, 8, 6);
+    auto src = bromesh::box(0.5f, 0.5f, 0.5f);
+    bromesh::translateMesh(src, 0.0f, 2.0f, 0.0f); // initial y in [1.5, 2.5]
+    for (size_t v = 0; v < src.vertexCount(); ++v) {
+        ASSERT(src.positions[v * 3 + 1] >= 1.49f, "initial y strictly above plane");
+    }
+
     auto plane = bromesh::plane(10.0f, 10.0f, 1, 1);
-    float axis[3] = { 0, -1, 0 };
+    float axis[3] = { 0.0f, -1.0f, 0.0f };
     bromesh::shrinkwrap(src, plane, bromesh::ShrinkwrapMode::ProjectAlongAxis,
                         0.0f, 0.0f, axis);
-    // Verts above the plane should be pulled down toward y~=0.
-    bool anyNearZero = false;
+
+    // Bottom and top vertices projected along -Y onto y=0 plane should now have y ~= 0.
     for (size_t v = 0; v < src.vertexCount(); ++v) {
-        if (std::fabs(src.positions[v*3 + 1]) < 0.1f) { anyNearZero = true; break; }
+        ASSERT(std::fabs(src.positions[v * 3 + 1]) < 1e-3f, "verts moved to y ~= 0");
     }
-    ASSERT(anyNearZero, "shrinkwrap axis: some verts hit plane (y~=0)");
 }
 
 // =============================================================================

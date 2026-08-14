@@ -1,17 +1,112 @@
 #include "test_framework.h"
+#include <algorithm>
 #include <cmath>
+#include <vector>
+
+namespace {
+
+struct Point3D {
+    float x, y, z;
+    bool operator<(const Point3D& o) const {
+        if (x != o.x) return x < o.x;
+        if (y != o.y) return y < o.y;
+        return z < o.z;
+    }
+    bool operator==(const Point3D& o) const {
+        return x == o.x && y == o.y && z == o.z;
+    }
+};
+
+struct CanonicalTri {
+    Point3D p0, p1, p2;
+
+    static CanonicalTri make(Point3D a, Point3D b, Point3D c) {
+        Point3D pts[3] = {a, b, c};
+        int best = 0;
+        if (pts[1] < pts[best]) best = 1;
+        if (pts[2] < pts[best]) best = 2;
+        return {pts[best], pts[(best + 1) % 3], pts[(best + 2) % 3]};
+    }
+
+    bool operator<(const CanonicalTri& o) const {
+        if (!(p0 == o.p0)) return p0 < o.p0;
+        if (!(p1 == o.p1)) return p1 < o.p1;
+        return p2 < o.p2;
+    }
+
+    bool operator==(const CanonicalTri& o) const {
+        return p0 == o.p0 && p1 == o.p1 && p2 == o.p2;
+    }
+};
+
+static std::vector<CanonicalTri> extractTriangles(const bromesh::MeshData& mesh) {
+    std::vector<CanonicalTri> tris;
+    size_t triCount = mesh.triangleCount();
+    tris.reserve(triCount);
+    for (size_t t = 0; t < triCount; ++t) {
+        uint32_t i0 = mesh.indices[t * 3 + 0];
+        uint32_t i1 = mesh.indices[t * 3 + 1];
+        uint32_t i2 = mesh.indices[t * 3 + 2];
+        Point3D p0{mesh.positions[i0 * 3], mesh.positions[i0 * 3 + 1], mesh.positions[i0 * 3 + 2]};
+        Point3D p1{mesh.positions[i1 * 3], mesh.positions[i1 * 3 + 1], mesh.positions[i1 * 3 + 2]};
+        Point3D p2{mesh.positions[i2 * 3], mesh.positions[i2 * 3 + 1], mesh.positions[i2 * 3 + 2]};
+        tris.push_back(CanonicalTri::make(p0, p1, p2));
+    }
+    return tris;
+}
+
+static std::vector<CanonicalTri> extractTriangles(const std::vector<float>& positions,
+                                                  const std::vector<uint32_t>& indices) {
+    std::vector<CanonicalTri> tris;
+    size_t triCount = indices.size() / 3;
+    tris.reserve(triCount);
+    for (size_t t = 0; t < triCount; ++t) {
+        uint32_t i0 = indices[t * 3 + 0];
+        uint32_t i1 = indices[t * 3 + 1];
+        uint32_t i2 = indices[t * 3 + 2];
+        Point3D p0{positions[i0 * 3], positions[i0 * 3 + 1], positions[i0 * 3 + 2]};
+        Point3D p1{positions[i1 * 3], positions[i1 * 3 + 1], positions[i1 * 3 + 2]};
+        Point3D p2{positions[i2 * 3], positions[i2 * 3 + 1], positions[i2 * 3 + 2]};
+        tris.push_back(CanonicalTri::make(p0, p1, p2));
+    }
+    return tris;
+}
+
+static bool haveSameTriangleSet(const bromesh::MeshData& a, const bromesh::MeshData& b) {
+    if (a.triangleCount() != b.triangleCount()) return false;
+    auto trisA = extractTriangles(a);
+    auto trisB = extractTriangles(b);
+    std::sort(trisA.begin(), trisA.end());
+    std::sort(trisB.begin(), trisB.end());
+    return trisA == trisB;
+}
+
+static bool haveSameTriangleSet(const bromesh::MeshData& a,
+                                const std::vector<uint32_t>& indicesB) {
+    if (a.triangleCount() != indicesB.size() / 3) return false;
+    auto trisA = extractTriangles(a);
+    auto trisB = extractTriangles(a.positions, indicesB);
+    std::sort(trisA.begin(), trisA.end());
+    std::sort(trisB.begin(), trisB.end());
+    return trisA == trisB;
+}
+
+} // namespace
 
 TEST(optimize_vertex_cache) {
     auto b = bromesh::box(1, 1, 1);
+    auto orig = b;
     size_t origVerts = b.vertexCount();
     size_t origTris = b.triangleCount();
     bromesh::optimizeVertexCache(b);
     ASSERT(b.vertexCount() == origVerts, "vertex cache opt should preserve vertex count");
     ASSERT(b.triangleCount() == origTris, "vertex cache opt should preserve triangle count");
+    ASSERT(haveSameTriangleSet(orig, b), "vertex cache opt should preserve exact geometric triangles");
 }
 
 TEST(optimize_vertex_fetch) {
     auto b = bromesh::box(1, 1, 1);
+    auto orig = b;
     size_t origVerts = b.vertexCount();
     size_t origTris = b.triangleCount();
     bromesh::optimizeVertexFetch(b);
@@ -19,6 +114,7 @@ TEST(optimize_vertex_fetch) {
     ASSERT(b.triangleCount() == origTris, "vertex fetch opt should preserve triangle count");
     ASSERT(b.hasNormals(), "vertex fetch opt should preserve normals");
     ASSERT(b.hasUVs(), "vertex fetch opt should preserve UVs");
+    ASSERT(haveSameTriangleSet(orig, b), "vertex fetch opt should preserve exact geometric triangles");
 }
 
 
@@ -172,6 +268,8 @@ TEST(stripify_unstripify_roundtrip) {
     // Restored triangle count should match original
     ASSERT(restored.size() / 3 == mesh.indices.size() / 3,
            "strip_roundtrip: triangle count preserved");
+    ASSERT(haveSameTriangleSet(mesh, restored),
+           "strip_roundtrip: unstripify restores exact same triangle set");
 }
 
 TEST(stripify_box) {
@@ -181,6 +279,9 @@ TEST(stripify_box) {
     // Strip should be reasonably compact
     ASSERT(strip.size() <= mesh.indices.size() * 2,
            "stripify_box: strip shouldn't be much larger than triangle list");
+    auto restored = bromesh::unstripify(strip);
+    ASSERT(haveSameTriangleSet(mesh, restored),
+           "stripify_box: unstripify restores exact same triangle set");
 }
 
 #endif // BROMESH_HAS_MESHOPTIMIZER

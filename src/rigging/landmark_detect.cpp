@@ -74,63 +74,82 @@ Landmarks detectHumanoidLandmarks(const MeshData& mesh,
     const float W = std::max(rMax - rMin, 1e-6f);   // arm-span
     const float rMidSym = 0.5f * (rMin + rMax);     // symmetry plane
 
-    // -- Crown: highest-up vertex near the midline (filter out arms) ----------
-    float crownU = -std::numeric_limits<float>::infinity();
-    float crownR = 0.0f, crownF = 0.0f;
+    // -- Crown: centroid of highest vertices near midline --------------------
+    float uThresh = uMax - 0.02f * H;
+    double crownSumR = 0, crownSumU = 0, crownSumF = 0;
+    int crownN = 0;
     for (size_t i = 0; i < V; ++i) {
         if (std::fabs(R[i] - rMidSym) > 0.15f * W) continue;
-        if (U[i] > crownU) { crownU = U[i]; crownR = R[i]; crownF = F[i]; }
+        if (U[i] >= uThresh) {
+            crownSumR += R[i]; crownSumU += U[i]; crownSumF += F[i];
+            ++crownN;
+        }
     }
+    float crownR = (crownN > 0) ? (float)(crownSumR / crownN) : rMidSym;
+    float crownU = (crownN > 0) ? (float)(crownSumU / crownN) : uMax;
+    float crownF = (crownN > 0) ? (float)(crownSumF / crownN) : 0.0f;
 
-    // -- Ankles: centroid of the bottom 5% of vertices on each side. Using a
-    // single min-U vertex made ankle.F land on whichever toe-tip or heel was
-    // lowest, which in turn placed the hip column at the front/back surface
-    // of the body (not its centerline). The centroid is stable against foot
-    // shape — toes/heels cancel out, leaving the foot's geometric center.
+    // -- Ankles: centroid of the bottom vertices on each side.
     auto pickAnkle = [&](bool leftSide, float& oR, float& oU, float& oF) {
-        std::vector<size_t> cand;
-        cand.reserve(V / 4);
+        float ankThresh = uMin + 0.05f * H;
+        double sR = 0, sU = 0, sF = 0;
+        int n = 0;
         for (size_t i = 0; i < V; ++i) {
             float dr = R[i] - rMidSym;
             if (leftSide ? !(dr < 0) : !(dr > 0)) continue;
-            if (U[i] > uMin + 0.25f * H) continue;
-            cand.push_back(i);
+            if (U[i] <= ankThresh) {
+                sR += R[i]; sU += U[i]; sF += F[i];
+                ++n;
+            }
         }
-        if (cand.empty()) { oR = 0; oU = 0; oF = 0; return; }
-        std::sort(cand.begin(), cand.end(),
-            [&](size_t a, size_t b){ return U[a] < U[b]; });
-        size_t n = std::max((size_t)1, cand.size() / 20);
-        double sR = 0, sU = 0, sF = 0;
-        for (size_t i = 0; i < n; ++i) {
-            sR += R[cand[i]]; sU += U[cand[i]]; sF += F[cand[i]];
+        if (n == 0) {
+            // fallback: find single minimum
+            float bestU = std::numeric_limits<float>::infinity();
+            for (size_t i = 0; i < V; ++i) {
+                float dr = R[i] - rMidSym;
+                if (leftSide ? !(dr < 0) : !(dr > 0)) continue;
+                if (U[i] < bestU) { bestU = U[i]; sR = R[i]; sU = U[i]; sF = F[i]; n = 1; }
+            }
         }
-        oR = (float)(sR / (double)n);
-        oU = (float)(sU / (double)n);
-        oF = (float)(sF / (double)n);
+        oR = (n > 0) ? (float)(sR / n) : (leftSide ? rMidSym - 0.2f * W : rMidSym + 0.2f * W);
+        oU = (n > 0) ? (float)(sU / n) : uMin;
+        oF = (n > 0) ? (float)(sF / n) : 0.0f;
     };
     float ankLR, ankLU, ankLF, ankRR, ankRU, ankRF;
     pickAnkle(true,  ankLR, ankLU, ankLF);
     pickAnkle(false, ankRR, ankRU, ankRF);
 
-    // -- Wrists: extreme side in the upper half --------------------------------
+    // -- Wrists: centroid of outermost vertices in the upper half -------------
     auto pickWrist = [&](bool leftSide, float& oR, float& oU, float& oF) {
-        float bestR = leftSide ? std::numeric_limits<float>::infinity()
-                               : -std::numeric_limits<float>::infinity();
-        oR = 0; oU = 0; oF = 0;
+        float extremeR = leftSide ? rMin : rMax;
+        float rThresh = leftSide ? (extremeR + 0.05f * W) : (extremeR - 0.05f * W);
+        double sR = 0, sU = 0, sF = 0;
+        int n = 0;
         for (size_t i = 0; i < V; ++i) {
-            if (U[i] < uMin + 0.4f * H) continue; // upper body only
-            if (leftSide ? R[i] < bestR : R[i] > bestR) {
-                bestR = R[i]; oR = R[i]; oU = U[i]; oF = F[i];
+            if (U[i] < uMin + 0.4f * H) continue;
+            if (leftSide ? (R[i] <= rThresh) : (R[i] >= rThresh)) {
+                sR += R[i]; sU += U[i]; sF += F[i];
+                ++n;
             }
         }
+        if (n == 0) {
+            float bestR = leftSide ? std::numeric_limits<float>::infinity() : -std::numeric_limits<float>::infinity();
+            for (size_t i = 0; i < V; ++i) {
+                if (U[i] < uMin + 0.4f * H) continue;
+                if (leftSide ? R[i] < bestR : R[i] > bestR) {
+                    bestR = R[i]; sR = R[i]; sU = U[i]; sF = F[i]; n = 1;
+                }
+            }
+        }
+        oR = (n > 0) ? (float)(sR / n) : (leftSide ? rMin : rMax);
+        oU = (n > 0) ? (float)(sU / n) : (uMin + 0.7f * H);
+        oF = (n > 0) ? (float)(sF / n) : 0.0f;
     };
     float wrLR, wrLU, wrLF, wrRR, wrRU, wrRF;
     pickWrist(true,  wrLR, wrLU, wrLF);
     pickWrist(false, wrRR, wrRU, wrRF);
 
     // -- Shoulders: torso half-width measured at the wrist's up-level ---------
-    // Scan a thin band at shoulder height, collect vertices that are clearly
-    // not arm-extrema (|r - midSym| < half the wrist offset), take the widest.
     auto shoulderAt = [&](bool leftSide, float shoulderU,
                           float& oR, float& oU, float& oF) {
         float band = 0.05f * H;
@@ -148,7 +167,6 @@ Landmarks detectHumanoidLandmarks(const MeshData& mesh,
             count += 1.0f;
         }
         if (count < 1.0f) {
-            // Fallback: 25% of the way from midline to wrist.
             best  = 0.25f * (wristR - rMidSym);
             bestF = leftSide ? wrLF : wrRF;
         }
@@ -156,7 +174,6 @@ Landmarks detectHumanoidLandmarks(const MeshData& mesh,
         oU = shoulderU;
         oF = bestF;
     };
-    // T-pose shoulder height ≈ wrist up-coord (arms horizontal).
     float shoulderU = 0.5f * (wrLU + wrRU);
     float shLR, shLU, shLF, shRR, shRU, shRF;
     shoulderAt(true,  shoulderU, shLR, shLU, shLF);
@@ -185,14 +202,14 @@ Landmarks detectHumanoidLandmarks(const MeshData& mesh,
     Vec3 shoulderMid = { 0.5f*(shoulderL[0]+shoulderR[0]),
                          0.5f*(shoulderL[1]+shoulderR[1]),
                          0.5f*(shoulderL[2]+shoulderR[2]) };
-    // Chest: 60% up from pelvis to shoulders.
-    Vec3 chest = { pelvis[0] + 0.60f*(shoulderMid[0]-pelvis[0]),
-                   pelvis[1] + 0.60f*(shoulderMid[1]-pelvis[1]),
-                   pelvis[2] + 0.60f*(shoulderMid[2]-pelvis[2]) };
+    // Chest: upper torso, near shoulder midpoint
+    Vec3 chest = { pelvis[0] + 0.90f*(shoulderMid[0]-pelvis[0]),
+                   pelvis[1] + 0.90f*(shoulderMid[1]-pelvis[1]),
+                   pelvis[2] + 0.90f*(shoulderMid[2]-pelvis[2]) };
     // Neck base: just above shoulder midpoint, toward crown.
-    Vec3 neckBase = { shoulderMid[0] + 0.15f*(crown[0]-shoulderMid[0]),
-                      shoulderMid[1] + 0.15f*(crown[1]-shoulderMid[1]),
-                      shoulderMid[2] + 0.15f*(crown[2]-shoulderMid[2]) };
+    Vec3 neckBase = { shoulderMid[0] + 0.25f*(crown[0]-shoulderMid[0]),
+                      shoulderMid[1] + 0.25f*(crown[1]-shoulderMid[1]),
+                      shoulderMid[2] + 0.25f*(crown[2]-shoulderMid[2]) };
 
     auto lerp = [](Vec3 a, Vec3 b, float t) {
         return Vec3{ a[0]+t*(b[0]-a[0]), a[1]+t*(b[1]-a[1]), a[2]+t*(b[2]-a[2]) };
@@ -266,21 +283,28 @@ Landmarks detectQuadrupedLandmarks(const MeshData& mesh,
     const float H = uMax - uMin;
     const float L = std::max(fMax - fMin, 1e-6f);
     const float W = std::max(rMax - rMin, 1e-6f);
-    (void)L; (void)W;
+    (void)W;
     const float rMidSym = 0.5f*(rMin + rMax);
     const float fMid    = 0.5f*(fMin + fMax);
 
     // Muzzle / tail tip: fwd extrema in the upper half of the body.
-    float muR=0, muU=0, muF=-std::numeric_limits<float>::infinity();
-    float ttR=0, ttU=0, ttF= std::numeric_limits<float>::infinity();
+    float muThresh = fMax - 0.05f * L;
+    float ttThresh = fMin + 0.05f * L;
+    double muSumR = 0, muSumU = 0, muSumF = 0; int muN = 0;
+    double ttSumR = 0, ttSumU = 0, ttSumF = 0; int ttN = 0;
     for (size_t i = 0; i < V; ++i) {
-        if (U[i] < uMin + 0.4f*H) continue;
-        if (F[i] > muF) { muF=F[i]; muR=R[i]; muU=U[i]; }
-        if (F[i] < ttF) { ttF=F[i]; ttR=R[i]; ttU=U[i]; }
+        if (U[i] < uMin + 0.4f * H) continue;
+        if (F[i] >= muThresh) { muSumR += R[i]; muSumU += U[i]; muSumF += F[i]; ++muN; }
+        if (F[i] <= ttThresh) { ttSumR += R[i]; ttSumU += U[i]; ttSumF += F[i]; ++ttN; }
     }
+    float muR = (muN > 0) ? (float)(muSumR / muN) : rMidSym;
+    float muU = (muN > 0) ? (float)(muSumU / muN) : (uMin + 0.7f * H);
+    float muF = (muN > 0) ? (float)(muSumF / muN) : fMax;
+    float ttR = (ttN > 0) ? (float)(ttSumR / ttN) : rMidSym;
+    float ttU = (ttN > 0) ? (float)(ttSumU / ttN) : (uMin + 0.7f * H);
+    float ttF = (ttN > 0) ? (float)(ttSumF / ttN) : fMin;
 
-    // Crown: centroid of top-5% up vertices in the front half. More stable
-    // than argmax on discrete meshes where the "top" is a whole face.
+    // Crown: centroid of top-5% up vertices in the front half.
     float uThresh = uMax - 0.05f*H;
     float crR = rMidSym, crU = uMax, crF = muF;
     {
@@ -297,20 +321,36 @@ Landmarks detectQuadrupedLandmarks(const MeshData& mesh,
         }
     }
 
-    // Four paws: argmin-up in each (left/right × front/back) quadrant, filtered
-    // to the lower third of the body.
+    // Four paws: centroid of lowest vertices in each quadrant
     auto pickPaw = [&](bool leftSide, bool front,
                        float& oR, float& oU, float& oF) {
-        float bestU = std::numeric_limits<float>::infinity();
-        oR = 0; oU = 0; oF = 0;
+        float threshU = uMin + 0.05f * H;
+        double sR = 0, sU = 0, sF = 0;
+        int n = 0;
         for (size_t i = 0; i < V; ++i) {
-            if (U[i] > uMin + 0.3f*H) continue;
             float dr = R[i] - rMidSym;
             if (leftSide ? !(dr < 0) : !(dr > 0)) continue;
             float df = F[i] - fMid;
             if (front ? !(df > 0) : !(df < 0)) continue;
-            if (U[i] < bestU) { bestU=U[i]; oR=R[i]; oU=U[i]; oF=F[i]; }
+            if (U[i] <= threshU) {
+                sR += R[i]; sU += U[i]; sF += F[i];
+                ++n;
+            }
         }
+        if (n == 0) {
+            float bestU = std::numeric_limits<float>::infinity();
+            for (size_t i = 0; i < V; ++i) {
+                if (U[i] > uMin + 0.3f*H) continue;
+                float dr = R[i] - rMidSym;
+                if (leftSide ? !(dr < 0) : !(dr > 0)) continue;
+                float df = F[i] - fMid;
+                if (front ? !(df > 0) : !(df < 0)) continue;
+                if (U[i] < bestU) { bestU=U[i]; sR=R[i]; sU=U[i]; sF=F[i]; n = 1; }
+            }
+        }
+        oR = (n > 0) ? (float)(sR / n) : (leftSide ? rMidSym - 0.2f * W : rMidSym + 0.2f * W);
+        oU = (n > 0) ? (float)(sU / n) : uMin;
+        oF = (n > 0) ? (float)(sF / n) : (front ? fMid + 0.2f * L : fMid - 0.2f * L);
     };
     float fpLR, fpLU, fpLF, fpRR, fpRU, fpRF;
     float hpLR, hpLU, hpLF, hpRR, hpRU, hpRF;
@@ -319,9 +359,7 @@ Landmarks detectQuadrupedLandmarks(const MeshData& mesh,
     pickPaw(true,  false, hpLR, hpLU, hpLF);
     pickPaw(false, false, hpRR, hpRU, hpRF);
 
-    // Shoulder / hip U: ~75% of body height. In a natural stance the legs
-    // hang vertically, so the leg column's R,F carries straight up to the
-    // torso attachment; we don't need to hunt for it in the mesh.
+    // Shoulder / hip U: ~75% of body height.
     const float shoulderHipU = uMin + 0.75f*H;
 
     Vec3 muzzle    = unproject(right, up, fwd, muR,  muU,  muF);
@@ -354,9 +392,7 @@ Landmarks detectQuadrupedLandmarks(const MeshData& mesh,
     Vec3 hkneeL  = lerp(hipL, hpawL, 0.5f);
     Vec3 hkneeR  = lerp(hipR, hpawR, 0.5f);
 
-    // Tail base: 25% past the pelvis along the chest→pelvis direction. This
-    // reliably lands at the rump without needing a torso/tail separation
-    // heuristic that might trip on messy topology.
+    // Tail base: 25% past the pelvis along the chest→pelvis direction.
     Vec3 tailBase = { pelvis[0] + 0.25f*(pelvis[0]-chest[0]),
                       pelvis[1] + 0.25f*(pelvis[1]-chest[1]),
                       pelvis[2] + 0.25f*(pelvis[2]-chest[2]) };

@@ -13,7 +13,7 @@ struct LandmarkDetectOptions {
     float forwardAxis[3] = { 0.0f, 0.0f, 1.0f };
     /// Fraction of body height used as foot length when projecting toe
     /// landmarks forward from the ankle.
-    float footLengthFrac = 0.08f;
+    float footLengthFrac = 0.05f;
 };
 
 /// Derive the 18 landmarks declared by builtinHumanoidSpec() from mesh shape
