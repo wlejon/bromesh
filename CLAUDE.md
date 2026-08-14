@@ -9,9 +9,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build and test
 
 ```bash
-# The bromath sibling must sit at ../bromath (header-only; configure FATAL_ERRORs
-# without it — overridable via -DBROMATH_DIR=...). Submodules under third_party/
-# must be present — features linked against missing submodules silently disable
+# All dependencies (bromath included) are submodules under third_party/, so
+# this is the only setup step. bromath prefers a standalone checkout at
+# ../bromath when one exists (multi-repo dev layout; overridable via
+# -DBROMATH_DIR=...) and falls back to the third_party/bromath submodule.
+# Features linked against missing optional submodules silently disable
 # (see "Optional-by-submodule" below).
 git submodule update --init --recursive
 
@@ -108,12 +110,15 @@ The strategy doc at `docs/auto-rig-strategy.md` is the north star for this subsy
 
 ### Optional-by-submodule pattern
 
-The **one hard dependency** is the `bromath` sibling (`../bromath`, header-only,
-linked as `bromath::bromath`) — it backs `MeshData`'s AABB plus the Vec/Quat/Mat
-and `SpatialHash3D` types used throughout sweep/procedural/analysis. Everything
-else is optional.
+The **one hard dependency** is `bromath` (header-only, linked as
+`bromath::bromath`) — it backs `MeshData`'s AABB plus the Vec/Quat/Mat and
+`SpatialHash3D` types used throughout sweep/procedural/analysis. It resolves in
+order: an already-loaded `bromath` target (parent project), a standalone
+checkout at `../bromath` (multi-repo dev layout, overridable via
+`-DBROMATH_DIR`), then the `third_party/bromath` submodule. Everything else is
+optional.
 
-Every third-party dependency (meshoptimizer, V-HACD, tinygltf, par_shapes, xatlas, manifold, OpenFBX, OSQP) is a git submodule under `third_party/`. The top-level `CMakeLists.txt` gates each by an `EXISTS` check and sets `BROMESH_HAS_<DEP>` accordingly, forwarded as a public compile definition. Note `manifold` backs both Boolean/CSG (`csg/boolean.cpp`) and polygon triangulation (`manipulation/polygon.cpp`); the latter no-ops to an empty `MeshData` when `BROMESH_HAS_MANIFOLD==0`.
+Every third-party dependency (meshoptimizer, V-HACD, tinygltf, par_shapes, xatlas, manifold, OpenFBX, OSQP) is a git submodule under `third_party/`. The top-level `CMakeLists.txt` creates each dep's target only if it doesn't already exist (a parent project may have loaded it first) and only if its source is present; feature availability then keys off `if(TARGET ...)`, which sets the `BROMESH_HAS_<DEP>` public compile definition. Note `manifold` backs both Boolean/CSG (`csg/boolean.cpp`) and polygon triangulation (`manipulation/polygon.cpp`); the latter no-ops to an empty `MeshData` when `BROMESH_HAS_MANIFOLD==0`.
 
 **Implication for new code**: any `.cpp` that uses an optional dep must compile to a working no-op (usually returning an empty `MeshData` or `false`) when its `BROMESH_HAS_...` macro is undefined. Do not add a hard dependency on any submodule. The library must build and link with every submodule absent.
 

@@ -8,18 +8,26 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(MSVC)
     add_compile_options(/MP /permissive- /utf-8)
     # Static CRT only when building standalone (not consumed as a subdirectory)
-    if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    if(PROJECT_IS_TOP_LEVEL)
         set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     endif()
 endif()
 
-# --- bromath sibling (shared math library, header-only) ---
-set(BROMATH_DIR "${CMAKE_SOURCE_DIR}/../bromath" CACHE PATH "bromath sibling")
+# --- bromath (shared math library, header-only) ---
+# Resolution order: an already-loaded target (a parent project got there first),
+# a standalone checkout at ../bromath (the multi-repo dev layout), then the
+# third_party/bromath submodule (what a fresh `git clone --recursive` gets).
+set(BROMATH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bromath" CACHE PATH
+    "Standalone bromath checkout; falls back to the third_party/bromath submodule if absent")
 if(NOT TARGET bromath)
     if(EXISTS "${BROMATH_DIR}/CMakeLists.txt")
-        add_subdirectory("${BROMATH_DIR}" "${CMAKE_BINARY_DIR}/bromath" EXCLUDE_FROM_ALL)
+        add_subdirectory("${BROMATH_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/bromath" EXCLUDE_FROM_ALL)
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/bromath/CMakeLists.txt")
+        add_subdirectory(third_party/bromath EXCLUDE_FROM_ALL)
     else()
-        message(FATAL_ERROR "bromath not found at ${BROMATH_DIR}")
+        message(FATAL_ERROR
+            "bromesh: bromath not found at ${BROMATH_DIR} or third_party/bromath. "
+            "Run `git submodule update --init --recursive` or set -DBROMATH_DIR=<path>.")
     endif()
 endif()
 
@@ -38,7 +46,7 @@ if(NOT TARGET meshoptimizer)
 endif()
 
 # par_shapes — parametric primitive generation (header-only, we compile it)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/par/par_shapes.h")
+if(NOT TARGET par_shapes AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/par/par_shapes.h")
     add_library(par_shapes STATIC third_party/par/par_shapes.cpp)
     target_include_directories(par_shapes PUBLIC third_party/par)
     # par_shapes' index type defaults to uint16_t. Subdivision builds an
@@ -53,14 +61,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/par/par_shapes.h")
     else()
         target_compile_options(par_shapes PRIVATE -w)
     endif()
-    set(BROMESH_HAS_PAR_SHAPES ON)
-else()
+endif()
+if(NOT TARGET par_shapes)
     message(STATUS "bromesh: par_shapes not found, parametric primitives disabled")
-    set(BROMESH_HAS_PAR_SHAPES OFF)
 endif()
 
 # tinygltf — glTF/GLB loading (header-only, we compile it)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf/tiny_gltf.h")
+if(NOT TARGET tinygltf AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf/tiny_gltf.h")
     add_library(tinygltf STATIC third_party/impl/tinygltf_impl.cpp)
     target_include_directories(tinygltf PUBLIC third_party/tinygltf)
     # stb_image is bundled in third_party/tinygltf and is compiled into
@@ -78,14 +85,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf/tiny_gltf.h")
     else()
         target_compile_options(tinygltf PRIVATE -w)
     endif()
-    set(BROMESH_HAS_GLTF ON)
-else()
+endif()
+if(NOT TARGET tinygltf)
     message(STATUS "bromesh: tinygltf not found, glTF I/O disabled")
-    set(BROMESH_HAS_GLTF OFF)
 endif()
 
 # V-HACD — convex decomposition (header-only, we compile it)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/v-hacd/include/VHACD.h")
+if(NOT TARGET vhacd AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/v-hacd/include/VHACD.h")
     add_library(vhacd STATIC third_party/impl/vhacd_impl.cpp)
     target_include_directories(vhacd PUBLIC third_party/v-hacd/include)
     if(MSVC)
@@ -93,14 +99,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/v-hacd/include/VHACD.h")
     else()
         target_compile_options(vhacd PRIVATE -w)
     endif()
-    set(BROMESH_HAS_VHACD ON)
-else()
+endif()
+if(NOT TARGET vhacd)
     message(STATUS "bromesh: V-HACD not found, convex decomposition disabled")
-    set(BROMESH_HAS_VHACD OFF)
 endif()
 
 # xatlas — automatic UV unwrapping and atlas generation
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas/source/xatlas/xatlas.h")
+if(NOT TARGET xatlas AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas/source/xatlas/xatlas.h")
     add_library(xatlas STATIC third_party/xatlas/source/xatlas/xatlas.cpp)
     target_include_directories(xatlas PUBLIC third_party/xatlas/source/xatlas)
     if(MSVC)
@@ -108,14 +113,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas/source/xatlas/xatlas.h
     else()
         target_compile_options(xatlas PRIVATE -w)
     endif()
-    set(BROMESH_HAS_XATLAS ON)
-else()
+endif()
+if(NOT TARGET xatlas)
     message(STATUS "bromesh: xatlas not found, UV unwrapping disabled")
-    set(BROMESH_HAS_XATLAS OFF)
 endif()
 
 # manifold — Boolean/CSG operations (built from source, no optional deps)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/manifold/src/manifold.cpp")
+if(NOT TARGET manifold_lib AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/manifold/src/manifold.cpp")
     add_library(manifold_lib STATIC
         third_party/manifold/src/boolean3.cpp
         third_party/manifold/src/boolean_result.cpp
@@ -144,31 +148,29 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/manifold/src/manifold.cpp")
     else()
         target_compile_options(manifold_lib PRIVATE -w)
     endif()
-    set(BROMESH_HAS_MANIFOLD ON)
-else()
+endif()
+if(NOT TARGET manifold_lib)
     message(STATUS "bromesh: manifold not found, Boolean/CSG disabled")
-    set(BROMESH_HAS_MANIFOLD OFF)
 endif()
 
-# OSQP — quadratic programming solver (bounded biharmonic weights)
-if(NOT TARGET osqp)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/osqp/CMakeLists.txt")
-        set(OSQP_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
-        set(OSQP_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
-        set(OSQP_ENABLE_PRINTING OFF CACHE BOOL "" FORCE)
-        set(OSQP_ENABLE_PROFILING OFF CACHE BOOL "" FORCE)
-        set(OSQP_ENABLE_INTERRUPT OFF CACHE BOOL "" FORCE)
-        set(OSQP_ALGEBRA_BACKEND "builtin" CACHE STRING "" FORCE)
-        add_subdirectory(third_party/osqp EXCLUDE_FROM_ALL)
-        set(BROMESH_HAS_OSQP ON)
-    else()
-        message(STATUS "bromesh: OSQP not found, bounded biharmonic weights disabled")
-        set(BROMESH_HAS_OSQP OFF)
-    endif()
+# OSQP — quadratic programming solver (bounded biharmonic weights).
+# Guard and link on osqpstatic — the target bromesh actually consumes — so a
+# parent project that already loaded OSQP still gets BBW enabled here.
+if(NOT TARGET osqpstatic AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/osqp/CMakeLists.txt")
+    set(OSQP_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
+    set(OSQP_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
+    set(OSQP_ENABLE_PRINTING OFF CACHE BOOL "" FORCE)
+    set(OSQP_ENABLE_PROFILING OFF CACHE BOOL "" FORCE)
+    set(OSQP_ENABLE_INTERRUPT OFF CACHE BOOL "" FORCE)
+    set(OSQP_ALGEBRA_BACKEND "builtin" CACHE STRING "" FORCE)
+    add_subdirectory(third_party/osqp EXCLUDE_FROM_ALL)
+endif()
+if(NOT TARGET osqpstatic)
+    message(STATUS "bromesh: OSQP not found, bounded biharmonic weights disabled")
 endif()
 
 # OpenFBX — FBX file loading (we compile it from source)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/OpenFBX/src/ofbx.h")
+if(NOT TARGET openfbx AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/OpenFBX/src/ofbx.h")
     add_library(openfbx STATIC
         third_party/OpenFBX/src/ofbx.cpp
         third_party/OpenFBX/src/libdeflate.c
@@ -179,10 +181,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/OpenFBX/src/ofbx.h")
     else()
         target_compile_options(openfbx PRIVATE -w)
     endif()
-    set(BROMESH_HAS_OPENFBX ON)
-else()
+endif()
+if(NOT TARGET openfbx)
     message(STATUS "bromesh: OpenFBX not found, FBX loading disabled")
-    set(BROMESH_HAS_OPENFBX OFF)
 endif()
 
 # --- bromesh library ---
@@ -324,51 +325,54 @@ else()
     target_compile_options(bromesh PRIVATE -Wall -Wextra)
 endif()
 
-# Link optional dependencies
+# Link optional dependencies. Feature availability keys off the TARGET —
+# whether bromesh created it above or a parent project loaded it first —
+# so the BROMESH_HAS_* compile definitions can never drift from what is
+# actually linked.
 if(TARGET meshoptimizer)
     target_link_libraries(bromesh PRIVATE meshoptimizer)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_MESHOPTIMIZER=1)
 endif()
 
-if(BROMESH_HAS_PAR_SHAPES)
+if(TARGET par_shapes)
     target_link_libraries(bromesh PRIVATE par_shapes)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_PAR_SHAPES=1)
 endif()
 
-if(BROMESH_HAS_GLTF)
+if(TARGET tinygltf)
     target_link_libraries(bromesh PRIVATE tinygltf)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_GLTF=1)
     target_sources(bromesh PRIVATE src/io/gltf.cpp)
 endif()
 
-if(BROMESH_HAS_VHACD)
+if(TARGET vhacd)
     target_link_libraries(bromesh PRIVATE vhacd)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_VHACD=1)
 endif()
 
-if(BROMESH_HAS_XATLAS)
+if(TARGET xatlas)
     target_link_libraries(bromesh PRIVATE xatlas)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_XATLAS=1)
 endif()
 
-if(BROMESH_HAS_MANIFOLD)
+if(TARGET manifold_lib)
     target_link_libraries(bromesh PRIVATE manifold_lib)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_MANIFOLD=1)
 endif()
 
-if(BROMESH_HAS_OPENFBX)
+if(TARGET openfbx)
     target_link_libraries(bromesh PRIVATE openfbx)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_OPENFBX=1)
 endif()
 
-if(BROMESH_HAS_OSQP)
+if(TARGET osqpstatic)
     target_link_libraries(bromesh PRIVATE osqpstatic)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_OSQP=1)
 endif()
 
 # Tests
 option(BROMESH_TESTS "Build bromesh tests" ON)
-if(BROMESH_TESTS AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+if(BROMESH_TESTS AND PROJECT_IS_TOP_LEVEL)
     enable_testing()
     add_subdirectory(tests)
 endif()
