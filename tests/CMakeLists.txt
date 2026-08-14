@@ -1,6 +1,18 @@
 add_executable(bromesh_test
     test_main.cpp
-    test_mesh.cpp
+    test_primitives.cpp
+    test_isosurface.cpp
+    test_voxel.cpp
+    test_manipulation.cpp
+    test_polymesh.cpp
+    test_analysis.cpp
+    test_bake.cpp
+    test_uv.cpp
+    test_optimization.cpp
+    test_csg.cpp
+    test_reconstruction.cpp
+    test_io.cpp
+    test_skinning.cpp
     test_animation.cpp
     test_rigging.cpp
     test_procedural.cpp
