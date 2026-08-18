@@ -6,7 +6,6 @@
 #include <functional>
 
 #include "bromesh/mesh_data.h"
-#include "bromesh/procedural/leaf_cluster.h"
 #include "bromesh/procedural/obstacle_field.h"
 #include "bromesh/procedural/space_colonization.h"
 
@@ -88,12 +87,6 @@ struct LeafPlacementOptions {
     uint64_t seed = 0;
 };
 
-/// Placement options specifically for leaf clusters / twig sprays.
-struct LeafClusterPlacementOptions : public LeafPlacementOptions {
-    /// Outward branching angle flare (in radians) from the branch tangent axis.
-    float branchAngle = 0.5f;
-};
-
 /// Flat per-leaf instance buffer. `transforms` stride is 16 floats (column-major
 /// 4x4 of T * R * uniform-S). `branchRadius` and `branchDepth` are 1 entry per
 /// leaf, useful for shading variation downstream.
@@ -120,22 +113,6 @@ MeshData scatterLeaves(
     const std::vector<BranchSegment>& segments,
     const MeshData& leaf,
     const LeafPlacementOptions& opts = {});
-
-/// Compute leaf cluster / twig spray instance transforms along branch segments.
-///
-/// Clusters are oriented along the twig growth direction (+tangent),
-/// drooping with gravity and facing light.
-LeafPlacements placeLeafClustersOnBranches(
-    const std::vector<BranchSegment>& segments,
-    const LeafPlacementOptions& opts = {});
-
-/// Stamp botanical leaf clusters in the specified phyllotaxy arrangement
-/// along branch segments and return a single merged mesh.
-MeshData scatterLeafClusters(
-    const std::vector<BranchSegment>& segments,
-    Phyllotaxy phyllotaxy,
-    const LeafClusterOptions& clusterOpts = {},
-    const LeafPlacementOptions& scatterOpts = {});
 
 /// Options for `packAnchors`.
 struct AnchorPackOptions {
