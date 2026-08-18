@@ -263,6 +263,7 @@ add_library(bromesh STATIC
     src/procedural/space_colonization.cpp
     src/procedural/branches.cpp
     src/procedural/plants.cpp
+    src/procedural/leaf_cluster.cpp
     src/procedural/leaf_scatter.cpp
     src/procedural/obstacle_field.cpp
 

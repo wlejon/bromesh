@@ -192,3 +192,6 @@ struct TreeResult {
 TreeResult tree(const TreeOptions& opts);
 
 } // namespace bromesh
+
+#include "bromesh/procedural/leaf_cluster.h"
+
