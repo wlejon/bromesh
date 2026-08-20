@@ -186,6 +186,22 @@ if(NOT TARGET openfbx)
     message(STATUS "bromesh: OpenFBX not found, FBX loading disabled")
 endif()
 
+# draco — Google's mesh compression. The DECODER is what .drc files and
+# glTF's KHR_draco_mesh_compression need; the encoder rides along in the same
+# static lib. Draco's own CMake builds it (the vendored tree is upstream
+# 1.5.7 minus testdata/plugins); EXCLUDE_FROM_ALL keeps its tools out.
+if(NOT TARGET draco::draco AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/draco/CMakeLists.txt")
+    set(DRACO_TESTS OFF CACHE BOOL "" FORCE)
+    set(DRACO_INSTALL OFF CACHE BOOL "" FORCE)
+    set(DRACO_TRANSCODER_SUPPORTED OFF CACHE BOOL "" FORCE)
+    # Draco names its library `draco` on MSVC and `draco_static` elsewhere;
+    # the draco::draco alias is the one spelling both branches provide.
+    add_subdirectory(third_party/draco EXCLUDE_FROM_ALL)
+endif()
+if(NOT TARGET draco::draco)
+    message(STATUS "bromesh: draco not found, Draco decode disabled")
+endif()
+
 # --- bromesh library ---
 
 add_library(bromesh STATIC
@@ -343,6 +359,19 @@ if(TARGET tinygltf)
     target_link_libraries(bromesh PRIVATE tinygltf)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_GLTF=1)
     target_sources(bromesh PRIVATE src/io/gltf.cpp)
+endif()
+
+if(TARGET draco::draco)
+    target_link_libraries(bromesh PRIVATE draco::draco)
+    target_compile_definitions(bromesh PUBLIC BROMESH_HAS_DRACO=1)
+    target_sources(bromesh PRIVATE src/io/draco.cpp)
+    # draco declares its include dirs PRIVATE, and draco_features.h is
+    # generated as <top-level build>/draco/draco_features.h (draco's CMake
+    # uses CMAKE_BINARY_DIR, deliberately, so a superbuild parent shares
+    # one) — name both roots here.
+    target_include_directories(bromesh PRIVATE
+        third_party/draco/src
+        "${CMAKE_BINARY_DIR}")
 endif()
 
 if(TARGET vhacd)

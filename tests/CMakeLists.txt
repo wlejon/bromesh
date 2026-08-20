@@ -13,6 +13,7 @@ add_executable(bromesh_test
     test_reconstruction.cpp
     test_io.cpp
     test_io_gltf.cpp
+    test_io_draco.cpp
     test_skinning.cpp
     test_animation.cpp
     test_rigging.cpp
