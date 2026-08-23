@@ -318,20 +318,6 @@ TEST(par_rock) {
     ASSERT(differ, "par_rock: different seeds should produce different shapes");
 }
 
-TEST(par_trefoil_knot) {
-    auto mesh = bromesh::trefoilKnot(1.0f, 32, 8);
-    ASSERT(!mesh.empty(), "par_trefoil: should be non-empty");
-    ASSERT(mesh.vertexCount() > 50, "par_trefoil: should have many vertices");
-    ASSERT(mesh.hasNormals(), "par_trefoil: should have normals");
-}
-
-TEST(par_klein_bottle) {
-    auto mesh = bromesh::kleinBottle(16, 8);
-    ASSERT(!mesh.empty(), "par_klein: should be non-empty");
-    ASSERT(mesh.vertexCount() > 50, "par_klein: should have many vertices");
-    ASSERT(mesh.hasNormals(), "par_klein: should have normals");
-}
-
 #endif // BROMESH_HAS_PAR_SHAPES
 
 TEST(winding_order_box) {

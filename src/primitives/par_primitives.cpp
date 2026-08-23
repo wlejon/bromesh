@@ -222,28 +222,4 @@ MeshData blob(float radius, int seed, int nsubdivisions,
     return m;
 }
 
-MeshData trefoilKnot(float radius, int slices, int stacks) {
-#ifdef BROMESH_HAS_PAR_SHAPES
-    auto* pm = par_shapes_create_trefoil_knot(slices, stacks, radius);
-    if (!pm) return {};
-    par_shapes_compute_normals(pm);
-    return fromParShapes(pm, 1.0f);
-#else
-    (void)radius; (void)slices; (void)stacks;
-    return {};
-#endif
-}
-
-MeshData kleinBottle(int slices, int stacks) {
-#ifdef BROMESH_HAS_PAR_SHAPES
-    auto* pm = par_shapes_create_klein_bottle(slices, stacks);
-    if (!pm) return {};
-    par_shapes_compute_normals(pm);
-    return fromParShapes(pm, 1.0f);
-#else
-    (void)slices; (void)stacks;
-    return {};
-#endif
-}
-
 } // namespace bromesh

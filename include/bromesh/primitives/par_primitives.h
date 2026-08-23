@@ -46,10 +46,4 @@ MeshData blob(float radius,
               float centerY        = 0.0f,
               float centerZ        = 0.0f);
 
-/// Generate a trefoil knot.
-MeshData trefoilKnot(float radius, int slices = 64, int stacks = 16);
-
-/// Generate a Klein bottle.
-MeshData kleinBottle(int slices = 32, int stacks = 16);
-
 } // namespace bromesh
