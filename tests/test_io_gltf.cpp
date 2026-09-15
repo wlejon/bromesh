@@ -6,6 +6,11 @@
 #include <cstring>
 
 #if BROMESH_HAS_GLTF
+#include "tiny_gltf.h"
+
+#if BROMESH_HAS_DRACO
+#include "bromesh/io/draco.h"
+#endif
 
 static std::string testFile(const std::string& name) {
     return (std::filesystem::temp_directory_path() / name).string();
@@ -531,4 +536,268 @@ TEST(cross_format_gltf_obj_stl) {
     std::remove(stlPath.c_str());
 }
 
+TEST(gltf_scene_save_and_load_round_trip) {
+    bromesh::GltfScene scene;
+
+    // 2 meshes
+    auto boxMesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(boxMesh);
+    bromesh::projectUVs(boxMesh, bromesh::ProjectionType::Box, 1.0f);
+    scene.meshes.push_back(boxMesh);
+
+    auto sphereMesh = bromesh::sphere(0.75f, 16, 12);
+    bromesh::computeNormals(sphereMesh);
+    bromesh::projectUVs(sphereMesh, bromesh::ProjectionType::Spherical, 1.0f);
+    scene.meshes.push_back(sphereMesh);
+
+    // 1 skeleton
+    bromesh::Skeleton skel;
+    bromesh::Bone b0;
+    b0.name = "root";
+    b0.parent = -1;
+    b0.localT[0] = 0.0f; b0.localT[1] = 0.0f; b0.localT[2] = 0.0f;
+    b0.localR[0] = 0.0f; b0.localR[1] = 0.0f; b0.localR[2] = 0.0f; b0.localR[3] = 1.0f;
+    b0.localS[0] = 1.0f; b0.localS[1] = 1.0f; b0.localS[2] = 1.0f;
+    skel.bones.push_back(b0);
+    scene.skeletons.push_back(skel);
+
+    // Skinning data for mesh 0
+    bromesh::SkinData skin0;
+    skin0.boneCount = 1;
+    skin0.boneIndices.assign(boxMesh.vertexCount() * 4, 0u);
+    skin0.boneWeights.assign(boxMesh.vertexCount() * 4, 0.0f);
+    for (size_t v = 0; v < boxMesh.vertexCount(); ++v) {
+        skin0.boneWeights[v * 4 + 0] = 1.0f;
+    }
+    float idMat[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    skin0.inverseBindMatrices.assign(16, 0.0f);
+    std::memcpy(skin0.inverseBindMatrices.data(), idMat, sizeof(idMat));
+    scene.skins.push_back(skin0);
+
+    // Empty skin for mesh 1
+    scene.skins.push_back({});
+
+    scene.meshSkeleton = { 0, -1 };
+
+    // 1 embedded 2x2 image (RGBA8)
+    bromesh::Image img;
+    img.name = "test_tex";
+    img.width = 2;
+    img.height = 2;
+    img.mimeType = "image/png";
+    img.data = {
+        255, 0, 0, 255,     0, 255, 0, 255,
+        0, 0, 255, 255,     255, 255, 0, 255
+    };
+    scene.images.push_back(img);
+
+    // 1 material with baseColorFactor and referencing image 0
+    bromesh::Material mat;
+    mat.name = "TestPbrMaterial";
+    mat.baseColorFactor[0] = 0.8f;
+    mat.baseColorFactor[1] = 0.2f;
+    mat.baseColorFactor[2] = 0.4f;
+    mat.baseColorFactor[3] = 1.0f;
+    mat.metallicFactor = 0.5f;
+    mat.roughnessFactor = 0.25f;
+    mat.emissiveFactor[0] = 0.1f;
+    mat.emissiveFactor[1] = 0.2f;
+    mat.emissiveFactor[2] = 0.3f;
+    mat.baseColorTexture = 0;
+    scene.materials.push_back(mat);
+
+    scene.meshMaterial = { 0, -1 };
+
+    // 1 animation targeting skeleton 0
+    bromesh::Animation anim;
+    anim.name = "SimpleTranslation";
+    anim.duration = 1.0f;
+    bromesh::AnimChannel ch;
+    ch.boneIndex = 0;
+    ch.path = bromesh::AnimChannel::Path::Translation;
+    ch.interp = bromesh::AnimChannel::Interp::Linear;
+    ch.times = { 0.0f, 1.0f };
+    ch.values = { 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f };
+    anim.channels.push_back(ch);
+    scene.animations.push_back(anim);
+    scene.animationSkeleton = { 0 };
+
+    std::string path = std::string(testDir) + "rt_scene_multi.glb";
+    ASSERT(bromesh::saveGLTF(scene, path), "saveGLTF(GltfScene) returns true");
+
+    auto loaded = bromesh::loadGLTF(path);
+    ASSERT(loaded.meshes.size() == 2, "2 meshes loaded");
+    ASSERT(positionsMatch(boxMesh, loaded.meshes[0], 1e-4f), "mesh 0 positions match");
+    ASSERT(positionsMatch(sphereMesh, loaded.meshes[1], 1e-4f), "mesh 1 positions match");
+    ASSERT(loaded.meshes[0].hasNormals() && loaded.meshes[0].hasUVs(), "mesh 0 has normals and UVs");
+    ASSERT(loaded.meshes[1].hasNormals() && loaded.meshes[1].hasUVs(), "mesh 1 has normals and UVs");
+
+    // Skeletons and skins
+    ASSERT(loaded.skeletons.size() == 1, "1 skeleton loaded");
+    ASSERT(loaded.meshSkeleton.size() == 2, "meshSkeleton size 2");
+    ASSERT(loaded.meshSkeleton[0] == 0, "mesh 0 has skeleton 0");
+    ASSERT(loaded.meshSkeleton[1] == -1, "mesh 1 has skeleton -1");
+    ASSERT(loaded.skins.size() == 2, "skins size 2");
+    ASSERT(loaded.skins[0].boneIndices.size() == boxMesh.vertexCount() * 4, "mesh 0 skin indices size");
+
+    // Materials
+    ASSERT(loaded.materials.size() == 1, "1 material loaded");
+    ASSERT(loaded.materials[0].name == "TestPbrMaterial", "material name matches");
+    ASSERT(std::fabs(loaded.materials[0].baseColorFactor[0] - 0.8f) < 1e-3f, "baseColorFactor R");
+    ASSERT(std::fabs(loaded.materials[0].baseColorFactor[1] - 0.2f) < 1e-3f, "baseColorFactor G");
+    ASSERT(std::fabs(loaded.materials[0].baseColorFactor[2] - 0.4f) < 1e-3f, "baseColorFactor B");
+    ASSERT(std::fabs(loaded.materials[0].metallicFactor - 0.5f) < 1e-3f, "metallicFactor");
+    ASSERT(std::fabs(loaded.materials[0].roughnessFactor - 0.25f) < 1e-3f, "roughnessFactor");
+    ASSERT(loaded.materials[0].baseColorTexture == 0, "baseColorTexture index resolved to image 0");
+
+    // Mesh material assignment
+    ASSERT(loaded.meshMaterial.size() == 2, "meshMaterial size 2");
+    ASSERT(loaded.meshMaterial[0] == 0, "mesh 0 assigned material 0");
+    ASSERT(loaded.meshMaterial[1] == -1, "mesh 1 assigned material -1");
+
+    // Images
+    ASSERT(loaded.images.size() == 1, "1 image loaded");
+    ASSERT(loaded.images[0].width == 2 && loaded.images[0].height == 2, "image dimensions 2x2");
+    ASSERT(loaded.images[0].data.size() == 16, "image data size 16 (2x2x4)");
+    ASSERT(loaded.images[0].data == img.data, "embedded image pixels match exactly");
+
+    // Animations
+    ASSERT(loaded.animations.size() == 1, "1 animation loaded");
+    ASSERT(loaded.animations[0].name == "SimpleTranslation", "animation name matches");
+    ASSERT(loaded.animations[0].channels.size() == 1, "1 anim channel");
+    ASSERT(loaded.animations[0].channels[0].times.size() == 2, "channel times count");
+    ASSERT(loaded.animations[0].channels[0].values.size() == 6, "channel values count");
+
+    std::remove(path.c_str());
+}
+
+#if BROMESH_HAS_DRACO && BROMESH_HAS_GLTF
+TEST(gltf_draco_extension_loading) {
+    auto box = bromesh::box(1.0f, 0.8f, 0.6f);
+    bromesh::computeNormals(box);
+    bromesh::projectUVs(box, bromesh::ProjectionType::Box, 1.0f);
+    ASSERT(box.validate(), "box validates");
+
+    std::string err;
+    std::vector<uint8_t> dracoBytes = bromesh::encodeDraco(box, bromesh::DracoEncodeOptions(), &err);
+    ASSERT(!dracoBytes.empty(), "draco encode succeeded");
+
+    // Build tinygltf::Model using KHR_draco_mesh_compression
+    tinygltf::Model model;
+    model.asset.version = "2.0";
+    model.asset.generator = "bromesh_draco_test";
+
+    // Buffer 0 holds dracoBytes
+    tinygltf::Buffer buffer;
+    buffer.data = dracoBytes;
+    model.buffers.push_back(buffer);
+
+    // BufferView 0 for the draco compressed payload
+    tinygltf::BufferView bv;
+    bv.buffer = 0;
+    bv.byteOffset = 0;
+    bv.byteLength = dracoBytes.size();
+    model.bufferViews.push_back(bv);
+
+    // In glTF, standard accessors are provided as fallbacks for loaders without Draco
+    // For Draco-enabled loaders, accessors specify count and component type
+    tinygltf::Accessor posAcc;
+    posAcc.bufferView = -1;
+    posAcc.count = box.vertexCount();
+    posAcc.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+    posAcc.type = TINYGLTF_TYPE_VEC3;
+    model.accessors.push_back(posAcc);
+
+    tinygltf::Accessor nrmAcc;
+    nrmAcc.bufferView = -1;
+    nrmAcc.count = box.vertexCount();
+    nrmAcc.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+    nrmAcc.type = TINYGLTF_TYPE_VEC3;
+    model.accessors.push_back(nrmAcc);
+
+    tinygltf::Accessor uvAcc;
+    uvAcc.bufferView = -1;
+    uvAcc.count = box.vertexCount();
+    uvAcc.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+    uvAcc.type = TINYGLTF_TYPE_VEC2;
+    model.accessors.push_back(uvAcc);
+
+    tinygltf::Accessor idxAcc;
+    idxAcc.bufferView = -1;
+    idxAcc.count = box.indices.size();
+    idxAcc.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
+    idxAcc.type = TINYGLTF_TYPE_SCALAR;
+    model.accessors.push_back(idxAcc);
+
+    tinygltf::Mesh mesh;
+    tinygltf::Primitive prim;
+    prim.mode = TINYGLTF_MODE_TRIANGLES;
+    prim.indices = 3;
+    prim.attributes["POSITION"] = 0;
+    prim.attributes["NORMAL"] = 1;
+    prim.attributes["TEXCOORD_0"] = 2;
+
+    // Draco extension dictionary: bufferView = 0, attributes dictionary
+    tinygltf::Value::Object dracoExtObj;
+    dracoExtObj["bufferView"] = tinygltf::Value(0);
+    tinygltf::Value::Object attrsObj;
+    attrsObj["POSITION"] = tinygltf::Value(0);
+    attrsObj["NORMAL"] = tinygltf::Value(1);
+    attrsObj["TEXCOORD_0"] = tinygltf::Value(2);
+    dracoExtObj["attributes"] = tinygltf::Value(attrsObj);
+
+    prim.extensions["KHR_draco_mesh_compression"] = tinygltf::Value(dracoExtObj);
+    mesh.primitives.push_back(prim);
+    model.meshes.push_back(mesh);
+
+    tinygltf::Node node;
+    node.mesh = 0;
+    model.nodes.push_back(node);
+
+    tinygltf::Scene sceneNode;
+    sceneNode.nodes.push_back(0);
+    model.scenes.push_back(sceneNode);
+    model.defaultScene = 0;
+
+    model.extensionsUsed.push_back("KHR_draco_mesh_compression");
+    model.extensionsRequired.push_back("KHR_draco_mesh_compression");
+
+    std::string path = std::string(testDir) + "draco_ext_test.glb";
+    tinygltf::TinyGLTF writer;
+    ASSERT(writer.WriteGltfSceneToFile(&model, path, true, true, true, true), "wrote draco glb");
+
+    // Load with loadGLTF
+    auto loaded = bromesh::loadGLTF(path);
+    ASSERT(loaded.meshes.size() == 1, "loaded 1 mesh from draco compressed glb");
+    const auto& loadedMesh = loaded.meshes[0];
+    ASSERT(loadedMesh.triangleCount() == box.triangleCount(), "triangle count matches");
+    ASSERT(loadedMesh.hasNormals(), "loaded draco mesh has normals");
+    ASSERT(loadedMesh.hasUVs(), "loaded draco mesh has UVs");
+    ASSERT(loadedMesh.validate(), "loaded draco mesh validates");
+
+    // Extents check (Draco quantization nudges positions slightly)
+    float lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
+    float dlo[3] = {1e9f, 1e9f, 1e9f}, dhi[3] = {-1e9f, -1e9f, -1e9f};
+    for (size_t i = 0; i < box.positions.size(); i += 3) {
+        for (int c = 0; c < 3; ++c) {
+            lo[c] = std::min(lo[c], box.positions[i + c]);
+            hi[c] = std::max(hi[c], box.positions[i + c]);
+        }
+    }
+    for (size_t i = 0; i < loadedMesh.positions.size(); i += 3) {
+        for (int c = 0; c < 3; ++c) {
+            dlo[c] = std::min(dlo[c], loadedMesh.positions[i + c]);
+            dhi[c] = std::max(dhi[c], loadedMesh.positions[i + c]);
+        }
+    }
+    for (int c = 0; c < 3; ++c) {
+        ASSERT(std::fabs(lo[c] - dlo[c]) < 1e-3f, "min bounds survive draco compression");
+        ASSERT(std::fabs(hi[c] - dhi[c]) < 1e-3f, "max bounds survive draco compression");
+    }
+
+    std::remove(path.c_str());
+}
+#endif
+
 #endif // BROMESH_HAS_GLTF
+

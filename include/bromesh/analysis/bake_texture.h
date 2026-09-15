@@ -1,7 +1,9 @@
 #pragma once
 
 #include "bromesh/mesh_data.h"
+#include "bromesh/io/gltf.h"
 
+#include <string>
 #include <vector>
 
 namespace bromesh {
@@ -56,5 +58,16 @@ TextureBuffer bakeNormalsToTexture(const MeshData& mesh,
 /// Returns a 4-channel RGBA texture (xyz = world position, alpha=1).
 TextureBuffer bakePositionToTexture(const MeshData& mesh,
                                      int texWidth, int texHeight);
+
+/// Save a TextureBuffer as an uncompressed TGA file.
+/// Channels: 1 = 8-bit grayscale, 3 = 24-bit BGR, 4 = 32-bit BGRA.
+/// Clamps float [0, 1] to uint8 [0, 255]. Handles coordinate orientation correctly
+/// (TGA lower-left origin / descriptor bit 5 = 0).
+bool saveImageTGA(const TextureBuffer& buf, const std::string& path);
+
+/// Convert TextureBuffer (float row-major, bottom-to-top) to bromesh::Image
+/// (RGBA8, top-left origin, stride width * 4), suitable for glTF materials or GPU upload.
+/// If buf.channels == 1, replicates to RGB with A=255; if 3, sets A=255; if 4, copies RGBA.
+Image textureToImage(const TextureBuffer& buf, const std::string& name = "");
 
 } // namespace bromesh

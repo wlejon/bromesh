@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <random>
 #include <vector>
 
@@ -467,6 +468,130 @@ TextureBuffer bakePositionToTexture(const MeshData& mesh,
     }
 
     return buf;
+}
+
+bool saveImageTGA(const TextureBuffer& buf, const std::string& path) {
+    if (buf.width <= 0 || buf.height <= 0) return false;
+    if (buf.channels != 1 && buf.channels != 3 && buf.channels != 4) return false;
+    if (buf.pixels.size() < static_cast<size_t>(buf.width) * buf.height * buf.channels) return false;
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out.is_open()) return false;
+
+    uint8_t header[18] = {};
+    // Image type: 3 for uncompressed grayscale, 2 for uncompressed true-color
+    header[2] = (buf.channels == 1) ? 3 : 2;
+    // Width (little-endian)
+    header[12] = static_cast<uint8_t>(buf.width & 0xFF);
+    header[13] = static_cast<uint8_t>((buf.width >> 8) & 0xFF);
+    // Height (little-endian)
+    header[14] = static_cast<uint8_t>(buf.height & 0xFF);
+    header[15] = static_cast<uint8_t>((buf.height >> 8) & 0xFF);
+    // Bits per pixel
+    header[16] = static_cast<uint8_t>(buf.channels * 8);
+    // Image descriptor: bits 0-3 = alpha depth (8 for 32-bit BGRA, 0 for 8-bit/24-bit).
+    // Bit 5 = 0 indicates bottom-to-top (lower-left origin), matching TextureBuffer convention.
+    header[17] = (buf.channels == 4) ? 8 : 0;
+
+    out.write(reinterpret_cast<const char*>(header), 18);
+
+    auto toU8 = [](float val) -> uint8_t {
+        float c = std::clamp(val, 0.0f, 1.0f);
+        return static_cast<uint8_t>(std::round(c * 255.0f));
+    };
+
+    // Pixels are written row-major bottom-to-top (matching TextureBuffer layout)
+    std::vector<uint8_t> rowData;
+    if (buf.channels == 1) {
+        rowData.resize(buf.width);
+        for (int y = 0; y < buf.height; ++y) {
+            const float* src = buf.at(0, y);
+            for (int x = 0; x < buf.width; ++x) {
+                rowData[x] = toU8(src[x]);
+            }
+            out.write(reinterpret_cast<const char*>(rowData.data()), rowData.size());
+        }
+    } else if (buf.channels == 3) {
+        // TGA true-color 24-bit is BGR
+        rowData.resize(buf.width * 3);
+        for (int y = 0; y < buf.height; ++y) {
+            const float* src = buf.at(0, y);
+            for (int x = 0; x < buf.width; ++x) {
+                rowData[x * 3 + 0] = toU8(src[x * 3 + 2]); // B
+                rowData[x * 3 + 1] = toU8(src[x * 3 + 1]); // G
+                rowData[x * 3 + 2] = toU8(src[x * 3 + 0]); // R
+            }
+            out.write(reinterpret_cast<const char*>(rowData.data()), rowData.size());
+        }
+    } else if (buf.channels == 4) {
+        // TGA true-color 32-bit is BGRA
+        rowData.resize(buf.width * 4);
+        for (int y = 0; y < buf.height; ++y) {
+            const float* src = buf.at(0, y);
+            for (int x = 0; x < buf.width; ++x) {
+                rowData[x * 4 + 0] = toU8(src[x * 4 + 2]); // B
+                rowData[x * 4 + 1] = toU8(src[x * 4 + 1]); // G
+                rowData[x * 4 + 2] = toU8(src[x * 4 + 0]); // R
+                rowData[x * 4 + 3] = toU8(src[x * 4 + 3]); // A
+            }
+            out.write(reinterpret_cast<const char*>(rowData.data()), rowData.size());
+        }
+    }
+
+    return out.good();
+}
+
+Image textureToImage(const TextureBuffer& buf, const std::string& name) {
+    Image img;
+    img.name = name;
+    img.mimeType = "image/png";
+    if (buf.width <= 0 || buf.height <= 0 || buf.channels <= 0 || buf.pixels.empty()) {
+        return img;
+    }
+
+    img.width = buf.width;
+    img.height = buf.height;
+    img.data.resize(static_cast<size_t>(buf.width) * buf.height * 4);
+
+    auto toU8 = [](float val) -> uint8_t {
+        float c = std::clamp(val, 0.0f, 1.0f);
+        return static_cast<uint8_t>(std::round(c * 255.0f));
+    };
+
+    // TextureBuffer is bottom-to-top (y=0 is bottom).
+    // bromesh::Image is top-left origin (y=0 is top).
+    // So y_buf = buf.height - 1 - y_img.
+    for (int y_img = 0; y_img < buf.height; ++y_img) {
+        int y_buf = buf.height - 1 - y_img;
+        const float* srcRow = buf.at(0, y_buf);
+        uint8_t* dstRow = &img.data[y_img * buf.width * 4];
+
+        if (buf.channels == 1) {
+            for (int x = 0; x < buf.width; ++x) {
+                uint8_t v = toU8(srcRow[x]);
+                dstRow[x * 4 + 0] = v;
+                dstRow[x * 4 + 1] = v;
+                dstRow[x * 4 + 2] = v;
+                dstRow[x * 4 + 3] = 255;
+            }
+        } else if (buf.channels == 3) {
+            for (int x = 0; x < buf.width; ++x) {
+                dstRow[x * 4 + 0] = toU8(srcRow[x * 3 + 0]);
+                dstRow[x * 4 + 1] = toU8(srcRow[x * 3 + 1]);
+                dstRow[x * 4 + 2] = toU8(srcRow[x * 3 + 2]);
+                dstRow[x * 4 + 3] = 255;
+            }
+        } else if (buf.channels == 4) {
+            for (int x = 0; x < buf.width; ++x) {
+                dstRow[x * 4 + 0] = toU8(srcRow[x * 4 + 0]);
+                dstRow[x * 4 + 1] = toU8(srcRow[x * 4 + 1]);
+                dstRow[x * 4 + 2] = toU8(srcRow[x * 4 + 2]);
+                dstRow[x * 4 + 3] = toU8(srcRow[x * 4 + 3]);
+            }
+        }
+    }
+
+    return img;
 }
 
 } // namespace bromesh

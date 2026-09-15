@@ -1,5 +1,7 @@
 #include "test_framework.h"
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 
 TEST(bake_curvature_box) {
     auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
@@ -339,4 +341,87 @@ TEST(bake_curvature_sphere_analytic) {
         }
     }
     ASSERT(validTex, "bake_curvature_sphere_analytic: tex pixels in [0, 1]");
+}
+
+TEST(bake_texture_save_tga_and_to_image) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(mesh);
+    bromesh::projectUVs(mesh, bromesh::ProjectionType::Box, 1.0f);
+
+    auto ao = bromesh::bakeAmbientOcclusionToTexture(mesh, 16, 16, 16);
+    ASSERT(ao.width == 16 && ao.height == 16, "ao dimensions");
+    ASSERT(ao.channels == 1, "ao channels is 1");
+
+    std::string tmpPath = (std::filesystem::temp_directory_path() / "test_ao.tga").string();
+    ASSERT(bromesh::saveImageTGA(ao, tmpPath), "saveImageTGA returns true for 1-channel");
+
+    // Verify TGA file exists and check header / size
+    {
+        std::ifstream file(tmpPath, std::ios::binary | std::ios::ate);
+        ASSERT(file.is_open(), "TGA file opened successfully");
+        std::streamsize fileSize = file.tellg();
+        ASSERT(fileSize == 18 + 16 * 16, "TGA file size matches 18-byte header + 16x16 8-bit pixels");
+
+        file.seekg(0, std::ios::beg);
+        uint8_t header[18];
+        file.read(reinterpret_cast<char*>(header), 18);
+        ASSERT(header[2] == 3, "TGA type 3 (uncompressed grayscale)");
+        int w = header[12] | (header[13] << 8);
+        int h = header[14] | (header[15] << 8);
+        ASSERT(w == 16 && h == 16, "TGA dimensions match in header");
+        ASSERT(header[16] == 8, "TGA pixel depth is 8-bit");
+        ASSERT((header[17] & 0x20) == 0, "TGA descriptor bit 5 is 0 (bottom-to-top origin)");
+    }
+    std::filesystem::remove(tmpPath);
+
+    // Also test 4-channel TGA export
+    auto nrm = bromesh::bakeNormalsToTexture(mesh, 16, 16);
+    ASSERT(nrm.channels == 4, "nrm channels is 4");
+    std::string tmpNrmPath = (std::filesystem::temp_directory_path() / "test_nrm.tga").string();
+    ASSERT(bromesh::saveImageTGA(nrm, tmpNrmPath), "saveImageTGA returns true for 4-channel");
+    {
+        std::ifstream file(tmpNrmPath, std::ios::binary | std::ios::ate);
+        ASSERT(file.is_open(), "TGA normal map file opened");
+        std::streamsize fileSize = file.tellg();
+        ASSERT(fileSize == 18 + 16 * 16 * 4, "TGA 4-channel size matches 18 + 16x16x4");
+        file.seekg(0, std::ios::beg);
+        uint8_t header[18];
+        file.read(reinterpret_cast<char*>(header), 18);
+        ASSERT(header[2] == 2, "TGA type 2 (uncompressed true-color)");
+        ASSERT(header[16] == 32, "TGA pixel depth is 32-bit");
+        ASSERT(header[17] == 8, "TGA descriptor has 8 alpha bits and bit 5 = 0");
+    }
+    std::filesystem::remove(tmpNrmPath);
+
+    // Test textureToImage with 1-channel
+    bromesh::Image img = bromesh::textureToImage(ao, "ao_image");
+    ASSERT(img.name == "ao_image", "img name matches");
+    ASSERT(img.width == 16 && img.height == 16, "img dimensions match");
+    ASSERT(img.data.size() == 16 * 16 * 4, "img data size matches RGBA8");
+    for (size_t i = 0; i < 16 * 16; ++i) {
+        uint8_t r = img.data[i * 4 + 0];
+        uint8_t g = img.data[i * 4 + 1];
+        uint8_t b = img.data[i * 4 + 2];
+        uint8_t a = img.data[i * 4 + 3];
+        ASSERT(r == g && g == b, "1-channel replicated to RGB");
+        ASSERT(a == 255, "1-channel alpha set to 255");
+    }
+
+    // Test textureToImage with 4-channel and verify vertical orientation flip
+    bromesh::Image img4 = bromesh::textureToImage(nrm, "nrm_image");
+    ASSERT(img4.name == "nrm_image", "img4 name matches");
+    ASSERT(img4.width == 16 && img4.height == 16, "img4 dimensions match");
+    ASSERT(img4.data.size() == 16 * 16 * 4, "img4 data size matches");
+    // Verify vertical coordinate flip: top row of Image (y=0) is top row of TextureBuffer (y=height-1)
+    for (int x = 0; x < 16; ++x) {
+        const float* topBufPx = nrm.at(x, 15);
+        uint8_t r = img4.data[(0 * 16 + x) * 4 + 0];
+        uint8_t expR = static_cast<uint8_t>(std::round(std::clamp(topBufPx[0], 0.0f, 1.0f) * 255.0f));
+        ASSERT(std::abs(static_cast<int>(r) - static_cast<int>(expR)) <= 1, "top row coordinate flip");
+
+        const float* botBufPx = nrm.at(x, 0);
+        uint8_t botR = img4.data[(15 * 16 + x) * 4 + 0];
+        uint8_t expBotR = static_cast<uint8_t>(std::round(std::clamp(botBufPx[0], 0.0f, 1.0f) * 255.0f));
+        ASSERT(std::abs(static_cast<int>(botR) - static_cast<int>(expBotR)) <= 1, "bottom row coordinate flip");
+    }
 }

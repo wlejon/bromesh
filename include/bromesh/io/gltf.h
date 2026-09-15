@@ -67,6 +67,9 @@ struct GltfScene {
 /// SkinData and meshSkeleton[i] == -1.
 GltfScene loadGLTF(const std::string& path);
 
+/// Save a full glTF scene (meshes, skins, skeletons, animations, materials, images).
+bool saveGLTF(const GltfScene& scene, const std::string& path);
+
 /// Save a single unskinned mesh. Convenience wrapper.
 bool saveGLTF(const MeshData& mesh, const std::string& path);
 

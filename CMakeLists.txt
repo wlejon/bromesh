@@ -358,7 +358,10 @@ endif()
 if(TARGET tinygltf)
     target_link_libraries(bromesh PRIVATE tinygltf)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_GLTF=1)
-    target_sources(bromesh PRIVATE src/io/gltf.cpp)
+    target_sources(bromesh PRIVATE
+        src/io/gltf_load.cpp
+        src/io/gltf_save.cpp
+    )
 endif()
 
 if(TARGET draco::draco)
