@@ -345,10 +345,6 @@ TEST(polymesh_collapse_boundary) {
 }
 
 TEST(polymesh_collapse_refuses_interior_with_boundary_vertex) {
-    // 4-triangle fan around center 0: edge 0-1 is interior (between two
-    // adjacent fan tris), but vertex 1 sits on the outer boundary loop.
-    // Collapsing 0-1 must be refused (interior edge with a boundary
-    // endpoint).
     std::vector<float> pos = {
          0, 0, 0,    // 0 = center
          1, 0, 0,    // 1
@@ -378,4 +374,82 @@ TEST(polymesh_collapse_refuses_interior_with_boundary_vertex) {
     bool ok = pm.collapseEdge(hi);
     ASSERT(!ok, "collapse_refuse_boundary: refused");
 }
+
+TEST(polymesh_inset_face) {
+    // Cube with 8 vertices, 6 quad faces
+    std::vector<float> pos = {
+        -1.0f, -1.0f,  1.0f,   1.0f, -1.0f,  1.0f,   1.0f,  1.0f,  1.0f,  -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f, -1.0f,   1.0f, -1.0f, -1.0f,   1.0f,  1.0f, -1.0f,  -1.0f,  1.0f, -1.0f
+    };
+    std::vector<uint32_t> polyVerts = {
+        0, 1, 2, 3, // front (+Z)
+        5, 4, 7, 6, // back (-Z)
+        4, 0, 3, 7, // left (-X)
+        1, 5, 6, 2, // right (+X)
+        3, 2, 6, 7, // top (+Y)
+        4, 5, 1, 0  // bottom (-Y)
+    };
+    std::vector<uint32_t> polyOffsets = { 0, 4, 8, 12, 16, 20, 24 };
+    auto pm = bromesh::PolyMesh::fromPolygons(pos, polyVerts, polyOffsets);
+
+    auto v0 = pm.validate();
+    ASSERT(v0.valid && v0.isClosed, "inset_face: cube validates closed");
+    ASSERT(pm.faceCount() == 6, "inset_face: 6 initial quad faces");
+
+    auto res = pm.insetFace(0, 0.2f, true);
+    ASSERT(res.innerFace >= 0, "inset_face: inner face created");
+    ASSERT(res.innerVerts.size() == 4, "inset_face: 4 inner vertices");
+    ASSERT(res.bridgeFaces.size() == 4, "inset_face: 4 bridge quad faces created");
+
+    auto v1 = pm.validate();
+    ASSERT(v1.valid && v1.isClosed, "inset_face: post-inset validates closed");
+    ASSERT(pm.faceCount() == 10, "inset_face: 6 - 1 + 1 + 4 = 10 faces");
+
+    for (int32_t bf : res.bridgeFaces) {
+        ASSERT(pm.faceVertexCount(bf) == 4, "inset_face: bridge face is quad");
+    }
+    ASSERT(pm.faceVertexCount(res.innerFace) == 4, "inset_face: inner face is quad");
+
+    auto tess = pm.tessellate();
+    ASSERT(!tess.indices.empty() && tess.indices.size() % 3 == 0, "inset_face: tessellate validates");
+}
+
+TEST(polymesh_inset_and_extrude) {
+    std::vector<float> pos = {
+        -1.0f, -1.0f,  1.0f,   1.0f, -1.0f,  1.0f,   1.0f,  1.0f,  1.0f,  -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f, -1.0f,   1.0f, -1.0f, -1.0f,   1.0f,  1.0f, -1.0f,  -1.0f,  1.0f, -1.0f
+    };
+    std::vector<uint32_t> polyVerts = {
+        0, 1, 2, 3, // front (+Z)
+        5, 4, 7, 6, // back (-Z)
+        4, 0, 3, 7, // left (-X)
+        1, 5, 6, 2, // right (+X)
+        3, 2, 6, 7, // top (+Y)
+        4, 5, 1, 0  // bottom (-Y)
+    };
+    std::vector<uint32_t> polyOffsets = { 0, 4, 8, 12, 16, 20, 24 };
+    auto pm = bromesh::PolyMesh::fromPolygons(pos, polyVerts, polyOffsets);
+
+    // Inset face 0 (front face)
+    auto insetRes = pm.insetFace(0, 0.25f, true);
+    ASSERT(insetRes.innerFace >= 0, "inset_extrude: inset created inner face");
+
+    // Extrude inner face along +Z
+    float offset[3] = { 0.0f, 0.0f, 0.5f };
+    auto extRes = pm.extrudeFace(insetRes.innerFace, offset, false);
+    ASSERT(extRes.bridgeFaces.size() == 4, "inset_extrude: 4 bridge faces extruded");
+
+    auto v = pm.validate();
+    ASSERT(v.valid && v.isClosed, "inset_extrude: topology validates closed");
+
+    auto tess = pm.tessellate();
+    ASSERT(!tess.indices.empty(), "inset_extrude: tessellate non-empty");
+
+    bromesh::MeshData md;
+    md.positions = tess.positions;
+    md.indices = tess.indices;
+    ASSERT(bromesh::isManifold(md), "inset_extrude: manifold verified");
+    ASSERT(bromesh::computeVolume(md) > 8.0f, "inset_extrude: extruded volume exceeds base cube (8.0)");
+}
+
 

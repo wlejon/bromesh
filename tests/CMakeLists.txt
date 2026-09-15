@@ -5,6 +5,7 @@ add_executable(bromesh_test
     test_voxel.cpp
     test_manipulation.cpp
     test_polymesh.cpp
+    test_lathe.cpp
     test_analysis.cpp
     test_bake.cpp
     test_uv.cpp

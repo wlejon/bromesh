@@ -234,6 +234,18 @@ public:
                                int32_t bridgeGroup    = -1,
                                int32_t backGroup      = -1);
 
+    struct InsetResult {
+        int32_t innerFace = -1;          // The newly created interior face
+        std::vector<int32_t> innerVerts; // Vertices of the interior face
+        std::vector<int32_t> bridgeFaces;// Bridge quad faces connecting perimeter to interior
+    };
+
+    /// Inset face `faceIdx` towards its centroid.
+    /// `amount`: distance in world units (if `asRatio==false`) or fractional ratio in [0, 1) (if `asRatio==true`).
+    /// Generates a ring of quad bridge faces around the perimeter and creates an interior N-gon face.
+    /// Returns InsetResult. If faceIdx is invalid or amount <= 0, returns {-1, {}, {}}.
+    InsetResult insetFace(int32_t faceIdx, float amount, bool asRatio = false, int32_t bridgeGroup = -1);
+
     /// Split the edge identified by half-edge `hi`. Inserts a new vertex
     /// at `posOptional` (if non-null) or at the midpoint of the edge's
     /// endpoints. Both adjacent faces (or the single face on a boundary
