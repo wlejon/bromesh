@@ -12,7 +12,7 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 |---|---|
 | **Isosurface** | Marching cubes, surface nets, dual contouring (QEF), transvoxel (seamless LOD) |
 | **Voxel** | Greedy meshing with palette colors |
-| **Primitives** | Box, sphere, cylinder, capsule, plane, torus, heightmap grid; parametric: geodesic sphere, Platonic solids, cone, disc, rock, blob (rock + scale + translate), trefoil knot, Klein bottle |
+| **Primitives** | Box, sphere, cylinder, capsule, plane, torus, heightmap grid; parametric: geodesic sphere, Platonic solids, cone, disc, rock, blob (rock + scale + translate) |
 | **Sweep / extrusion** | Sweep a 2D profile along a 3D path (parallel-transport frames, per-ring scale/twist, mitered joints), circular `tube`, cubic-bezier sweep; triangulate 2D/planar-3D polygons (with holes, via manifold) |
 | **Edit mesh** | `PolyMesh` half-edge adjacency over N-gon faces — extrude/translate face, split/flip/collapse edge, group merge to N-gons, tessellation, validation, compaction; the editable topology behind isotropic remeshing |
 | **Procedural** | Foliage cards (leaf/petal, flower, blade strip), space-colonization branch trees + pipe-model thickening, L-system turtle geometry, leaf scatter, obstacle/capsule fields — the renderer surface the `broflora` sibling composes |
@@ -31,7 +31,7 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 | **Optimization** | Vertex cache, vertex fetch, overdraw, meshlet generation, spatial sorting, shadow index buffer, mesh encoding/compression, triangle strips, progressive mesh (continuous LOD with serialization) |
 | **Boolean/CSG** | Union, difference, intersection, plane splitting (manifold) |
 | **Gaussian splats** | `GaussianSplatCloud` (SoA positions/scales/rotations/opacities/SH, degrees 0-3), 3DGS `.ply` read/write with activation on load and inverse on save |
-| **I/O** | OBJ read/write, STL read/write, PLY read/write, glTF/GLB read/write (meshes, skins, skeletons, animations, materials, embedded images), FBX read, MagicaVoxel VOX read, 3DGS splat PLY read/write |
+| **I/O** | OBJ read/write, STL read/write, PLY read/write, glTF/GLB read/write (meshes, skins, skeletons, animations, materials, embedded images), Draco decode/encode, FBX read, MagicaVoxel VOX read, 3DGS splat PLY read/write |
 
 All mesh algorithms produce `bromesh::MeshData` -- a flat struct with separate position, normal, UV, color, tangent, and index arrays ready for GPU upload or TypedArray transfer. `GaussianSplatCloud` mirrors that layout for splat data.
 
@@ -104,6 +104,7 @@ features are disabled at configure time and the library still builds:
 | [manifold](https://github.com/elalish/manifold) | Boolean/CSG operations and 2D/3D polygon triangulation | Apache-2.0 |
 | [OpenFBX](https://github.com/nem0/OpenFBX) | FBX file loading | MIT |
 | [OSQP](https://github.com/osqp/osqp) | Quadratic program solver backing bounded biharmonic weights (BBW) | Apache-2.0 |
+| [draco](https://github.com/google/draco) | Mesh compression (decode/encode) | Apache-2.0 |
 
 ## Integration
 

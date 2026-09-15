@@ -11,7 +11,9 @@
 #include "bromesh/procedural/lsystem_turtle.h"
 #include "bromesh/procedural/obstacle_field.h"
 
+#if BROMESH_HAS_GLTF
 #include "tiny_gltf.h"
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -21,6 +23,7 @@
 #include <vector>
 #include <fstream>
 
+#if BROMESH_HAS_GLTF
 namespace {
 
 // Build a minimal in-memory tinygltf::Model with:
@@ -264,6 +267,7 @@ TEST(gltf_handcrafted_matrix_image_material) {
     std::remove(p);
     std::remove("test_handcrafted.bin");
 }
+#endif // BROMESH_HAS_GLTF
 
 // =============================================================================
 // Subdivision with vertex colors. All three subdivision algorithms have a

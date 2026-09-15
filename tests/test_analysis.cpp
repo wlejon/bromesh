@@ -359,3 +359,69 @@ TEST(meshes_intersect_separated) {
     ASSERT(!bromesh::meshesIntersect(box1, box2), "separated: boxes should not intersect");
 }
 
+TEST(bvh_closest_point_matches_brute_force) {
+    auto mesh = bromesh::sphere(2.0f, 32, 24);
+    bromesh::computeNormals(mesh);
+    ASSERT(mesh.triangleCount() >= 500, "mesh has 500+ triangles");
+
+    bromesh::MeshBVH bvh = bromesh::MeshBVH::build(mesh);
+    ASSERT(!bvh.empty(), "BVH built");
+
+    const size_t triCount = mesh.triangleCount();
+    for (int i = 0; i < 50; ++i) {
+        // Sample interior of a triangle to ensure a unique closest triangle
+        uint32_t tri = static_cast<uint32_t>((i * 31 + 7) % triCount);
+        uint32_t i0 = mesh.indices[tri * 3 + 0];
+        uint32_t i1 = mesh.indices[tri * 3 + 1];
+        uint32_t i2 = mesh.indices[tri * 3 + 2];
+
+        float p0[3] = { mesh.positions[i0*3+0], mesh.positions[i0*3+1], mesh.positions[i0*3+2] };
+        float p1[3] = { mesh.positions[i1*3+0], mesh.positions[i1*3+1], mesh.positions[i1*3+2] };
+        float p2[3] = { mesh.positions[i2*3+0], mesh.positions[i2*3+1], mesh.positions[i2*3+2] };
+
+        // Face normal
+        float e1[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+        float e2[3] = { p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2] };
+        float fn[3] = {
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0]
+        };
+        float fnLen = std::sqrt(fn[0]*fn[0] + fn[1]*fn[1] + fn[2]*fn[2]);
+        if (fnLen > 1e-8f) { fn[0] /= fnLen; fn[1] /= fnLen; fn[2] /= fnLen; }
+
+        // Barycentric weights in triangle interior, well away from edges
+        float u = 0.25f, v = 0.35f, w = 0.40f;
+        float surf[3] = {
+            u * p0[0] + v * p1[0] + w * p2[0],
+            u * p0[1] + v * p1[1] + w * p2[1],
+            u * p0[2] + v * p1[2] + w * p2[2]
+        };
+
+        // Offset along face normal: inside (-0.02), near (0.01), outside (0.5)
+        float d = (i % 3 == 0) ? -0.02f : ((i % 3 == 1) ? 0.01f : 0.5f);
+        float pt[3] = {
+            surf[0] + fn[0] * d,
+            surf[1] + fn[1] * d,
+            surf[2] + fn[2] * d
+        };
+
+        bromesh::RayHit brute = bromesh::closestPoint(mesh, pt);
+        bromesh::RayHit fast = bvh.closestPoint(mesh, pt);
+
+        ASSERT(brute.hit == fast.hit, "hit status matches");
+        ASSERT(std::fabs(brute.distance - fast.distance) < 1e-4f, "distance matches");
+        ASSERT(std::fabs(brute.position[0] - fast.position[0]) < 1e-4f, "position X matches");
+        ASSERT(std::fabs(brute.position[1] - fast.position[1]) < 1e-4f, "position Y matches");
+        ASSERT(std::fabs(brute.position[2] - fast.position[2]) < 1e-4f, "position Z matches");
+        ASSERT(std::fabs(brute.normal[0] - fast.normal[0]) < 1e-4f, "normal X matches");
+        ASSERT(std::fabs(brute.normal[1] - fast.normal[1]) < 1e-4f, "normal Y matches");
+        ASSERT(std::fabs(brute.normal[2] - fast.normal[2]) < 1e-4f, "normal Z matches");
+        ASSERT(brute.triangleIndex == fast.triangleIndex, "triangleIndex matches");
+        ASSERT(std::fabs(brute.baryU - fast.baryU) < 1e-4f, "baryU matches");
+        ASSERT(std::fabs(brute.baryV - fast.baryV) < 1e-4f, "baryV matches");
+        ASSERT(std::fabs(brute.baryW - fast.baryW) < 1e-4f, "baryW matches");
+    }
+}
+
+

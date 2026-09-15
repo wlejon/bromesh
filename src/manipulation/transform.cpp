@@ -11,6 +11,7 @@ void transformMesh(MeshData& mesh, const float* m) {
 
     const size_t vCount = mesh.vertexCount();
     const bool hasNormals = mesh.hasNormals();
+    const bool hasTangents = mesh.hasTangents();
 
     // Compute inverse-transpose of upper 3x3 for normal transformation.
     // For a general 3x3 A, inv(A)^T = adj(A)^T / det(A).
@@ -24,6 +25,9 @@ void transformMesh(MeshData& mesh, const float* m) {
     float n20 = m[1]*m[6]  - m[2]*m[5];
     float n21 = m[2]*m[4]  - m[0]*m[6];
     float n22 = m[0]*m[5]  - m[1]*m[4];
+
+    float det3x3 = m[0]*n00 + m[4]*n10 + m[8]*n20;
+    bool flipHandedness = (det3x3 < 0.0f);
 
     for (size_t v = 0; v < vCount; ++v) {
         float x = mesh.positions[v*3+0];
@@ -51,6 +55,25 @@ void transformMesh(MeshData& mesh, const float* m) {
                 mesh.normals[v*3+2] = tnz / len;
             }
         }
+
+        if (hasTangents) {
+            float tx = mesh.tangents[v*4+0];
+            float ty = mesh.tangents[v*4+1];
+            float tz = mesh.tangents[v*4+2];
+            float tw = mesh.tangents[v*4+3];
+
+            float ttx = m[0]*tx + m[4]*ty + m[8]*tz;
+            float tty = m[1]*tx + m[5]*ty + m[9]*tz;
+            float ttz = m[2]*tx + m[6]*ty + m[10]*tz;
+
+            float len = std::sqrt(ttx*ttx + tty*tty + ttz*ttz);
+            if (len > 1e-8f) {
+                mesh.tangents[v*4+0] = ttx / len;
+                mesh.tangents[v*4+1] = tty / len;
+                mesh.tangents[v*4+2] = ttz / len;
+            }
+            mesh.tangents[v*4+3] = flipHandedness ? -tw : tw;
+        }
     }
 }
 
@@ -66,6 +89,7 @@ void translateMesh(MeshData& mesh, float dx, float dy, float dz) {
 void scaleMesh(MeshData& mesh, float sx, float sy, float sz) {
     const size_t vCount = mesh.vertexCount();
     const bool hasNormals = mesh.hasNormals();
+    const bool hasTangents = mesh.hasTangents();
 
     for (size_t v = 0; v < vCount; ++v) {
         mesh.positions[v*3+0] *= sx;
@@ -84,6 +108,18 @@ void scaleMesh(MeshData& mesh, float sx, float sy, float sz) {
                 mesh.normals[v*3+2] = nz / len;
             }
         }
+
+        if (hasTangents) {
+            float tx = mesh.tangents[v*4+0] * sx;
+            float ty = mesh.tangents[v*4+1] * sy;
+            float tz = mesh.tangents[v*4+2] * sz;
+            float len = std::sqrt(tx*tx + ty*ty + tz*tz);
+            if (len > 1e-8f) {
+                mesh.tangents[v*4+0] = tx / len;
+                mesh.tangents[v*4+1] = ty / len;
+                mesh.tangents[v*4+2] = tz / len;
+            }
+        }
     }
 
     // If any axis is negative, winding flips for an odd number of negative axes
@@ -91,6 +127,11 @@ void scaleMesh(MeshData& mesh, float sx, float sy, float sz) {
     if (negCount % 2 == 1) {
         for (size_t t = 0; t < mesh.triangleCount(); ++t) {
             std::swap(mesh.indices[t*3+1], mesh.indices[t*3+2]);
+        }
+        if (hasTangents) {
+            for (size_t v = 0; v < vCount; ++v) {
+                mesh.tangents[v*4+3] = -mesh.tangents[v*4+3];
+            }
         }
     }
 }
@@ -124,10 +165,15 @@ void mirrorMesh(MeshData& mesh, int axis) {
     if (axis < 0 || axis > 2) return;
 
     const size_t vCount = mesh.vertexCount();
+    const bool hasTangents = mesh.hasTangents();
     for (size_t v = 0; v < vCount; ++v) {
         mesh.positions[v*3 + axis] = -mesh.positions[v*3 + axis];
         if (mesh.hasNormals()) {
             mesh.normals[v*3 + axis] = -mesh.normals[v*3 + axis];
+        }
+        if (hasTangents) {
+            mesh.tangents[v*4 + axis] = -mesh.tangents[v*4 + axis];
+            mesh.tangents[v*4 + 3] = -mesh.tangents[v*4 + 3];
         }
     }
 

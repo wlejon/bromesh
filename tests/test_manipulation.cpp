@@ -741,3 +741,193 @@ TEST(transform_matrix_identity) {
     ASSERT(mesh.positions == origPos, "transform_identity: no change");
 }
 
+TEST(merge_preserves_tangents) {
+    auto m1 = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(m1);
+    bromesh::projectUVs(m1, bromesh::ProjectionType::Box);
+    bromesh::generateTangents(m1);
+    ASSERT(m1.hasTangents(), "m1 has tangents");
+
+    auto m2 = bromesh::sphere(1.0f, 8, 6);
+    bromesh::computeNormals(m2);
+    bromesh::projectUVs(m2, bromesh::ProjectionType::Spherical);
+    bromesh::generateTangents(m2);
+    ASSERT(m2.hasTangents(), "m2 has tangents");
+
+    auto merged = bromesh::mergeMeshes({m1, m2});
+    ASSERT(merged.hasTangents(), "merged mesh has tangents");
+    ASSERT(merged.tangents.size() == m1.tangents.size() + m2.tangents.size(),
+           "tangent stream size matches sum");
+    for (size_t i = 0; i < m1.tangents.size(); ++i) {
+        ASSERT(std::fabs(merged.tangents[i] - m1.tangents[i]) < 1e-5f, "m1 tangent match");
+    }
+    for (size_t i = 0; i < m2.tangents.size(); ++i) {
+        ASSERT(std::fabs(merged.tangents[m1.tangents.size() + i] - m2.tangents[i]) < 1e-5f,
+               "m2 tangent match");
+    }
+}
+
+TEST(weld_preserves_tangents) {
+    auto b = bromesh::box(1.0f, 1.0f, 1.0f);
+    auto flat = bromesh::computeFlatNormals(b);
+    bromesh::projectUVs(flat, bromesh::ProjectionType::Box);
+    bromesh::generateTangents(flat);
+    ASSERT(flat.hasTangents(), "flat mesh has tangents");
+
+    auto welded = bromesh::weldVertices(flat, 0.01f);
+    ASSERT(welded.hasTangents(), "welded mesh has tangents");
+    ASSERT(welded.tangents.size() == welded.vertexCount() * 4,
+           "tangent stream matches vertex count");
+    for (size_t v = 0; v < welded.vertexCount(); ++v) {
+        float tx = welded.tangents[v * 4 + 0];
+        float ty = welded.tangents[v * 4 + 1];
+        float tz = welded.tangents[v * 4 + 2];
+        float tw = welded.tangents[v * 4 + 3];
+        float len = std::sqrt(tx * tx + ty * ty + tz * tz);
+        ASSERT(std::fabs(len - 1.0f) < 1e-3f, "welded tangent is unit length");
+        ASSERT(std::fabs(std::fabs(tw) - 1.0f) < 1e-3f, "welded tangent handedness is +/-1");
+    }
+}
+
+TEST(transform_preserves_tangents) {
+    auto m = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(m);
+    bromesh::projectUVs(m, bromesh::ProjectionType::Box);
+    bromesh::generateTangents(m);
+    ASSERT(m.hasTangents(), "has tangents before transform");
+
+    // Rotate
+    auto rotated = m;
+    bromesh::rotateMesh(rotated, 0.0f, 0.0f, 1.0f, 1.5707963f);
+    ASSERT(rotated.hasTangents(), "has tangents after rotate");
+    for (size_t v = 0; v < rotated.vertexCount(); ++v) {
+        float tx = rotated.tangents[v * 4 + 0];
+        float ty = rotated.tangents[v * 4 + 1];
+        float tz = rotated.tangents[v * 4 + 2];
+        float len = std::sqrt(tx * tx + ty * ty + tz * tz);
+        ASSERT(std::fabs(len - 1.0f) < 1e-3f, "rotated tangent is unit length");
+    }
+
+    // Scale
+    auto scaled = m;
+    bromesh::scaleMesh(scaled, 2.0f, 3.0f, 4.0f);
+    ASSERT(scaled.hasTangents(), "has tangents after scale");
+    for (size_t v = 0; v < scaled.vertexCount(); ++v) {
+        float tx = scaled.tangents[v * 4 + 0];
+        float ty = scaled.tangents[v * 4 + 1];
+        float tz = scaled.tangents[v * 4 + 2];
+        float len = std::sqrt(tx * tx + ty * ty + tz * tz);
+        ASSERT(std::fabs(len - 1.0f) < 1e-3f, "scaled tangent is unit length");
+    }
+
+    // Mirror
+    auto mirrored = m;
+    bromesh::mirrorMesh(mirrored, 0);
+    ASSERT(mirrored.hasTangents(), "has tangents after mirror");
+    for (size_t v = 0; v < mirrored.vertexCount(); ++v) {
+        float origTx = m.tangents[v * 4 + 0];
+        float origTw = m.tangents[v * 4 + 3];
+        float mirTx = mirrored.tangents[v * 4 + 0];
+        float mirTw = mirrored.tangents[v * 4 + 3];
+        ASSERT(std::fabs(mirTx - (-origTx)) < 1e-4f, "mirror x negates tangent x");
+        ASSERT(std::fabs(mirTw - (-origTw)) < 1e-4f, "mirror x flips handedness w");
+    }
+
+    // Matrix with reflection (det < 0)
+    auto reflected = m;
+    float reflectMat[16] = {
+        -1, 0, 0, 0,
+         0, 1, 0, 0,
+         0, 0, 1, 0,
+         0, 0, 0, 1
+    };
+    bromesh::transformMesh(reflected, reflectMat);
+    for (size_t v = 0; v < reflected.vertexCount(); ++v) {
+        float origTw = m.tangents[v * 4 + 3];
+        float refTw = reflected.tangents[v * 4 + 3];
+        ASSERT(std::fabs(refTw - (-origTw)) < 1e-4f, "transform det<0 flips handedness");
+    }
+}
+
+TEST(skinning_preserves_tangents) {
+    auto m = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(m);
+    bromesh::projectUVs(m, bromesh::ProjectionType::Box);
+    bromesh::generateTangents(m);
+    ASSERT(m.hasTangents(), "mesh has tangents before skinning");
+
+    bromesh::SkinData skin;
+    skin.boneCount = 1;
+    skin.inverseBindMatrices = {
+        1,0,0,0,
+        0,1,0,0,
+        0,0,1,0,
+        0,0,0,1
+    };
+    skin.boneWeights.assign(m.vertexCount() * 4, 0.0f);
+    skin.boneIndices.assign(m.vertexCount() * 4, 0);
+    for (size_t v = 0; v < m.vertexCount(); ++v) {
+        skin.boneWeights[v * 4 + 0] = 1.0f;
+    }
+
+    float pose[16] = {
+        0, 0, 1, 0,
+        0, 1, 0, 0,
+       -1, 0, 0, 0,
+        5, 2, 3, 1
+    };
+
+    bromesh::applySkinning(m, skin, pose);
+    ASSERT(m.hasTangents(), "mesh has tangents after skinning");
+    for (size_t v = 0; v < m.vertexCount(); ++v) {
+        float tx = m.tangents[v * 4 + 0];
+        float ty = m.tangents[v * 4 + 1];
+        float tz = m.tangents[v * 4 + 2];
+        float len = std::sqrt(tx * tx + ty * ty + tz * tz);
+        ASSERT(std::fabs(len - 1.0f) < 1e-3f, "skinned tangent is unit length");
+        ASSERT(std::fabs(std::fabs(m.tangents[v * 4 + 3]) - 1.0f) < 1e-3f, "handedness w preserved");
+    }
+}
+
+TEST(subdivide_preserves_tangents) {
+    auto b = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::computeNormals(b);
+    bromesh::projectUVs(b, bromesh::ProjectionType::Box);
+    bromesh::generateTangents(b);
+    ASSERT(b.hasTangents(), "box has tangents");
+
+    auto mid = bromesh::subdivideMidpoint(b, 1);
+    ASSERT(mid.hasTangents(), "midpoint has tangents");
+    for (size_t v = 0; v < mid.vertexCount(); ++v) {
+        float tx = mid.tangents[v * 4 + 0];
+        float ty = mid.tangents[v * 4 + 1];
+        float tz = mid.tangents[v * 4 + 2];
+        float len = std::sqrt(tx * tx + ty * ty + tz * tz);
+        ASSERT(std::fabs(len - 1.0f) < 1e-3f, "midpoint tangent unit length");
+        ASSERT(std::fabs(std::fabs(mid.tangents[v * 4 + 3]) - 1.0f) < 1e-3f, "midpoint w preserved");
+    }
+
+    auto loop = bromesh::subdivideLoop(b, 1);
+    ASSERT(loop.hasTangents(), "loop has tangents");
+    for (size_t v = 0; v < loop.vertexCount(); ++v) {
+        float tx = loop.tangents[v * 4 + 0];
+        float ty = loop.tangents[v * 4 + 1];
+        float tz = loop.tangents[v * 4 + 2];
+        float len = std::sqrt(tx * tx + ty * ty + tz * tz);
+        ASSERT(std::fabs(len - 1.0f) < 1e-3f, "loop tangent unit length");
+        ASSERT(std::fabs(std::fabs(loop.tangents[v * 4 + 3]) - 1.0f) < 1e-3f, "loop w preserved");
+    }
+
+    auto cc = bromesh::subdivideCatmullClark(b, 1);
+    ASSERT(cc.hasTangents(), "cc has tangents");
+    for (size_t v = 0; v < cc.vertexCount(); ++v) {
+        float tx = cc.tangents[v * 4 + 0];
+        float ty = cc.tangents[v * 4 + 1];
+        float tz = cc.tangents[v * 4 + 2];
+        float len = std::sqrt(tx * tx + ty * ty + tz * tz);
+        ASSERT(std::fabs(len - 1.0f) < 1e-3f, "cc tangent unit length");
+        ASSERT(std::fabs(std::fabs(cc.tangents[v * 4 + 3]) - 1.0f) < 1e-3f, "cc w preserved");
+    }
+}
+
+

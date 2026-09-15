@@ -28,11 +28,11 @@ struct EdgeKeyHash {
 static MeshData subdivideMidpointOnce(const MeshData& mesh) {
     if (mesh.empty() || mesh.indices.empty()) return mesh;
 
-    size_t vertCount = mesh.vertexCount();
     size_t triCount = mesh.triangleCount();
     bool hasN = mesh.hasNormals();
     bool hasUV = mesh.hasUVs();
     bool hasC = mesh.hasColors();
+    bool hasT = mesh.hasTangents();
 
     // Edge midpoint map: edge -> new vertex index
     std::unordered_map<EdgeKey, uint32_t, EdgeKeyHash> edgeMid;
@@ -44,6 +44,7 @@ static MeshData subdivideMidpointOnce(const MeshData& mesh) {
     if (hasN) out.normals = mesh.normals;
     if (hasUV) out.uvs = mesh.uvs;
     if (hasC) out.colors = mesh.colors;
+    if (hasT) out.tangents = mesh.tangents;
     out.indices.reserve(triCount * 4 * 3);
 
     auto getOrCreateMid = [&](uint32_t i0, uint32_t i1) -> uint32_t {
@@ -76,6 +77,17 @@ static MeshData subdivideMidpointOnce(const MeshData& mesh) {
             for (int c = 0; c < 4; ++c)
                 out.colors.push_back(
                     (mesh.colors[i0 * 4 + c] + mesh.colors[i1 * 4 + c]) * 0.5f);
+        }
+        if (hasT) {
+            float tx = (mesh.tangents[i0 * 4 + 0] + mesh.tangents[i1 * 4 + 0]) * 0.5f;
+            float ty = (mesh.tangents[i0 * 4 + 1] + mesh.tangents[i1 * 4 + 1]) * 0.5f;
+            float tz = (mesh.tangents[i0 * 4 + 2] + mesh.tangents[i1 * 4 + 2]) * 0.5f;
+            float len = std::sqrt(tx*tx + ty*ty + tz*tz);
+            if (len > 1e-8f) { tx /= len; ty /= len; tz /= len; }
+            out.tangents.push_back(tx);
+            out.tangents.push_back(ty);
+            out.tangents.push_back(tz);
+            out.tangents.push_back(mesh.tangents[i0 * 4 + 3]);
         }
         return newIdx;
     };
@@ -117,6 +129,7 @@ static MeshData subdivideLoopOnce(const MeshData& mesh) {
     size_t triCount = mesh.triangleCount();
     bool hasUV = mesh.hasUVs();
     bool hasC = mesh.hasColors();
+    bool hasT = mesh.hasTangents();
 
     // Build adjacency: for each edge, store the two opposite vertices
     struct EdgeAdj {
@@ -219,6 +232,7 @@ static MeshData subdivideLoopOnce(const MeshData& mesh) {
     out.positions.assign(newPos.begin(), newPos.end());
     if (hasUV) out.uvs.assign(mesh.uvs.begin(), mesh.uvs.end());
     if (hasC) out.colors.assign(mesh.colors.begin(), mesh.colors.end());
+    if (hasT) out.tangents.assign(mesh.tangents.begin(), mesh.tangents.end());
 
     // Phase 2: Create edge vertices
     for (auto& [key, adj] : edges) {
@@ -249,6 +263,17 @@ static MeshData subdivideLoopOnce(const MeshData& mesh) {
             for (int ch = 0; ch < 4; ++ch)
                 out.colors.push_back(
                     (mesh.colors[a * 4 + ch] + mesh.colors[b * 4 + ch]) * 0.5f);
+        }
+        if (hasT) {
+            float tx = (mesh.tangents[a * 4 + 0] + mesh.tangents[b * 4 + 0]) * 0.5f;
+            float ty = (mesh.tangents[a * 4 + 1] + mesh.tangents[b * 4 + 1]) * 0.5f;
+            float tz = (mesh.tangents[a * 4 + 2] + mesh.tangents[b * 4 + 2]) * 0.5f;
+            float len = std::sqrt(tx*tx + ty*ty + tz*tz);
+            if (len > 1e-8f) { tx /= len; ty /= len; tz /= len; }
+            out.tangents.push_back(tx);
+            out.tangents.push_back(ty);
+            out.tangents.push_back(tz);
+            out.tangents.push_back(mesh.tangents[a * 4 + 3]);
         }
     }
 
@@ -318,6 +343,7 @@ static MeshData subdivideCCOnce(const MeshData& mesh) {
     size_t triCount = mesh.triangleCount();
     bool hasUV = mesh.hasUVs();
     bool hasC = mesh.hasColors();
+    bool hasT = mesh.hasTangents();
 
     // Build adjacency
     struct EdgeAdj {
@@ -354,9 +380,10 @@ static MeshData subdivideCCOnce(const MeshData& mesh) {
 
     // Phase 1: Face points (centroid of each face)
     std::vector<float> facePoints(triCount * 3);
-    std::vector<float> faceUVs, faceColors;
+    std::vector<float> faceUVs, faceColors, faceTangents;
     if (hasUV) faceUVs.resize(triCount * 2);
     if (hasC) faceColors.resize(triCount * 4);
+    if (hasT) faceTangents.resize(triCount * 4);
 
     for (size_t t = 0; t < triCount; ++t) {
         uint32_t i0 = mesh.indices[t * 3 + 0];
@@ -378,6 +405,23 @@ static MeshData subdivideCCOnce(const MeshData& mesh) {
                                           mesh.colors[i1 * 4 + c] +
                                           mesh.colors[i2 * 4 + c]) / 3.0f;
         }
+        if (hasT) {
+            float tx = (mesh.tangents[i0 * 4 + 0] +
+                        mesh.tangents[i1 * 4 + 0] +
+                        mesh.tangents[i2 * 4 + 0]) / 3.0f;
+            float ty = (mesh.tangents[i0 * 4 + 1] +
+                        mesh.tangents[i1 * 4 + 1] +
+                        mesh.tangents[i2 * 4 + 1]) / 3.0f;
+            float tz = (mesh.tangents[i0 * 4 + 2] +
+                        mesh.tangents[i1 * 4 + 2] +
+                        mesh.tangents[i2 * 4 + 2]) / 3.0f;
+            float len = std::sqrt(tx*tx + ty*ty + tz*tz);
+            if (len > 1e-8f) { tx /= len; ty /= len; tz /= len; }
+            faceTangents[t * 4 + 0] = tx;
+            faceTangents[t * 4 + 1] = ty;
+            faceTangents[t * 4 + 2] = tz;
+            faceTangents[t * 4 + 3] = mesh.tangents[i0 * 4 + 3];
+        }
     }
 
     // Phase 2: Edge points
@@ -387,6 +431,7 @@ static MeshData subdivideCCOnce(const MeshData& mesh) {
         float pos[3];
         float uv[2];
         float col[4];
+        float tan[4];
     };
     std::unordered_map<EdgeKey, EdgePoint, EdgeKeyHash> edgePoints;
     for (auto& [key, adj] : edges) {
@@ -409,6 +454,17 @@ static MeshData subdivideCCOnce(const MeshData& mesh) {
         if (hasC) {
             for (int c = 0; c < 4; ++c)
                 ep.col[c] = (mesh.colors[key.a * 4 + c] + mesh.colors[key.b * 4 + c]) * 0.5f;
+        }
+        if (hasT) {
+            float tx = (mesh.tangents[key.a * 4 + 0] + mesh.tangents[key.b * 4 + 0]) * 0.5f;
+            float ty = (mesh.tangents[key.a * 4 + 1] + mesh.tangents[key.b * 4 + 1]) * 0.5f;
+            float tz = (mesh.tangents[key.a * 4 + 2] + mesh.tangents[key.b * 4 + 2]) * 0.5f;
+            float len = std::sqrt(tx*tx + ty*ty + tz*tz);
+            if (len > 1e-8f) { tx /= len; ty /= len; tz /= len; }
+            ep.tan[0] = tx;
+            ep.tan[1] = ty;
+            ep.tan[2] = tz;
+            ep.tan[3] = mesh.tangents[key.a * 4 + 3];
         }
         edgePoints[key] = ep;
     }
@@ -484,6 +540,7 @@ static MeshData subdivideCCOnce(const MeshData& mesh) {
     out.positions.assign(movedPos.begin(), movedPos.end());
     if (hasUV) out.uvs = mesh.uvs; // keep original UVs for original verts
     if (hasC) out.colors = mesh.colors;
+    if (hasT) out.tangents = mesh.tangents;
 
     // Add edge point vertices
     std::unordered_map<EdgeKey, uint32_t, EdgeKeyHash> edgeVertIdx;
@@ -502,6 +559,12 @@ static MeshData subdivideCCOnce(const MeshData& mesh) {
             out.colors.push_back(ep.col[1]);
             out.colors.push_back(ep.col[2]);
             out.colors.push_back(ep.col[3]);
+        }
+        if (hasT) {
+            out.tangents.push_back(ep.tan[0]);
+            out.tangents.push_back(ep.tan[1]);
+            out.tangents.push_back(ep.tan[2]);
+            out.tangents.push_back(ep.tan[3]);
         }
     }
 
@@ -522,6 +585,12 @@ static MeshData subdivideCCOnce(const MeshData& mesh) {
             out.colors.push_back(faceColors[t * 4 + 1]);
             out.colors.push_back(faceColors[t * 4 + 2]);
             out.colors.push_back(faceColors[t * 4 + 3]);
+        }
+        if (hasT) {
+            out.tangents.push_back(faceTangents[t * 4 + 0]);
+            out.tangents.push_back(faceTangents[t * 4 + 1]);
+            out.tangents.push_back(faceTangents[t * 4 + 2]);
+            out.tangents.push_back(faceTangents[t * 4 + 3]);
         }
     }
 

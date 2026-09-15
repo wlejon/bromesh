@@ -48,7 +48,7 @@ void shrinkwrap(MeshData& mesh,
                 mesh.positions[vi * 3 + 1],
                 mesh.positions[vi * 3 + 2],
             };
-            RayHit h = closestPoint(target, p);
+            RayHit h = bvh.closestPoint(target, p);
             if (!h.hit) continue;
             if (maxDistance > 0 && h.distance > maxDistance) continue;
             mesh.positions[vi * 3 + 0] = h.position[0] + h.normal[0] * offset;

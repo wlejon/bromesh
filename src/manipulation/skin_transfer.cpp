@@ -33,7 +33,7 @@ SkinData transferSkinWeights(const MeshData& target,
             target.positions[vi * 3 + 1],
             target.positions[vi * 3 + 2],
         };
-        RayHit hit = closestPoint(source, p);
+        RayHit hit = bvh.closestPoint(source, p);
         if (!hit.hit) continue;
         if (maxDistance > 0 && hit.distance > maxDistance) continue;
 

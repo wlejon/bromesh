@@ -10,6 +10,7 @@ MeshData mergeMeshes(const MeshData* meshes, size_t count) {
     bool allHaveNormals = true;
     bool allHaveUVs = true;
     bool allHaveColors = true;
+    bool allHaveTangents = true;
     size_t totalVerts = 0;
     size_t totalIndices = 0;
 
@@ -19,6 +20,7 @@ MeshData mergeMeshes(const MeshData* meshes, size_t count) {
         if (!meshes[i].hasNormals()) allHaveNormals = false;
         if (!meshes[i].hasUVs()) allHaveUVs = false;
         if (!meshes[i].hasColors()) allHaveColors = false;
+        if (!meshes[i].hasTangents()) allHaveTangents = false;
     }
 
     MeshData result;
@@ -26,6 +28,7 @@ MeshData mergeMeshes(const MeshData* meshes, size_t count) {
     if (allHaveNormals) result.normals.reserve(totalVerts * 3);
     if (allHaveUVs) result.uvs.reserve(totalVerts * 2);
     if (allHaveColors) result.colors.reserve(totalVerts * 4);
+    if (allHaveTangents) result.tangents.reserve(totalVerts * 4);
     result.indices.reserve(totalIndices);
 
     uint32_t vertexOffset = 0;
@@ -48,6 +51,10 @@ MeshData mergeMeshes(const MeshData* meshes, size_t count) {
         if (allHaveColors) {
             result.colors.insert(result.colors.end(),
                                  m.colors.begin(), m.colors.end());
+        }
+        if (allHaveTangents) {
+            result.tangents.insert(result.tangents.end(),
+                                   m.tangents.begin(), m.tangents.end());
         }
 
         // Append indices with offset

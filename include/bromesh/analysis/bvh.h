@@ -46,6 +46,9 @@ public:
                      const float* origin, const float* direction,
                      float maxDistance = 0.0f) const;
 
+    /// Find the closest point on the mesh surface to `point`.
+    RayHit closestPoint(const MeshData& mesh, const float* point) const;
+
 private:
     /// Flat BVH node. Internal nodes have triCount==0 and leftFirst pointing
     /// at the left child (right child is always leftFirst+1 because children

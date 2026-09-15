@@ -31,6 +31,7 @@ MeshData weldVertices(const MeshData& mesh, float epsilon) {
     const bool hasN = mesh.hasNormals();
     const bool hasUV = mesh.hasUVs();
     const bool hasC = mesh.hasColors();
+    const bool hasT = mesh.hasTangents();
 
     float cellSize = epsilon > 0.0f ? epsilon : 1e-5f;
     float invCell = 1.0f / cellSize;
@@ -97,6 +98,12 @@ MeshData weldVertices(const MeshData& mesh, float epsilon) {
                 result.colors.push_back(mesh.colors[i * 4 + 1]);
                 result.colors.push_back(mesh.colors[i * 4 + 2]);
                 result.colors.push_back(mesh.colors[i * 4 + 3]);
+            }
+            if (hasT) {
+                result.tangents.push_back(mesh.tangents[i * 4 + 0]);
+                result.tangents.push_back(mesh.tangents[i * 4 + 1]);
+                result.tangents.push_back(mesh.tangents[i * 4 + 2]);
+                result.tangents.push_back(mesh.tangents[i * 4 + 3]);
             }
             newCount++;
         }

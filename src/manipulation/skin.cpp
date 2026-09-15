@@ -15,6 +15,7 @@ void applySkinning(MeshData& mesh, const SkinData& skin,
     if (skin.boneIndices.size() < vCount * 4) return;
 
     const bool hasNormals = mesh.hasNormals();
+    const bool hasTangents = mesh.hasTangents();
 
     // Precompute skinning matrices: pose * inverseBindMatrix for each bone
     const size_t boneCount = skin.boneCount;
@@ -53,6 +54,14 @@ void applySkinning(MeshData& mesh, const SkinData& skin,
             ny = mesh.normals[v * 3 + 1];
             nz = mesh.normals[v * 3 + 2];
         }
+        float outTan[3] = {0, 0, 0};
+        float tx = 0, ty = 0, tz = 0, tw = 0;
+        if (hasTangents) {
+            tx = mesh.tangents[v * 4 + 0];
+            ty = mesh.tangents[v * 4 + 1];
+            tz = mesh.tangents[v * 4 + 2];
+            tw = mesh.tangents[v * 4 + 3];
+        }
 
         for (int j = 0; j < 4; ++j) {
             float w = weights[j];
@@ -72,6 +81,13 @@ void applySkinning(MeshData& mesh, const SkinData& skin,
                 outNrm[1] += w * (m[1] * nx + m[5] * ny + m[9]  * nz);
                 outNrm[2] += w * (m[2] * nx + m[6] * ny + m[10] * nz);
             }
+
+            // Transform tangent (linear, no translation): m * [tx, ty, tz, 0]
+            if (hasTangents) {
+                outTan[0] += w * (m[0] * tx + m[4] * ty + m[8]  * tz);
+                outTan[1] += w * (m[1] * tx + m[5] * ty + m[9]  * tz);
+                outTan[2] += w * (m[2] * tx + m[6] * ty + m[10] * tz);
+            }
         }
 
         mesh.positions[v * 3 + 0] = outPos[0];
@@ -85,6 +101,16 @@ void applySkinning(MeshData& mesh, const SkinData& skin,
                 mesh.normals[v * 3 + 1] = outNrm[1] / len;
                 mesh.normals[v * 3 + 2] = outNrm[2] / len;
             }
+        }
+
+        if (hasTangents) {
+            float len = std::sqrt(outTan[0]*outTan[0] + outTan[1]*outTan[1] + outTan[2]*outTan[2]);
+            if (len > 1e-8f) {
+                mesh.tangents[v * 4 + 0] = outTan[0] / len;
+                mesh.tangents[v * 4 + 1] = outTan[1] / len;
+                mesh.tangents[v * 4 + 2] = outTan[2] / len;
+            }
+            mesh.tangents[v * 4 + 3] = tw;
         }
     }
 }

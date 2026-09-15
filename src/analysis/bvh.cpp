@@ -116,6 +116,82 @@ inline bool slabTest(const float bboxMin[3], const float bboxMax[3],
     return true;
 }
 
+inline float sqDistPointAABB(const float p[3], const float bmin[3], const float bmax[3]) {
+    float sqDist = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        float v = p[i];
+        if (v < bmin[i]) {
+            float d = bmin[i] - v;
+            sqDist += d * d;
+        } else if (v > bmax[i]) {
+            float d = v - bmax[i];
+            sqDist += d * d;
+        }
+    }
+    return sqDist;
+}
+
+static void closestPointOnTriangle(
+    const float* p, const float* a, const float* b, const float* c,
+    float& outU, float& outV, float& outW, float* outPt) {
+
+    float ab[3] = {b[0]-a[0], b[1]-a[1], b[2]-a[2]};
+    float ac[3] = {c[0]-a[0], c[1]-a[1], c[2]-a[2]};
+    float ap[3] = {p[0]-a[0], p[1]-a[1], p[2]-a[2]};
+
+    float d1 = ab[0]*ap[0]+ab[1]*ap[1]+ab[2]*ap[2];
+    float d2 = ac[0]*ap[0]+ac[1]*ap[1]+ac[2]*ap[2];
+    if (d1 <= 0.0f && d2 <= 0.0f) {
+        outU = 1; outV = 0; outW = 0;
+        outPt[0]=a[0]; outPt[1]=a[1]; outPt[2]=a[2]; return;
+    }
+
+    float bp[3] = {p[0]-b[0], p[1]-b[1], p[2]-b[2]};
+    float d3 = ab[0]*bp[0]+ab[1]*bp[1]+ab[2]*bp[2];
+    float d4 = ac[0]*bp[0]+ac[1]*bp[1]+ac[2]*bp[2];
+    if (d3 >= 0.0f && d4 <= d3) {
+        outU = 0; outV = 1; outW = 0;
+        outPt[0]=b[0]; outPt[1]=b[1]; outPt[2]=b[2]; return;
+    }
+
+    float vc = d1*d4 - d3*d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        float v2 = d1 / (d1 - d3);
+        outU = 1-v2; outV = v2; outW = 0;
+        outPt[0]=a[0]+v2*ab[0]; outPt[1]=a[1]+v2*ab[1]; outPt[2]=a[2]+v2*ab[2]; return;
+    }
+
+    float cp[3] = {p[0]-c[0], p[1]-c[1], p[2]-c[2]};
+    float d5 = ab[0]*cp[0]+ab[1]*cp[1]+ab[2]*cp[2];
+    float d6 = ac[0]*cp[0]+ac[1]*cp[1]+ac[2]*cp[2];
+    if (d6 >= 0.0f && d5 <= d6) {
+        outU = 0; outV = 0; outW = 1;
+        outPt[0]=c[0]; outPt[1]=c[1]; outPt[2]=c[2]; return;
+    }
+
+    float vb = d5*d2 - d1*d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        float w2 = d2 / (d2 - d6);
+        outU = 1-w2; outV = 0; outW = w2;
+        outPt[0]=a[0]+w2*ac[0]; outPt[1]=a[1]+w2*ac[1]; outPt[2]=a[2]+w2*ac[2]; return;
+    }
+
+    float va = d3*d6 - d5*d4;
+    if (va <= 0.0f && (d4-d3) >= 0.0f && (d5-d6) >= 0.0f) {
+        float w2 = (d4-d3) / ((d4-d3)+(d5-d6));
+        outU = 0; outV = 1-w2; outW = w2;
+        outPt[0]=b[0]+w2*(c[0]-b[0]); outPt[1]=b[1]+w2*(c[1]-b[1]); outPt[2]=b[2]+w2*(c[2]-b[2]); return;
+    }
+
+    float denom = 1.0f / (va + vb + vc);
+    float v2 = vb * denom;
+    float w2 = vc * denom;
+    outU = 1-v2-w2; outV = v2; outW = w2;
+    outPt[0]=a[0]+ab[0]*v2+ac[0]*w2;
+    outPt[1]=a[1]+ab[1]*v2+ac[1]*w2;
+    outPt[2]=a[2]+ab[2]*v2+ac[2]*w2;
+}
+
 // Per-triangle scratch used during construction.
 struct TriScratch {
     float bmin[3];
@@ -445,6 +521,141 @@ bool MeshBVH::raycastTest(const MeshData& mesh,
     }
 
     return false;
+}
+
+RayHit MeshBVH::closestPoint(const MeshData& mesh, const float* point) const {
+    RayHit result;
+    if (nodes_.empty() || !point) return result;
+    if (mesh.empty() || mesh.indices.empty()) return result;
+
+    float bestDistSq = std::numeric_limits<float>::max();
+    bool found = false;
+
+    uint32_t stack[128];
+    int sp = 0;
+    stack[sp++] = 0;
+
+    while (sp > 0) {
+        uint32_t nodeIdx = stack[--sp];
+        const Node& n = nodes_[nodeIdx];
+
+        // Prune if distance to this node's AABB is >= current best
+        float boxDistSq = sqDistPointAABB(point, n.bboxMin, n.bboxMax);
+        if (boxDistSq >= bestDistSq) {
+            continue;
+        }
+
+        if (n.triCount > 0) {
+            // Leaf node: test all triangles
+            for (uint32_t i = 0; i < n.triCount; ++i) {
+                uint32_t tri = triIndices_[n.leftFirst + i];
+                uint32_t i0 = mesh.indices[tri * 3 + 0];
+                uint32_t i1 = mesh.indices[tri * 3 + 1];
+                uint32_t i2 = mesh.indices[tri * 3 + 2];
+
+                float u, v, w, cp[3];
+                closestPointOnTriangle(point,
+                                       &mesh.positions[i0 * 3],
+                                       &mesh.positions[i1 * 3],
+                                       &mesh.positions[i2 * 3],
+                                       u, v, w, cp);
+
+                float dx = cp[0] - point[0];
+                float dy = cp[1] - point[1];
+                float dz = cp[2] - point[2];
+                float distSq = dx * dx + dy * dy + dz * dz;
+
+                if (distSq < bestDistSq) {
+                    bestDistSq = distSq;
+                    result.hit = true;
+                    result.distance = std::sqrt(distSq);
+                    result.position[0] = cp[0];
+                    result.position[1] = cp[1];
+                    result.position[2] = cp[2];
+                    result.baryU = u;
+                    result.baryV = v;
+                    result.baryW = w;
+                    result.triangleIndex = tri;
+                    found = true;
+                }
+            }
+        } else {
+            // Internal node: compute distance to both children's AABBs
+            uint32_t leftIdx  = n.leftFirst;
+            uint32_t rightIdx = n.leftFirst + 1;
+            const Node& L = nodes_[leftIdx];
+            const Node& R = nodes_[rightIdx];
+
+            float distSqL = sqDistPointAABB(point, L.bboxMin, L.bboxMax);
+            float distSqR = sqDistPointAABB(point, R.bboxMin, R.bboxMax);
+
+            bool canL = (distSqL < bestDistSq);
+            bool canR = (distSqR < bestDistSq);
+
+            // Push farther child first so closer child is popped and visited first
+            if (canL && canR) {
+                if (distSqL < distSqR) {
+                    if (sp + 2 <= (int)(sizeof(stack) / sizeof(stack[0]))) {
+                        stack[sp++] = rightIdx;
+                        stack[sp++] = leftIdx;
+                    }
+                } else {
+                    if (sp + 2 <= (int)(sizeof(stack) / sizeof(stack[0]))) {
+                        stack[sp++] = leftIdx;
+                        stack[sp++] = rightIdx;
+                    }
+                }
+            } else if (canL) {
+                if (sp < (int)(sizeof(stack) / sizeof(stack[0])))
+                    stack[sp++] = leftIdx;
+            } else if (canR) {
+                if (sp < (int)(sizeof(stack) / sizeof(stack[0])))
+                    stack[sp++] = rightIdx;
+            }
+        }
+    }
+
+    if (!found) return result;
+
+    // Interpolate or compute normal
+    uint32_t i0 = mesh.indices[result.triangleIndex * 3 + 0];
+    uint32_t i1 = mesh.indices[result.triangleIndex * 3 + 1];
+    uint32_t i2 = mesh.indices[result.triangleIndex * 3 + 2];
+
+    if (mesh.hasNormals()) {
+        for (int c = 0; c < 3; ++c) {
+            result.normal[c] = result.baryU * mesh.normals[i0 * 3 + c] +
+                               result.baryV * mesh.normals[i1 * 3 + c] +
+                               result.baryW * mesh.normals[i2 * 3 + c];
+        }
+        float len = std::sqrt(result.normal[0] * result.normal[0] +
+                              result.normal[1] * result.normal[1] +
+                              result.normal[2] * result.normal[2]);
+        if (len > 1e-8f) {
+            result.normal[0] /= len;
+            result.normal[1] /= len;
+            result.normal[2] /= len;
+        }
+    } else {
+        const float* p0 = &mesh.positions[i0 * 3];
+        const float* p1 = &mesh.positions[i1 * 3];
+        const float* p2 = &mesh.positions[i2 * 3];
+        float e1[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+        float e2[3] = { p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2] };
+        result.normal[0] = e1[1] * e2[2] - e1[2] * e2[1];
+        result.normal[1] = e1[2] * e2[0] - e1[0] * e2[2];
+        result.normal[2] = e1[0] * e2[1] - e1[1] * e2[0];
+        float len = std::sqrt(result.normal[0] * result.normal[0] +
+                              result.normal[1] * result.normal[1] +
+                              result.normal[2] * result.normal[2]);
+        if (len > 1e-8f) {
+            result.normal[0] /= len;
+            result.normal[1] /= len;
+            result.normal[2] /= len;
+        }
+    }
+
+    return result;
 }
 
 } // namespace bromesh

@@ -446,3 +446,32 @@ auto cloud = bromesh::loadSplatPLY("scene.ply");  // SH degree inferred from f_r
 // cloud.opacities, cloud.sh, cloud.shDegree
 bromesh::saveSplatPLY(cloud, "scene_out.ply");    // binary little-endian, round-trips
 ```
+
+## Draco mesh compression
+
+Draco compression dramatically reduces mesh storage and transmission size via lossy attribute quantization and edgebreaker connectivity compression. Use `encodeDraco` to compress a `MeshData` to memory (.drc bytes) and `decodeDraco` to decompress.
+
+```cpp
+#include "bromesh/io/draco.h"
+
+// Compress a mesh with customizable quantization and speed knobs
+bromesh::DracoEncodeOptions opts;
+opts.positionBits = 14;
+opts.normalBits = 10;
+opts.uvBits = 12;
+opts.colorBits = 8;
+opts.speed = 7;
+
+std::string error;
+std::vector<uint8_t> compressed = bromesh::encodeDraco(mesh, opts, &error);
+if (!error.empty()) {
+    // Handle error
+}
+
+// Decompress from memory
+bromesh::DracoDecoded decoded = bromesh::decodeDraco(compressed.data(), compressed.size());
+if (decoded.ok()) {
+    bromesh::MeshData restoredMesh = decoded.mesh;
+    // decoded.attributes provides access to all raw decoded attributes if needed
+}
+```
