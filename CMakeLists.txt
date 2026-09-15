@@ -238,6 +238,7 @@ add_library(bromesh STATIC
     src/manipulation/poly_mesh_ops.cpp
     src/manipulation/poly_mesh_tess.cpp
     src/manipulation/lathe.cpp
+    src/manipulation/splat_ops.cpp
 
     # Analysis
     src/analysis/bbox.cpp

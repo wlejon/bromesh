@@ -6,6 +6,8 @@
 #include "bromesh/gaussian_splat.h"
 #include "bromesh/io/splat_ply.h"
 #include "bromesh/io/ply.h"
+#include "bromesh/manipulation/splat_ops.h"
+#include "bromesh/primitives/primitives.h"
 
 #include <algorithm>
 #include <cmath>
@@ -257,5 +259,261 @@ TEST(splat_ply_degree1_channel_major_sh_and_activations) {
 
     std::remove(path);
     std::remove(binPath);
+}
+
+TEST(splat_transforms) {
+    auto cloud = makeCloud(0, 5);
+    auto origPositions = cloud.positions;
+    auto origScales = cloud.scales;
+    auto b0 = cloud.bounds();
+
+    // 1. translateSplats
+    bromesh::translateSplats(cloud, 10.0f, -5.0f, 2.0f);
+    auto b1 = cloud.bounds();
+    ASSERT(nearf(b1.min.x, b0.min.x + 10.0f), "splat translate bounds min.x");
+    ASSERT(nearf(b1.max.x, b0.max.x + 10.0f), "splat translate bounds max.x");
+    ASSERT(nearf(b1.min.y, b0.min.y - 5.0f), "splat translate bounds min.y");
+    ASSERT(nearf(b1.max.y, b0.max.y - 5.0f), "splat translate bounds max.y");
+    ASSERT(nearf(b1.min.z, b0.min.z + 2.0f), "splat translate bounds min.z");
+    ASSERT(nearf(b1.max.z, b0.max.z + 2.0f), "splat translate bounds max.z");
+
+    for (size_t i = 0; i < cloud.count(); ++i) {
+        ASSERT(nearf(cloud.positions[i * 3 + 0], origPositions[i * 3 + 0] + 10.0f), "splat trans x");
+        ASSERT(nearf(cloud.positions[i * 3 + 1], origPositions[i * 3 + 1] - 5.0f), "splat trans y");
+        ASSERT(nearf(cloud.positions[i * 3 + 2], origPositions[i * 3 + 2] + 2.0f), "splat trans z");
+        ASSERT(nearf(cloud.scales[i * 3 + 0], origScales[i * 3 + 0]), "splat trans scales unmod 0");
+        ASSERT(nearf(cloud.scales[i * 3 + 1], origScales[i * 3 + 1]), "splat trans scales unmod 1");
+        ASSERT(nearf(cloud.scales[i * 3 + 2], origScales[i * 3 + 2]), "splat trans scales unmod 2");
+    }
+
+    // 2. scaleSplats
+    bromesh::scaleSplats(cloud, 2.0f, 3.0f, 0.5f);
+    for (size_t i = 0; i < cloud.count(); ++i) {
+        float expectedX = (origPositions[i * 3 + 0] + 10.0f) * 2.0f;
+        float expectedY = (origPositions[i * 3 + 1] - 5.0f) * 3.0f;
+        float expectedZ = (origPositions[i * 3 + 2] + 2.0f) * 0.5f;
+        ASSERT(nearf(cloud.positions[i * 3 + 0], expectedX), "splat scale pos x");
+        ASSERT(nearf(cloud.positions[i * 3 + 1], expectedY), "splat scale pos y");
+        ASSERT(nearf(cloud.positions[i * 3 + 2], expectedZ), "splat scale pos z");
+
+        ASSERT(nearf(cloud.scales[i * 3 + 0], origScales[i * 3 + 0] * 2.0f), "splat scale stream 0");
+        ASSERT(nearf(cloud.scales[i * 3 + 1], origScales[i * 3 + 1] * 3.0f), "splat scale stream 1");
+        ASSERT(nearf(cloud.scales[i * 3 + 2], origScales[i * 3 + 2] * 0.5f), "splat scale stream 2");
+    }
+
+    // 3. transformSplats with 4x4 matrix (rot 90 deg about Z, scale 2x, translation 1,2,3)
+    auto c2 = makeCloud(0, 3);
+    auto c2Pos = c2.positions;
+    auto c2Scale = c2.scales;
+    float m[16] = {
+        0.0f,  2.0f, 0.0f, 0.0f,
+       -2.0f,  0.0f, 0.0f, 0.0f,
+        0.0f,  0.0f, 2.0f, 0.0f,
+        1.0f,  2.0f, 3.0f, 1.0f
+    };
+    bromesh::transformSplats(c2, m);
+    ASSERT(c2.validate(), "transformed splats validate");
+    for (size_t i = 0; i < c2.count(); ++i) {
+        float x = c2Pos[i * 3 + 0];
+        float y = c2Pos[i * 3 + 1];
+        float z = c2Pos[i * 3 + 2];
+        float tx = -2.0f * y + 1.0f;
+        float ty =  2.0f * x + 2.0f;
+        float tz =  2.0f * z + 3.0f;
+        ASSERT(nearf(c2.positions[i * 3 + 0], tx), "affine pos x");
+        ASSERT(nearf(c2.positions[i * 3 + 1], ty), "affine pos y");
+        ASSERT(nearf(c2.positions[i * 3 + 2], tz), "affine pos z");
+
+        ASSERT(nearf(c2.scales[i * 3 + 0], c2Scale[i * 3 + 0] * 2.0f), "affine scale 0");
+        ASSERT(nearf(c2.scales[i * 3 + 1], c2Scale[i * 3 + 1] * 2.0f), "affine scale 1");
+        ASSERT(nearf(c2.scales[i * 3 + 2], c2Scale[i * 3 + 2] * 2.0f), "affine scale 2");
+
+        float qx = c2.rotations[i * 4 + 0];
+        float qy = c2.rotations[i * 4 + 1];
+        float qz = c2.rotations[i * 4 + 2];
+        float qw = c2.rotations[i * 4 + 3];
+        ASSERT(nearf(qx * qx + qy * qy + qz * qz + qw * qw, 1.0f), "affine quat unit len");
+    }
+}
+
+TEST(splat_filter) {
+    bromesh::GaussianSplatCloud cloud;
+    cloud.shDegree = 0;
+    cloud.positions = {
+        0.0f, 0.0f, 0.0f,    // 0: low opacity (0.001) -> dropped
+        0.5f, 0.5f, 0.5f,    // 1: kept
+        5.0f, 5.0f, 5.0f,    // 2: outside cropBox -> dropped
+        0.2f, 0.2f, 0.2f,    // 3: large scale (5.0) -> dropped
+        0.8f, 0.8f, 0.8f,    // 4: kept
+        0.1f, 0.1f, 0.1f     // 5: low opacity (0.002) -> dropped
+    };
+    cloud.scales = {
+        0.1f, 0.1f, 0.1f,
+        0.2f, 0.2f, 0.2f,
+        0.1f, 0.1f, 0.1f,
+        5.0f, 0.1f, 0.1f,
+        0.3f, 0.3f, 0.3f,
+        0.1f, 0.1f, 0.1f
+    };
+    cloud.rotations = {
+        0, 0, 0, 1,
+        0, 0, 0, 1,
+        0, 0, 0, 1,
+        0, 0, 0, 1,
+        0, 0, 0, 1,
+        0, 0, 0, 1
+    };
+    cloud.opacities = {
+        0.001f,
+        0.5f,
+        0.8f,
+        0.8f,
+        0.9f,
+        0.002f
+    };
+    cloud.sh = {
+        1, 1, 1,
+        2, 2, 2,
+        3, 3, 3,
+        4, 4, 4,
+        5, 5, 5,
+        6, 6, 6
+    };
+
+    ASSERT(cloud.validate(), "pre-filter cloud validates");
+
+    bromath::AABB3 cropBox{{-1.0f, -1.0f, -1.0f}, {2.0f, 2.0f, 2.0f}};
+    bromesh::SplatFilterOptions opts;
+    opts.minOpacity = 0.01f;
+    opts.cropBox = &cropBox;
+    opts.maxScale = 2.0f;
+
+    bromesh::filterSplats(cloud, opts);
+
+    ASSERT(cloud.validate(), "post-filter cloud validates");
+    ASSERT(cloud.count() == 2, "filter: exactly 2 splats survive");
+
+    ASSERT(nearf(cloud.positions[0], 0.5f) && nearf(cloud.positions[1], 0.5f) && nearf(cloud.positions[2], 0.5f), "splat 1 pos");
+    ASSERT(nearf(cloud.positions[3], 0.8f) && nearf(cloud.positions[4], 0.8f) && nearf(cloud.positions[5], 0.8f), "splat 4 pos");
+
+    ASSERT(nearf(cloud.opacities[0], 0.5f), "splat 1 opacity");
+    ASSERT(nearf(cloud.opacities[1], 0.9f), "splat 4 opacity");
+
+    ASSERT(nearf(cloud.scales[0], 0.2f), "splat 1 scale");
+    ASSERT(nearf(cloud.scales[3], 0.3f), "splat 4 scale");
+
+    ASSERT(nearf(cloud.sh[0], 2.0f), "splat 1 sh");
+    ASSERT(nearf(cloud.sh[3], 5.0f), "splat 4 sh");
+
+    auto b = cloud.bounds();
+    ASSERT(nearf(b.min.x, 0.5f) && nearf(b.max.x, 0.8f), "filtered bounds x");
+    ASSERT(nearf(b.min.y, 0.5f) && nearf(b.max.y, 0.8f), "filtered bounds y");
+    ASSERT(nearf(b.min.z, 0.5f) && nearf(b.max.z, 0.8f), "filtered bounds z");
+}
+
+TEST(splat_merge) {
+    auto cloudA = makeCloud(0, 3);
+    auto cloudB = makeCloud(2, 4);
+
+    auto merged = bromesh::mergeSplats({cloudA, cloudB});
+
+    ASSERT(merged.validate(), "merged splats validate");
+    ASSERT(merged.count() == 7, "merged count is 3+4=7");
+    ASSERT(merged.shDegree == 2, "merged degree is max(0, 2) = 2");
+    ASSERT(merged.shStride() == 27, "merged stride is 3*(2+1)^2 = 27");
+    ASSERT(merged.sh.size() == 7 * 27, "merged sh total size");
+    ASSERT(merged.positions.size() == 7 * 3, "merged positions size");
+    ASSERT(merged.scales.size() == 7 * 3, "merged scales size");
+    ASSERT(merged.rotations.size() == 7 * 4, "merged rotations size");
+    ASSERT(merged.opacities.size() == 7, "merged opacities size");
+
+    for (size_t v = 0; v < 3; ++v) {
+        for (int c = 0; c < 3; ++c) {
+            ASSERT(nearf(merged.positions[v * 3 + c], cloudA.positions[v * 3 + c]), "merged pos A");
+            ASSERT(nearf(merged.scales[v * 3 + c], cloudA.scales[v * 3 + c]), "merged scale A");
+            ASSERT(nearf(merged.sh[v * 27 + c], cloudA.sh[v * 3 + c]), "merged sh DC A");
+        }
+        for (int k = 3; k < 27; ++k) {
+            ASSERT(nearf(merged.sh[v * 27 + k], 0.0f), "merged higher SH padded 0");
+        }
+    }
+
+    for (size_t v = 0; v < 4; ++v) {
+        size_t mv = 3 + v;
+        for (int c = 0; c < 3; ++c) {
+            ASSERT(nearf(merged.positions[mv * 3 + c], cloudB.positions[v * 3 + c]), "merged pos B");
+            ASSERT(nearf(merged.scales[mv * 3 + c], cloudB.scales[v * 3 + c]), "merged scale B");
+        }
+        for (int k = 0; k < 27; ++k) {
+            ASSERT(nearf(merged.sh[mv * 27 + k], cloudB.sh[v * 27 + k]), "merged sh full B");
+        }
+    }
+
+    const bromesh::GaussianSplatCloud arr[2] = {cloudA, cloudB};
+    auto mergedArr = bromesh::mergeSplats(arr, 2);
+    ASSERT(mergedArr.count() == 7, "mergeSplats array overload");
+    ASSERT(mergedArr.validate(), "mergeSplats array validate");
+}
+
+TEST(mesh_to_splats) {
+    auto sphereMesh = bromesh::sphere(1.0f, 32, 24);
+    ASSERT(!sphereMesh.empty(), "sphere primitive valid");
+
+    bromesh::MeshToSplatsOptions opts;
+    opts.splatCount = 1000;
+    opts.opacity = 0.95f;
+    opts.seed = 42;
+
+    auto splats = bromesh::meshToSplats(sphereMesh, opts);
+    ASSERT(splats.validate(), "meshToSplats cloud validates");
+    ASSERT(!splats.empty(), "meshToSplats non-empty");
+    ASSERT(splats.count() == 1000, "splat count matches requested");
+    ASSERT(splats.shDegree == 0, "meshToSplats degree 0");
+    ASSERT(splats.shStride() == 3, "meshToSplats stride 3");
+    ASSERT(splats.scales.size() == 3000, "scales size 3000");
+    ASSERT(splats.rotations.size() == 4000, "rotations size 4000");
+    ASSERT(splats.opacities.size() == 1000, "opacities size 1000");
+    ASSERT(splats.sh.size() == 3000, "sh size 3000");
+
+    auto b = splats.bounds();
+    ASSERT(b.min.x >= -1.1f && b.min.x <= -0.8f, "sphere splats bound min x");
+    ASSERT(b.max.x <= 1.1f && b.max.x >= 0.8f, "sphere splats bound max x");
+    ASSERT(b.min.y >= -1.1f && b.min.y <= -0.8f, "sphere splats bound min y");
+    ASSERT(b.max.y <= 1.1f && b.max.y >= 0.8f, "sphere splats bound max y");
+    ASSERT(b.min.z >= -1.1f && b.min.z <= -0.8f, "sphere splats bound min z");
+    ASSERT(b.max.z <= 1.1f && b.max.z >= 0.8f, "sphere splats bound max z");
+
+    for (size_t i = 0; i < splats.count(); ++i) {
+        ASSERT(nearf(splats.opacities[i], 0.95f), "splat opacity");
+        float r = splats.scales[i * 3 + 0];
+        ASSERT(r > 0.0f, "splat radius positive");
+        ASSERT(nearf(splats.scales[i * 3 + 1], r), "splat scale y == radius");
+        ASSERT(nearf(splats.scales[i * 3 + 2], r * 0.1f), "splat scale z == radius * 0.1");
+
+        float qx = splats.rotations[i * 4 + 0];
+        float qy = splats.rotations[i * 4 + 1];
+        float qz = splats.rotations[i * 4 + 2];
+        float qw = splats.rotations[i * 4 + 3];
+        ASSERT(nearf(qx * qx + qy * qy + qz * qz + qw * qw, 1.0f, 1e-3f), "splat unit quat");
+    }
+
+    const char* plyPath = "test_mesh_to_splats_roundtrip.ply";
+    ASSERT(bromesh::saveSplatPLY(splats, plyPath), "saveSplatPLY for meshToSplats");
+
+    auto loaded = bromesh::loadSplatPLY(plyPath);
+    ASSERT(loaded.validate(), "reloaded mesh splats validate");
+    ASSERT(loaded.count() == splats.count(), "reloaded count matches");
+    ASSERT(loaded.shDegree == 0, "reloaded degree 0");
+
+    for (size_t i = 0; i < splats.count(); ++i) {
+        for (int c = 0; c < 3; ++c) {
+            ASSERT(nearf(loaded.positions[i * 3 + c], splats.positions[i * 3 + c], 1e-4f), "rt pos");
+            ASSERT(nearf(loaded.scales[i * 3 + c], splats.scales[i * 3 + c], 1e-3f), "rt scale");
+            ASSERT(nearf(loaded.sh[i * 3 + c], splats.sh[i * 3 + c], 1e-4f), "rt sh");
+        }
+        ASSERT(nearf(loaded.opacities[i], splats.opacities[i], 1e-3f), "rt opacity");
+    }
+
+    std::remove(plyPath);
 }
 

@@ -440,11 +440,44 @@ that standard 3DGS files (INRIA / PlayCanvas) use.
 
 ```cpp
 #include "bromesh/io/splat_ply.h"
+#include "bromesh/manipulation/splat_ops.h"
 
 auto cloud = bromesh::loadSplatPLY("scene.ply");  // SH degree inferred from f_rest_*
 // cloud.count(), cloud.positions, cloud.scales, cloud.rotations,
 // cloud.opacities, cloud.sh, cloud.shDegree
 bromesh::saveSplatPLY(cloud, "scene_out.ply");    // binary little-endian, round-trips
+```
+
+### Splat operations and mesh conversion
+
+Apply rigid or affine transformations, filter/crop by opacity, scale, or spatial bounding boxes, merge heterogeneous SH-degree clouds, or sample a triangle mesh directly into surface-aligned Gaussian splat disks:
+
+```cpp
+#include "bromesh/manipulation/splat_ops.h"
+
+// 1. Transform: translate, scale, or apply a column-major 4x4 affine matrix
+bromesh::translateSplats(cloud, 0.0f, 1.5f, 0.0f);
+bromesh::scaleSplats(cloud, 2.0f, 2.0f, 2.0f);
+// float m[16] = { ... };
+// bromesh::transformSplats(cloud, m);
+
+// 2. Filter & crop: drop low opacity, outside AABB, or excessively large splats
+bromath::AABB3 cropBox{{-5.0f, -5.0f, -5.0f}, {5.0f, 5.0f, 5.0f}};
+bromesh::SplatFilterOptions filterOpts;
+filterOpts.minOpacity = 0.05f;
+filterOpts.cropBox = &cropBox;
+filterOpts.maxScale = 1.0f;
+bromesh::filterSplats(cloud, filterOpts);
+
+// 3. Merge clouds: unifies SH degrees to the maximum (zero-padding lower degrees)
+std::vector<bromesh::GaussianSplatCloud> clouds = {cloudA, cloudB};
+auto unified = bromesh::mergeSplats(clouds);
+
+// 4. Convert MeshData into render-ready Gaussian splats
+bromesh::MeshToSplatsOptions splatOpts;
+splatOpts.splatCount = 10000;
+splatOpts.opacity = 0.95f;
+auto splatCloud = bromesh::meshToSplats(mesh, splatOpts);
 ```
 
 ## Draco mesh compression

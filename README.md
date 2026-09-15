@@ -30,7 +30,7 @@ A C++20 static library for mesh generation, manipulation, and I/O. Designed for 
 | **UV** | Box, planar (XY/XZ/YZ), cylindrical, spherical projection; automatic unwrapping and atlas packing (xatlas); quality metrics (L2 stretch, area/angle distortion, packing efficiency) |
 | **Optimization** | Vertex cache, vertex fetch, overdraw, meshlet generation, spatial sorting, shadow index buffer, mesh encoding/compression, triangle strips, progressive mesh (continuous LOD with serialization) |
 | **Boolean/CSG** | Union, difference, intersection, plane splitting (manifold) |
-| **Gaussian splats** | `GaussianSplatCloud` (SoA positions/scales/rotations/opacities/SH, degrees 0-3), 3DGS `.ply` read/write with activation on load and inverse on save |
+| **Gaussian splats** | `GaussianSplatCloud` (SoA positions/scales/rotations/opacities/SH, degrees 0-3), 3DGS `.ply` read/write with activation on load and inverse on save, affine transform/translate/scale, opacity/crop/scale filtering, heterogeneous cloud merging, mesh surface to splats |
 | **I/O** | OBJ read/write, STL read/write, PLY read/write, glTF/GLB read/write (meshes, skins, skeletons, animations, materials, embedded images), Draco decode/encode, FBX read, MagicaVoxel VOX read, 3DGS splat PLY read/write |
 
 All mesh algorithms produce `bromesh::MeshData` -- a flat struct with separate position, normal, UV, color, tangent, and index arrays ready for GPU upload or TypedArray transfer. `GaussianSplatCloud` mirrors that layout for splat data.
