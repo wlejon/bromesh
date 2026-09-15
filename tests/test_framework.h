@@ -70,6 +70,7 @@
 #include "bromesh/rigging/mesh_laplacian.h"
 #include "bromesh/rigging/skin_validate.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>

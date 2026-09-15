@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
