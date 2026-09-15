@@ -1,4 +1,5 @@
 #include "bromesh/manipulation/sweep.h"
+#include "bromesh/manipulation/polygon.h"
 
 #include <bromath/bromath.h>
 
@@ -34,6 +35,36 @@ float twistAt(const std::vector<float>& tw, size_t i) {
     if (tw.empty()) return 0.0f;
     if (i >= tw.size()) return tw.back();
     return tw[i];
+}
+
+bool isProfileConvex(const std::vector<Vec2>& profile) {
+    const size_t P = profile.size();
+    if (P < 4) return true;
+    bool hasPos = false;
+    bool hasNeg = false;
+    constexpr float kEps = 1e-6f;
+    for (size_t i = 0; i < P; ++i) {
+        size_t next = (i + 1) % P;
+        size_t nnext = (i + 2) % P;
+        Vec2 e1 = profile[next] - profile[i];
+        Vec2 e2 = profile[nnext] - profile[next];
+        float cp = e1.x * e2.y - e1.y * e2.x;
+        if (cp > kEps) hasPos = true;
+        else if (cp < -kEps) hasNeg = true;
+        if (hasPos && hasNeg) return false;
+    }
+    return true;
+}
+
+double profileSignedArea(const std::vector<Vec2>& profile) {
+    const size_t P = profile.size();
+    if (P < 3) return 0.0;
+    double sum = 0.0;
+    for (size_t i = 0; i < P; ++i) {
+        size_t j = (i + 1) % P;
+        sum += double(profile[i].x) * double(profile[j].y) - double(profile[j].x) * double(profile[i].y);
+    }
+    return 0.5 * sum;
 }
 
 } // namespace
@@ -157,38 +188,103 @@ MeshData sweep(const std::vector<Vec2>& profile,
         out.indices.push_back(c);
     };
 
-    // Caps via centroid fans.
+    // Caps via triangulation (for concave profiles) or centroid fans (for convex).
     if (opts.capStart || opts.capEnd) {
-        // Compute profile centroid.
-        Vec2 centroid{0, 0};
-        for (const auto& v : profile) {
-            centroid.x += v.x;
-            centroid.y += v.y;
+#if BROMESH_HAS_MANIFOLD
+        bool isConvex = isProfileConvex(profile);
+        bool useTriangulatedCaps = !isConvex && opts.closeProfile;
+        MeshData capMesh2D;
+        bool isCCW = true;
+        if (useTriangulatedCaps) {
+            double area = profileSignedArea(profile);
+            isCCW = (area >= 0.0);
+            std::vector<float> outer;
+            outer.reserve(P * 2);
+            if (isCCW) {
+                for (const auto& v : profile) {
+                    outer.push_back(v.x);
+                    outer.push_back(v.y);
+                }
+            } else {
+                for (size_t i = 0; i < P; ++i) {
+                    outer.push_back(profile[P - 1 - i].x);
+                    outer.push_back(profile[P - 1 - i].y);
+                }
+            }
+            capMesh2D = triangulatePolygon2D(outer);
+            if (capMesh2D.indices.empty()) {
+                useTriangulatedCaps = false;
+            }
         }
-        centroid.x /= static_cast<float>(P);
-        centroid.y /= static_cast<float>(P);
+#else
+        constexpr bool useTriangulatedCaps = false;
+#endif
+
+        // Compute profile centroid for fan fallback / convex profiles
+        Vec2 centroid{0, 0};
+        if (!useTriangulatedCaps) {
+            for (const auto& v : profile) {
+                centroid.x += v.x;
+                centroid.y += v.y;
+            }
+            centroid.x /= static_cast<float>(P);
+            centroid.y /= static_cast<float>(P);
+        }
 
         if (opts.capStart) {
             const Frame& f = frames.front();
             float s = scaleAt(opts.profileScale, 0, N);
             float tw = twistAt(opts.twist, 0);
             float ct = std::cos(tw), st = std::sin(tw);
-            float px = (centroid.x * ct - centroid.y * st) * s;
-            float py = (centroid.x * st + centroid.y * ct) * s;
-            Vec3 cpos = path.front() + f.n * px + f.b * py;
-            uint32_t cIdx = static_cast<uint32_t>(out.positions.size() / 3);
-            out.positions.push_back(cpos.x);
-            out.positions.push_back(cpos.y);
-            out.positions.push_back(cpos.z);
-            out.normals.push_back(-f.t.x);
-            out.normals.push_back(-f.t.y);
-            out.normals.push_back(-f.t.z);
-            out.uvs.push_back(0.5f);
-            out.uvs.push_back(0.0f);
-            const size_t edges = opts.closeProfile ? P : (P - 1);
-            for (size_t p = 0; p < edges; ++p) {
-                size_t pNext = (p + 1) % P;
-                addTri(cIdx, sideIdx(0, pNext), sideIdx(0, p));
+#if BROMESH_HAS_MANIFOLD
+            if (useTriangulatedCaps) {
+                uint32_t baseIdx = static_cast<uint32_t>(out.positions.size() / 3);
+                for (size_t k = 0; k < capMesh2D.vertexCount(); ++k) {
+                    float vx = capMesh2D.positions[k * 3 + 0];
+                    float vy = capMesh2D.positions[k * 3 + 1];
+                    float px = (vx * ct - vy * st) * s;
+                    float py = (vx * st + vy * ct) * s;
+                    Vec3 pos = path.front() + f.n * px + f.b * py;
+                    out.positions.push_back(pos.x);
+                    out.positions.push_back(pos.y);
+                    out.positions.push_back(pos.z);
+                    out.normals.push_back(-f.t.x);
+                    out.normals.push_back(-f.t.y);
+                    out.normals.push_back(-f.t.z);
+                    out.uvs.push_back(0.5f);
+                    out.uvs.push_back(0.0f);
+                }
+                const size_t numTris = capMesh2D.indices.size() / 3;
+                for (size_t t = 0; t < numTris; ++t) {
+                    uint32_t i0 = capMesh2D.indices[t * 3 + 0];
+                    uint32_t i1 = capMesh2D.indices[t * 3 + 1];
+                    uint32_t i2 = capMesh2D.indices[t * 3 + 2];
+                    if (isCCW) {
+                        addTri(baseIdx + i0, baseIdx + i2, baseIdx + i1);
+                    } else {
+                        addTri(baseIdx + i0, baseIdx + i1, baseIdx + i2);
+                    }
+                }
+            } else
+#endif
+            {
+                float px = (centroid.x * ct - centroid.y * st) * s;
+                float py = (centroid.x * st + centroid.y * ct) * s;
+                Vec3 cpos = path.front() + f.n * px + f.b * py;
+                uint32_t cIdx = static_cast<uint32_t>(out.positions.size() / 3);
+                out.positions.push_back(cpos.x);
+                out.positions.push_back(cpos.y);
+                out.positions.push_back(cpos.z);
+                out.normals.push_back(-f.t.x);
+                out.normals.push_back(-f.t.y);
+                out.normals.push_back(-f.t.z);
+                out.uvs.push_back(0.5f);
+                out.uvs.push_back(0.0f);
+                const size_t edges = opts.closeProfile ? P : (P - 1);
+                for (size_t p = 0; p < edges; ++p) {
+                    size_t pNext = (p + 1) % P;
+                    addTri(cIdx, sideIdx(0, pNext), sideIdx(0, p));
+                }
             }
         }
         if (opts.capEnd) {
@@ -196,22 +292,55 @@ MeshData sweep(const std::vector<Vec2>& profile,
             float s = scaleAt(opts.profileScale, N - 1, N);
             float tw = twistAt(opts.twist, N - 1);
             float ct = std::cos(tw), st = std::sin(tw);
-            float px = (centroid.x * ct - centroid.y * st) * s;
-            float py = (centroid.x * st + centroid.y * ct) * s;
-            Vec3 cpos = path.back() + f.n * px + f.b * py;
-            uint32_t cIdx = static_cast<uint32_t>(out.positions.size() / 3);
-            out.positions.push_back(cpos.x);
-            out.positions.push_back(cpos.y);
-            out.positions.push_back(cpos.z);
-            out.normals.push_back(f.t.x);
-            out.normals.push_back(f.t.y);
-            out.normals.push_back(f.t.z);
-            out.uvs.push_back(0.5f);
-            out.uvs.push_back(1.0f);
-            const size_t edges = opts.closeProfile ? P : (P - 1);
-            for (size_t p = 0; p < edges; ++p) {
-                size_t pNext = (p + 1) % P;
-                addTri(cIdx, sideIdx(N - 1, p), sideIdx(N - 1, pNext));
+#if BROMESH_HAS_MANIFOLD
+            if (useTriangulatedCaps) {
+                uint32_t baseIdx = static_cast<uint32_t>(out.positions.size() / 3);
+                for (size_t k = 0; k < capMesh2D.vertexCount(); ++k) {
+                    float vx = capMesh2D.positions[k * 3 + 0];
+                    float vy = capMesh2D.positions[k * 3 + 1];
+                    float px = (vx * ct - vy * st) * s;
+                    float py = (vx * st + vy * ct) * s;
+                    Vec3 pos = path.back() + f.n * px + f.b * py;
+                    out.positions.push_back(pos.x);
+                    out.positions.push_back(pos.y);
+                    out.positions.push_back(pos.z);
+                    out.normals.push_back(f.t.x);
+                    out.normals.push_back(f.t.y);
+                    out.normals.push_back(f.t.z);
+                    out.uvs.push_back(0.5f);
+                    out.uvs.push_back(1.0f);
+                }
+                const size_t numTris = capMesh2D.indices.size() / 3;
+                for (size_t t = 0; t < numTris; ++t) {
+                    uint32_t i0 = capMesh2D.indices[t * 3 + 0];
+                    uint32_t i1 = capMesh2D.indices[t * 3 + 1];
+                    uint32_t i2 = capMesh2D.indices[t * 3 + 2];
+                    if (isCCW) {
+                        addTri(baseIdx + i0, baseIdx + i1, baseIdx + i2);
+                    } else {
+                        addTri(baseIdx + i0, baseIdx + i2, baseIdx + i1);
+                    }
+                }
+            } else
+#endif
+            {
+                float px = (centroid.x * ct - centroid.y * st) * s;
+                float py = (centroid.x * st + centroid.y * ct) * s;
+                Vec3 cpos = path.back() + f.n * px + f.b * py;
+                uint32_t cIdx = static_cast<uint32_t>(out.positions.size() / 3);
+                out.positions.push_back(cpos.x);
+                out.positions.push_back(cpos.y);
+                out.positions.push_back(cpos.z);
+                out.normals.push_back(f.t.x);
+                out.normals.push_back(f.t.y);
+                out.normals.push_back(f.t.z);
+                out.uvs.push_back(0.5f);
+                out.uvs.push_back(1.0f);
+                const size_t edges = opts.closeProfile ? P : (P - 1);
+                for (size_t p = 0; p < edges; ++p) {
+                    size_t pNext = (p + 1) % P;
+                    addTri(cIdx, sideIdx(N - 1, p), sideIdx(N - 1, pNext));
+                }
             }
         }
     }

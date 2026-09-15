@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "bromesh/manipulation/sweep.h"
 #include <cmath>
 
 TEST(mesh_data_basics) {
@@ -928,6 +929,50 @@ TEST(subdivide_preserves_tangents) {
         ASSERT(std::fabs(len - 1.0f) < 1e-3f, "cc tangent unit length");
         ASSERT(std::fabs(std::fabs(cc.tangents[v * 4 + 3]) - 1.0f) < 1e-3f, "cc w preserved");
     }
+}
+
+TEST(sweep_concave_profile_caps) {
+    // L-shaped concave profile in local XY
+    std::vector<bromath::Vec2> profile = {
+        {0.0f, 0.0f},
+        {2.0f, 0.0f},
+        {2.0f, 1.0f},
+        {1.0f, 1.0f},
+        {1.0f, 2.0f},
+        {0.0f, 2.0f}
+    };
+    // 2D area of this L-shape is (2*1) + (1*1) = 3.0
+    // Straight path along Z axis of length 4.0
+    std::vector<bromath::Vec3> path = {
+        {0.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 2.0f},
+        {0.0f, 0.0f, 4.0f}
+    };
+
+    bromesh::SweepOptions opts;
+    opts.closeProfile = true;
+    opts.capStart = true;
+    opts.capEnd = true;
+
+    auto result = bromesh::sweep(profile, path, opts);
+
+    ASSERT(!result.empty(), "sweep result should not be empty");
+    ASSERT(result.triangleCount() > 0, "sweep result has triangles");
+    ASSERT(bromesh::isManifold(result), "concave profile sweep with caps must be manifold");
+
+    // Verify no overlapping cap triangles:
+    // With 4 non-overlapping triangles per cap, the total cap area on each end is exactly 3.0.
+    // The total closed volume of the swept solid must be area * length = 3.0 * 4.0 = 12.0!
+    // (An overlapping centroid fan would corrupt the volume via self-intersecting / inverted triangles)
+    float vol = bromesh::computeVolume(result);
+    ASSERT(std::fabs(vol - 12.0f) < 1e-2f, "volume of swept L-profile equals exact 12.0 (no overlapping cap triangles)");
+
+    // For an L-shape with 6 vertices, non-overlapping triangulation yields exactly 6 - 2 = 4 triangles per cap.
+    // The side has (3 - 1) * 6 = 12 quads = 24 triangles.
+    // Total triangles = 24 + 4 + 4 = 32 triangles.
+#if BROMESH_HAS_MANIFOLD
+    ASSERT(result.triangleCount() == 32, "concave caps produce 4 triangles per cap (32 total, no overlapping fan)");
+#endif
 }
 
 

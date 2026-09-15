@@ -23,6 +23,7 @@ add_executable(bromesh_test
     test_coverage2.cpp
     test_leaf_scatter.cpp
     test_splat.cpp
+    test_sdf.cpp
 )
 target_link_libraries(bromesh_test PRIVATE bromesh)
 # Tests poke at edge cases by hand-crafting glTF models via tinygltf directly.

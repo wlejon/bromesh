@@ -247,6 +247,7 @@ add_library(bromesh STATIC
     src/analysis/raycast.cpp
     src/analysis/bvh.cpp
     src/analysis/intersect.cpp
+    src/analysis/sdf.cpp
 
     # Animation
     src/animation/pose.cpp
