@@ -22,6 +22,8 @@
 #endif
 #endif
 
+#include <filesystem>
+
 namespace bromesh {
 
 #if !BROMESH_HAS_GLTF
@@ -75,6 +77,12 @@ bool saveGLTF(const GltfScene& scene, const std::string& path) {
     if (scene.meshes.empty() && scene.skeletons.empty()) return false;
     for (const auto& m : scene.meshes) {
         if (m.empty()) return false;
+    }
+
+    std::error_code ec;
+    std::filesystem::path fsPath(path);
+    if (fsPath.has_parent_path()) {
+        std::filesystem::create_directories(fsPath.parent_path(), ec);
     }
 
     SaveCtx ctx;
