@@ -1,0 +1,475 @@
+#include "host_mesh_internal.h"
+#include <vector>
+#include <utility>
+
+namespace bromesh::api {
+
+namespace {
+
+Value makeTextureResult(const bromesh::TextureBuffer& tb) {
+    ObjectBuilder res;
+    res.set("width", static_cast<double>(tb.width));
+    res.set("height", static_cast<double>(tb.height));
+    res.set("channels", static_cast<double>(tb.channels));
+    {
+        ev::Persistent px(makeFloat32Array(tb.pixels.data(), tb.pixels.size()));
+        res.set("pixels", px.get());
+        res.set("data", px.get());
+    }
+    return res.build();
+}
+
+} // namespace
+
+void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
+    // ---- Normal Operations -------------------------------------------------
+    // ---- Normal Operations -------------------------------------------------
+    proto.def("computeNormals", 1, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.computeNormals: not a Mesh instance");
+        bromesh::computeNormals(m->mesh);
+        return self;
+    });
+
+    proto.def("computeFlatNormals", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.computeFlatNormals: not a Mesh instance");
+        return wrapMesh(bromesh::computeFlatNormals(m->mesh));
+    });
+
+    proto.def("computeCreaseNormals", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.computeCreaseNormals: not a Mesh instance");
+        double angle = a.empty() ? 60.0 : numAt(a, 0);
+        m->mesh = bromesh::computeCreaseNormals(m->mesh, static_cast<float>(angle));
+        return self;
+    });
+
+    proto.def("invertNormals", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.invertNormals: not a Mesh instance");
+        for (float& val : m->mesh.normals) val = -val;
+        return self;
+    });
+
+    proto.def("flipFaces", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.flipFaces: not a Mesh instance");
+        for (size_t i = 0; i + 2 < m->mesh.indices.size(); i += 3) {
+            std::swap(m->mesh.indices[i + 1], m->mesh.indices[i + 2]);
+        }
+        return self;
+    });
+
+    // ---- Clean / Repair / Weld ---------------------------------------------
+    proto.def("weld", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.weld: not a Mesh instance");
+        double eps = a.empty() ? 1e-4 : numAt(a, 0);
+        m->mesh = bromesh::weldVertices(m->mesh, static_cast<float>(eps));
+        return self;
+    });
+
+    proto.def("removeDegenerateTriangles", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.removeDegenerateTriangles: not a Mesh instance");
+        double eps = a.empty() ? 1e-6 : numAt(a, 0);
+        m->mesh = bromesh::removeDegenerateTriangles(m->mesh, static_cast<float>(eps));
+        return self;
+    });
+
+    proto.def("removeDuplicateTriangles", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.removeDuplicateTriangles: not a Mesh instance");
+        m->mesh = bromesh::removeDuplicateTriangles(m->mesh);
+        return self;
+    });
+
+    proto.def("fillHoles", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.fillHoles: not a Mesh instance");
+        int maxEdges = a.empty() ? 32 : i32At(a, 0);
+        m->mesh = bromesh::fillHoles(m->mesh, maxEdges);
+        return self;
+    });
+
+    proto.def("repair", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.repair: not a Mesh instance");
+        m->mesh = bromesh::removeDegenerateTriangles(m->mesh);
+        m->mesh = bromesh::removeDuplicateTriangles(m->mesh);
+        return self;
+    });
+
+    // ---- Simplification / LOD ----------------------------------------------
+    proto.def("simplify", 2, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.simplify: not a Mesh instance");
+        ArgReader r(a);
+        float ratio = static_cast<float>(r.getDouble(0, 0.5));
+        float targetError = static_cast<float>(r.getDouble(1, 1e-3));
+        m->mesh = bromesh::simplify(m->mesh, ratio, targetError);
+        return self;
+    });
+
+    proto.def("simplifyToTriangleCount", 2, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.simplifyToTriangleCount: not a Mesh instance");
+        ArgReader r(a);
+        size_t count = static_cast<size_t>(r.getInt(0, 100));
+        float targetError = static_cast<float>(r.getDouble(1, 1e-3));
+        m->mesh = bromesh::simplifyToTriangleCount(m->mesh, count, targetError);
+        return self;
+    });
+
+    proto.def("generateLODChain", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.generateLODChain: not a Mesh instance");
+        if (a.empty()) return ev::throwTypeError("Mesh.generateLODChain: ratios array required");
+        std::vector<float> ratios = toFloatVector(a[0]);
+        auto chain = bromesh::generateLODChain(m->mesh, ratios.data(), static_cast<int>(ratios.size()));
+        return hostArrayOf(chain.size(), [&](size_t i) {
+            return wrapMesh(std::move(chain[i]));
+        });
+    });
+
+    // ---- Subdivision & Smoothing -------------------------------------------
+    proto.def("subdivideLoop", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.subdivideLoop: not a Mesh instance");
+        int iters = a.empty() ? 1 : i32At(a, 0);
+        bromesh::subdivideLoop(m->mesh, iters > 0 ? iters : 1);
+        return self;
+    });
+
+    proto.def("subdivideCatmullClark", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.subdivideCatmullClark: not a Mesh instance");
+        int iters = a.empty() ? 1 : i32At(a, 0);
+        bromesh::subdivideCatmullClark(m->mesh, iters > 0 ? iters : 1);
+        return self;
+    });
+
+    proto.def("smooth", 2, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.smooth: not a Mesh instance");
+        ArgReader r(a);
+        float lambda = static_cast<float>(r.getDouble(0, 0.5));
+        int iters = r.getInt(1, 1);
+        bromesh::smoothLaplacian(m->mesh, lambda, iters > 0 ? iters : 1);
+        return self;
+    });
+
+    proto.def("smoothLaplacian", 2, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.smoothLaplacian: not a Mesh instance");
+        ArgReader r(a);
+        float lambda = static_cast<float>(r.getDouble(0, 0.5));
+        int iters = r.getInt(1, 1);
+        bromesh::smoothLaplacian(m->mesh, lambda, iters > 0 ? iters : 1);
+        return self;
+    });
+
+    proto.def("smoothTaubin", 3, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.smoothTaubin: not a Mesh instance");
+        ArgReader r(a);
+        float lambda = static_cast<float>(r.getDouble(0, 0.5));
+        float mu = static_cast<float>(r.getDouble(1, -0.53));
+        int iters = r.getInt(2, 1);
+        bromesh::smoothTaubin(m->mesh, lambda, mu, iters > 0 ? iters : 1);
+        return self;
+    });
+
+    proto.def("remesh", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.remesh: not a Mesh instance");
+        double len = a.empty() ? 0.1 : numAt(a, 0);
+        bromesh::remeshIsotropic(m->mesh, static_cast<float>(len), 3);
+        return self;
+    });
+
+    proto.def("remeshIsotropic", 2, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.remeshIsotropic: not a Mesh instance");
+        ArgReader r(a);
+        float len = static_cast<float>(r.getDouble(0, 0.1));
+        int iters = r.getInt(1, 3);
+        bromesh::remeshIsotropic(m->mesh, len, iters > 0 ? iters : 3);
+        return self;
+    });
+
+    proto.def("shrinkwrap", 5, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.shrinkwrap: not a Mesh instance");
+        if (a.empty()) return ev::throwTypeError("Mesh.shrinkwrap: target mesh required");
+        auto* target = unwrapMesh(a[0]);
+        if (!target) return ev::throwTypeError("Mesh.shrinkwrap: target must be a Mesh");
+        ArgReader r(a);
+        int mode = r.getInt(1, 0);
+        float maxDist = static_cast<float>(r.getDouble(2, 0.0));
+        float offset = static_cast<float>(r.getDouble(3, 0.0));
+        bromath::Vec3 axis{0, 1, 0};
+        const float* axisPtr = nullptr;
+        if (a.size() > 4) {
+            std::vector<float> v = toFloatVector(a[4]);
+            if (v.size() >= 3) {
+                axis = {v[0], v[1], v[2]};
+                axisPtr = &axis.x;
+            }
+        }
+        bromesh::shrinkwrap(m->mesh, target->mesh, static_cast<bromesh::ShrinkwrapMode>(mode), maxDist, offset, axisPtr);
+        return self;
+    });
+
+    // ---- Splitting / CSG / Decomposition -----------------------------------
+    proto.def("splitByPlane", 4, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.splitByPlane: not a Mesh instance");
+        ArgReader r(a);
+        float nx = static_cast<float>(r.getDouble(0, 0.0));
+        float ny = static_cast<float>(r.getDouble(1, 1.0));
+        float nz = static_cast<float>(r.getDouble(2, 0.0));
+        float d = static_cast<float>(r.getDouble(3, 0.0));
+        auto pair = bromesh::splitByPlane(m->mesh, nx, ny, nz, d);
+        return hostArrayOf(2, [&](size_t i) {
+            return wrapMesh(i == 0 ? std::move(pair.first) : std::move(pair.second));
+        });
+    });
+
+    proto.def("splitComponents", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.splitComponents: not a Mesh instance");
+        auto comps = bromesh::splitConnectedComponents(m->mesh);
+        return hostArrayOf(comps.size(), [&](size_t i) {
+            return wrapMesh(std::move(comps[i]));
+        });
+    });
+
+    proto.def("convexDecomposition", 4, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.convexDecomposition: not a Mesh instance");
+        ArgReader r(a);
+        int maxHulls = r.getInt(0, 16);
+        int maxVerts = r.getInt(1, 32);
+        double res = r.getDouble(2, 100000.0);
+        double minVol = r.getDouble(3, 0.0001);
+        bromesh::ConvexDecompParams opts;
+        opts.maxHulls = maxHulls > 0 ? maxHulls : 16;
+        opts.maxVerticesPerHull = maxVerts > 3 ? maxVerts : 32;
+        opts.resolution = static_cast<float>(res > 0 ? res : 100000.0f);
+        opts.minVolumePerHull = static_cast<float>(minVol);
+        auto hulls = bromesh::convexDecomposition(m->mesh, opts);
+        return hostArrayOf(hulls.size(), [&](size_t i) {
+            return wrapMesh(std::move(hulls[i]));
+        });
+    });
+
+    proto.def("convexHull", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.convexHull: not a Mesh instance");
+        return wrapMesh(bromesh::convexHull(m->mesh));
+    });
+
+    proto.def("booleanUnion", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* aMesh = unwrapMesh(self);
+        if (!aMesh) return ev::throwTypeError("Mesh.booleanUnion: not a Mesh instance");
+        if (a.empty()) return ev::throwTypeError("Mesh.booleanUnion: other mesh required");
+        auto* bMesh = unwrapMesh(a[0]);
+        if (!bMesh) return ev::throwTypeError("Mesh.booleanUnion: argument must be a Mesh");
+        return wrapMesh(bromesh::booleanUnion(aMesh->mesh, bMesh->mesh));
+    });
+
+    proto.def("booleanDifference", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* aMesh = unwrapMesh(self);
+        if (!aMesh) return ev::throwTypeError("Mesh.booleanDifference: not a Mesh instance");
+        if (a.empty()) return ev::throwTypeError("Mesh.booleanDifference: other mesh required");
+        auto* bMesh = unwrapMesh(a[0]);
+        if (!bMesh) return ev::throwTypeError("Mesh.booleanDifference: argument must be a Mesh");
+        return wrapMesh(bromesh::booleanDifference(aMesh->mesh, bMesh->mesh));
+    });
+
+    proto.def("booleanIntersection", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* aMesh = unwrapMesh(self);
+        if (!aMesh) return ev::throwTypeError("Mesh.booleanIntersection: not a Mesh instance");
+        if (a.empty()) return ev::throwTypeError("Mesh.booleanIntersection: other mesh required");
+        auto* bMesh = unwrapMesh(a[0]);
+        if (!bMesh) return ev::throwTypeError("Mesh.booleanIntersection: argument must be a Mesh");
+        return wrapMesh(bromesh::booleanIntersection(aMesh->mesh, bMesh->mesh));
+    });
+
+    // Aliases
+    proto.def("union", 1, [](Value self, std::span<const Value> a) -> Value {
+        return ev::call(ev::getProperty(self, "booleanUnion"), self, a).value;
+    });
+    proto.def("subtract", 1, [](Value self, std::span<const Value> a) -> Value {
+        return ev::call(ev::getProperty(self, "booleanDifference"), self, a).value;
+    });
+    proto.def("intersect", 1, [](Value self, std::span<const Value> a) -> Value {
+        return ev::call(ev::getProperty(self, "booleanIntersection"), self, a).value;
+    });
+
+    // ---- Baking ------------------------------------------------------------
+    proto.def("bakeAmbientOcclusion", 2, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.bakeAmbientOcclusion: not a Mesh instance");
+        ArgReader r(a);
+        int rays = r.getInt(0, 64);
+        float dist = static_cast<float>(r.getDouble(1, 0.0));
+        bromesh::bakeAmbientOcclusion(m->mesh, rays, dist);
+        return self;
+    });
+
+    proto.def("bakeCurvature", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.bakeCurvature: not a Mesh instance");
+        float scale = static_cast<float>(numAt(a, 0));
+        if (scale <= 0.0f) scale = 1.0f;
+        bromesh::bakeCurvature(m->mesh, scale);
+        return self;
+    });
+
+    proto.def("bakeThickness", 2, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.bakeThickness: not a Mesh instance");
+        ArgReader r(a);
+        int rays = r.getInt(0, 32);
+        float dist = static_cast<float>(r.getDouble(1, 0.0));
+        bromesh::bakeThickness(m->mesh, rays, dist);
+        return self;
+    });
+
+    proto.def("bakeAOToTexture", 4, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.bakeAOToTexture: not a Mesh instance");
+        ArgReader r(a);
+        int w = r.getInt(0, 512), h = r.getInt(1, 512), rays = r.getInt(2, 64);
+        float dist = static_cast<float>(r.getDouble(3, 0.0));
+        auto tb = bromesh::bakeAmbientOcclusionToTexture(m->mesh, w, h, rays, dist);
+        return makeTextureResult(tb);
+    });
+
+    proto.def("bakeCurvatureToTexture", 3, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.bakeCurvatureToTexture: not a Mesh instance");
+        ArgReader r(a);
+        int w = r.getInt(0, 512), h = r.getInt(1, 512);
+        float scale = static_cast<float>(r.getDouble(2, 1.0));
+        auto tb = bromesh::bakeCurvatureToTexture(m->mesh, w, h, scale);
+        return makeTextureResult(tb);
+    });
+
+    proto.def("bakeThicknessToTexture", 4, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.bakeThicknessToTexture: not a Mesh instance");
+        ArgReader r(a);
+        int w = r.getInt(0, 512), h = r.getInt(1, 512), rays = r.getInt(2, 32);
+        float dist = static_cast<float>(r.getDouble(3, 0.0));
+        auto tb = bromesh::bakeThicknessToTexture(m->mesh, w, h, rays, dist);
+        return makeTextureResult(tb);
+    });
+
+    proto.def("bakeNormalsToTexture", 2, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.bakeNormalsToTexture: not a Mesh instance");
+        ArgReader r(a);
+        int w = r.getInt(0, 512), h = r.getInt(1, 512);
+        auto tb = bromesh::bakeNormalsToTexture(m->mesh, w, h);
+        return makeTextureResult(tb);
+    });
+
+    proto.def("bakePositionToTexture", 2, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.bakePositionToTexture: not a Mesh instance");
+        ArgReader r(a);
+        int w = r.getInt(0, 512), h = r.getInt(1, 512);
+        auto tb = bromesh::bakePositionToTexture(m->mesh, w, h);
+        return makeTextureResult(tb);
+    });
+
+    proto.def("bakeNormalsFromReference", 4, [](Value self, std::span<const Value> a) -> Value {
+        auto* low = unwrapMesh(self);
+        if (!low) return ev::throwTypeError("Mesh.bakeNormalsFromReference: not a Mesh instance");
+        if (a.empty()) return ev::throwTypeError("Mesh.bakeNormalsFromReference: high mesh required");
+        auto* high = unwrapMesh(a[0]);
+        if (!high) return ev::throwTypeError("Mesh.bakeNormalsFromReference: high must be a Mesh");
+        ArgReader r(a);
+        int w = r.getInt(1, 512), h = r.getInt(2, 512);
+        float dist = static_cast<float>(r.getDouble(3, 0.0));
+        auto tb = bromesh::bakeNormalsFromReference(low->mesh, high->mesh, w, h, dist);
+        return makeTextureResult(tb);
+    });
+
+    proto.def("bakeAOFromReference", 5, [](Value self, std::span<const Value> a) -> Value {
+        auto* low = unwrapMesh(self);
+        if (!low) return ev::throwTypeError("Mesh.bakeAOFromReference: not a Mesh instance");
+        if (a.empty()) return ev::throwTypeError("Mesh.bakeAOFromReference: high mesh required");
+        auto* high = unwrapMesh(a[0]);
+        if (!high) return ev::throwTypeError("Mesh.bakeAOFromReference: high must be a Mesh");
+        ArgReader r(a);
+        int w = r.getInt(1, 512), h = r.getInt(2, 512), rays = r.getInt(3, 64);
+        float dist = static_cast<float>(r.getDouble(4, 0.0));
+        auto tb = bromesh::bakeAOFromReference(low->mesh, high->mesh, w, h, rays, dist);
+        return makeTextureResult(tb);
+    });
+
+    // ---- Static helpers ----------------------------------------------------
+    auto bindStatic = [&](const char* name, uint32_t arity, ev::NativeFn fn) {
+        cls.setStatic(name, ev::makeFunction(std::move(fn), arity, name));
+    };
+
+    bindStatic("merge", 1, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty()) return wrapMesh(bromesh::MeshData{});
+        std::vector<bromesh::MeshData> meshes;
+        if (ev::isObject(a[0])) {
+            Value lenVal = ev::getProperty(a[0], "length");
+            if (ev::isNumber(lenVal)) {
+                size_t n = static_cast<size_t>(ev::toDouble(lenVal));
+                for (size_t i = 0; i < n; ++i) {
+                    Value elem = ev::getElement(a[0], static_cast<uint32_t>(i));
+                    auto* m = unwrapMesh(elem);
+                    if (m) meshes.push_back(m->mesh);
+                }
+            } else {
+                for (size_t i = 0; i < a.size(); ++i) {
+                    auto* m = unwrapMesh(a[i]);
+                    if (m) meshes.push_back(m->mesh);
+                }
+            }
+        }
+        return wrapMesh(bromesh::mergeMeshes(meshes));
+    });
+
+    bindStatic("booleanUnion", 2, [](Value, std::span<const Value> a) -> Value {
+        if (a.size() < 2) return ev::throwTypeError("Mesh.booleanUnion(a, b): two meshes required");
+        auto* ma = unwrapMesh(a[0]);
+        auto* mb = unwrapMesh(a[1]);
+        if (!ma || !mb) return ev::throwTypeError("Mesh.booleanUnion: arguments must be Meshes");
+        return wrapMesh(bromesh::booleanUnion(ma->mesh, mb->mesh));
+    });
+
+    bindStatic("booleanDifference", 2, [](Value, std::span<const Value> a) -> Value {
+        if (a.size() < 2) return ev::throwTypeError("Mesh.booleanDifference(a, b): two meshes required");
+        auto* ma = unwrapMesh(a[0]);
+        auto* mb = unwrapMesh(a[1]);
+        if (!ma || !mb) return ev::throwTypeError("Mesh.booleanDifference: arguments must be Meshes");
+        return wrapMesh(bromesh::booleanDifference(ma->mesh, mb->mesh));
+    });
+
+    bindStatic("booleanIntersection", 2, [](Value, std::span<const Value> a) -> Value {
+        if (a.size() < 2) return ev::throwTypeError("Mesh.booleanIntersection(a, b): two meshes required");
+        auto* ma = unwrapMesh(a[0]);
+        auto* mb = unwrapMesh(a[1]);
+        if (!ma || !mb) return ev::throwTypeError("Mesh.booleanIntersection: arguments must be Meshes");
+        return wrapMesh(bromesh::booleanIntersection(ma->mesh, mb->mesh));
+    });
+
+    bindStatic("convexHull", 1, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty()) return ev::throwTypeError("Mesh.convexHull: mesh required");
+        auto* m = unwrapMesh(a[0]);
+        if (!m) return ev::throwTypeError("Mesh.convexHull: argument must be a Mesh");
+        return wrapMesh(bromesh::convexHull(m->mesh));
+    });
+}
+
+} // namespace bromesh::api

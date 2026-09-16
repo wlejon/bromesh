@@ -1,0 +1,136 @@
+#include "api.h"
+#include "host_mesh_internal.h"
+
+namespace bromesh::api {
+
+Value makeMeshNamespace() {
+    ObjectBuilder ns;
+    ns.set("Mesh", g_meshClass.constructor());
+    ns.set("MeshBVH", g_meshBvhClass.constructor());
+    ns.set("ProgressiveMesh", g_progressiveMeshClass.constructor());
+
+    // Forward static methods of Mesh onto bro.mesh
+    Value meshCtor = g_meshClass.constructor();
+    const char* factories[] = {
+        "box", "sphere", "cylinder", "capsule", "cone", "plane", "torus",
+        "icosahedron", "dodecahedron", "octahedron", "tetrahedron", "disk",
+#if BROMESH_HAS_PAR_SHAPES
+        "geodesicSphere", "rock", "blob",
+#endif
+        "tube", "heightmapGrid",
+        "merge", "booleanUnion", "booleanDifference", "booleanIntersection",
+        "convexHull", "marchingCubes", "surfaceNets", "dualContouring",
+        "transvoxel", "greedyMesh"
+#if BROMESH_HAS_GLTF
+        , "loadGLTF"
+#endif
+    };
+    for (const char* f : factories) {
+        Value fn = ev::getProperty(meshCtor, f);
+        if (ev::isFunction(fn)) {
+            ns.set(f, fn);
+        }
+    }
+    return ns.build();
+}
+
+Value makeRiggingNamespace() {
+    ObjectBuilder ns;
+    ns.set("SkinData", g_skinDataClass.constructor());
+    ns.set("Skeleton", g_skeletonClass.constructor());
+    ns.set("Joint", g_jointClass.constructor());
+    ns.set("SkeletonRig", g_skeletonRigClass.constructor());
+    ns.set("RigSpec", g_skeletonRigClass.constructor());
+    ns.set("Rig", g_skeletonRigClass.constructor());
+    ns.set("Pose", g_poseClass.constructor());
+    ns.set("AnimationClip", g_animationClass.constructor());
+    ns.set("Animation", g_animationClass.constructor());
+    ns.set("SkeletalAnimation", g_animationClass.constructor());
+    ns.set("VoxelChunk", g_voxelChunkClass.constructor());
+
+    auto ikGlobal = ev::globalValue("IK");
+    if (ikGlobal.found && ev::isObject(ikGlobal.value)) {
+        ns.set("IK", ikGlobal.value);
+    }
+
+    Value rigCtor = g_skeletonRigClass.constructor();
+    const char* rigMethods[] = {
+        "specFromFile", "detectHumanoid", "detectLandmarks", "detectQuadruped",
+        "missingLandmarks", "fitSkeleton", "autoRig", "transferWeights"
+    };
+    for (const char* m : rigMethods) {
+        Value fn = ev::getProperty(rigCtor, m);
+        if (ev::isFunction(fn)) {
+            ns.set(m, fn);
+        }
+    }
+    return ns.build();
+}
+
+void installMesh() {
+    ensureMeshClassesInstalled();
+
+    Value globalThisVal = ev::undefined();
+    auto gt = ev::globalValue("globalThis");
+    if (gt.found && ev::isObject(gt.value)) {
+        globalThisVal = gt.value;
+    }
+
+    Value broVal = ev::globalValue("bro").found ? ev::globalValue("bro").value : ev::undefined();
+    if (!ev::isObject(broVal)) {
+        if (!ev::isUndefined(globalThisVal)) {
+            Value candidate = ev::getProperty(globalThisVal, "bro");
+            if (ev::isObject(candidate)) {
+                broVal = candidate;
+            }
+        }
+    }
+    if (!ev::isObject(broVal)) {
+        broVal = ev::createObject();
+        ev::registerGlobal("bro", broVal);
+        if (!ev::isUndefined(globalThisVal)) {
+            ev::setProperty(globalThisVal, "bro", broVal);
+        }
+    }
+
+    ev::Persistent broP(broVal);
+
+    // Mount bro.mesh
+    Value meshVal = makeMeshNamespace();
+    broP.set(ev::setProperty(broP.get(), "mesh", meshVal));
+}
+
+void installRigging() {
+    ensureRiggingClassesInstalled();
+
+    Value globalThisVal = ev::undefined();
+    auto gt = ev::globalValue("globalThis");
+    if (gt.found && ev::isObject(gt.value)) {
+        globalThisVal = gt.value;
+    }
+
+    Value broVal = ev::globalValue("bro").found ? ev::globalValue("bro").value : ev::undefined();
+    if (!ev::isObject(broVal)) {
+        if (!ev::isUndefined(globalThisVal)) {
+            Value candidate = ev::getProperty(globalThisVal, "bro");
+            if (ev::isObject(candidate)) {
+                broVal = candidate;
+            }
+        }
+    }
+    if (!ev::isObject(broVal)) {
+        broVal = ev::createObject();
+        ev::registerGlobal("bro", broVal);
+        if (!ev::isUndefined(globalThisVal)) {
+            ev::setProperty(globalThisVal, "bro", broVal);
+        }
+    }
+
+    ev::Persistent broP(broVal);
+
+    // Mount bro.rigging
+    Value rigVal = makeRiggingNamespace();
+    broP.set(ev::setProperty(broP.get(), "rigging", rigVal));
+}
+
+} // namespace bromesh::api

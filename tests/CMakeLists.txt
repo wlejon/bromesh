@@ -33,3 +33,9 @@ if(TARGET tinygltf)
 endif()
 
 add_test(NAME bromesh_test COMMAND bromesh_test)
+
+if(BROMESH_ENABLE_API AND TARGET bromesh_api)
+    add_executable(test_mesh_api test_mesh_api.cpp)
+    target_link_libraries(test_mesh_api PRIVATE bromesh_api bromesh bromath::bromath bronze_runtime_shared)
+    add_test(NAME test_mesh_api COMMAND test_mesh_api)
+endif()
