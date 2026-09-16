@@ -14,8 +14,8 @@ Value animChannelsToObject(const bromesh::Animation& anim) {
         obj.set("boneIndex", static_cast<double>(ch.boneIndex));
         obj.set("path", ch.path == bromesh::AnimChannel::Path::Translation ? "translation" :
                         ch.path == bromesh::AnimChannel::Path::Rotation ? "rotation" : "scale");
-        obj.set("interp", ch.interp == bromesh::AnimChannel::Interp::Step ? "STEP" :
-                          ch.interp == bromesh::AnimChannel::Interp::CubicSpline ? "CUBICSPLINE" : "LINEAR");
+        obj.set("interp", ch.interp == bromesh::AnimChannel::Interp::Step ? "step" :
+                          ch.interp == bromesh::AnimChannel::Interp::CubicSpline ? "cubicspline" : "linear");
         ev::Persistent t(makeFloat32Array(ch.times.data(), ch.times.size()));
         obj.set("times", t.get());
         ev::Persistent v(makeFloat32Array(ch.values.data(), ch.values.size()));
@@ -127,9 +127,8 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
             maskVec = toUint8Vector(a[3]);
             if (!maskVec.empty()) mask = maskVec.data();
         }
-        bromesh::Pose res = pa->pose;
-        bromesh::blendPoses(res, pb->pose, w, mask);
-        return wrapPose(std::move(res));
+        bromesh::blendPoses(pa->pose, pb->pose, w, mask);
+        return a[0];
     }, 4, "blend"));
 
     poseCls.setStatic("blendN", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
@@ -192,6 +191,13 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
                             else if (ps == "scale") ch.path = bromesh::AnimChannel::Path::Scale;
                             else ch.path = bromesh::AnimChannel::Path::Translation;
                         }
+                        Value inVal = ev::getProperty(chVal, "interp");
+                        if (ev::isString(inVal)) {
+                            std::string is = ev::toUtf8(inVal);
+                            if (is == "step" || is == "STEP") ch.interp = bromesh::AnimChannel::Interp::Step;
+                            else if (is == "cubic" || is == "cubicspline" || is == "CUBICSPLINE") ch.interp = bromesh::AnimChannel::Interp::CubicSpline;
+                            else ch.interp = bromesh::AnimChannel::Interp::Linear;
+                        }
                         Value tVal = ev::getProperty(chVal, "times");
                         if (!ev::isUndefined(tVal)) ch.times = toFloatVector(tVal);
                         Value vVal = ev::getProperty(chVal, "values");
@@ -243,9 +249,44 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
             auto* skel = unwrapSkeleton(a[0]);
             if (!skel) return ev::throwTypeError("AnimationClip.evaluate: argument must be a Skeleton");
             float t = a.size() > 1 ? static_cast<float>(numAt(a, 1)) : 0.0f;
-            bool loop = a.size() > 2 ? boolAt(a, 2) : true;
+            bool loop = true;
+            if (a.size() > 2) {
+                if (ev::isObject(a[2])) {
+                    Value lv = ev::getProperty(a[2], "loop");
+                    if (ev::isBool(lv)) loop = ev::toBool(lv);
+                } else {
+                    loop = boolAt(a, 2);
+                }
+            }
             bromesh::Pose p = bromesh::evaluateAnimation(skel->skeleton, anim->animation, t, loop);
             return wrapPose(std::move(p));
+        });
+
+        proto.def("evaluateInto", 4, [](Value self, std::span<const Value> a) -> Value {
+            auto* anim = unwrapAnimation(self);
+            if (!anim) return ev::throwTypeError("AnimationClip.evaluateInto: not an instance");
+            if (a.size() < 3) return ev::throwTypeError("AnimationClip.evaluateInto: skeleton, time, pose required");
+            auto* skel = unwrapSkeleton(a[0]);
+            if (!skel) return ev::throwTypeError("AnimationClip.evaluateInto: skeleton required");
+            float t = static_cast<float>(numAt(a, 1));
+            bool loop = true;
+            Value poseVal = ev::undefined();
+            if (unwrapPose(a[2])) {
+                poseVal = a[2];
+                if (a.size() > 3) loop = boolAt(a, 3);
+            } else {
+                if (ev::isObject(a[2])) {
+                    Value lv = ev::getProperty(a[2], "loop");
+                    if (ev::isBool(lv)) loop = ev::toBool(lv);
+                } else {
+                    loop = boolAt(a, 2);
+                }
+                if (a.size() > 3) poseVal = a[3];
+            }
+            auto* p = unwrapPose(poseVal);
+            if (!p) return ev::throwTypeError("AnimationClip.evaluateInto: pose required");
+            bromesh::evaluateAnimationInto(skel->skeleton, anim->animation, t, loop, p->pose);
+            return poseVal;
         });
     });
 
@@ -256,140 +297,126 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
     // IK Solvers (IK namespace)
     // =========================================================================
     ikBuilder.def("twoBone", 7, [](Value, std::span<const Value> a) -> Value {
-        if (a.empty()) return ev::throwTypeError("IK.twoBone requires options or arguments");
-        if (ev::isObject(a[0])) {
-            Value opts = a[0];
-            Value rootVal = ev::getProperty(opts, "rootPos");
-            Value midVal = ev::getProperty(opts, "midPos");
-            Value endVal = ev::getProperty(opts, "endPos");
-            Value tgtVal = ev::getProperty(opts, "targetPos");
-            Value poleVal = ev::getProperty(opts, "poleVector");
-
-            auto r = toFloatVector(rootVal);
-            auto m = toFloatVector(midVal);
-            auto e = toFloatVector(endVal);
-            auto t = toFloatVector(tgtVal);
-
-            if (r.size() >= 3 && m.size() >= 3 && e.size() >= 3 && t.size() >= 3) {
-                // Two-bone analytic triangle calculation
-                bromath::Vec3 root{r[0], r[1], r[2]};
-                bromath::Vec3 mid{m[0], m[1], m[2]};
-                bromath::Vec3 end{e[0], e[1], e[2]};
-                bromath::Vec3 target{t[0], t[1], t[2]};
-
-                float l1 = bromath::vlen(mid - root);
-                float l2 = bromath::vlen(end - mid);
-                float d = bromath::vlen(target - root);
-                if (d > l1 + l2 - 1e-4f) d = l1 + l2 - 1e-4f;
-                if (d < std::fabs(l1 - l2) + 1e-4f) d = std::fabs(l1 - l2) + 1e-4f;
-
-                float cosAngle = (l1 * l1 + d * d - l2 * l2) / (2.0f * l1 * d);
-                cosAngle = std::clamp(cosAngle, -1.0f, 1.0f);
-                float alpha = std::acos(cosAngle);
-
-                bromath::Vec3 dir = bromath::vnorm(target - root);
-                bromath::Vec3 pole{0, 1, 0};
-                if (!ev::isUndefined(poleVal)) {
-                    auto pv = toFloatVector(poleVal);
-                    if (pv.size() >= 3) pole = {pv[0], pv[1], pv[2]};
-                }
-                bromath::Vec3 bendDir = bromath::vnorm(pole - bromath::vdot(pole, dir) * dir);
-                bromath::Vec3 newMid = root + dir * (std::cos(alpha) * l1) + bendDir * (std::sin(alpha) * l1);
-
-                ObjectBuilder res;
-                {
-                    const float midArr[3] = {newMid.x, newMid.y, newMid.z};
-                    ev::Persistent p(makeFloat32Array(midArr, 3));
-                    res.set("midPos", p.get());
-                    res.set("endPos", tgtVal);
-                }
-                return res.build();
+        if (a.size() < 6) return ev::throwTypeError("IK.twoBone: skel, pose, root, mid, end, target required");
+        auto* skel = unwrapSkeleton(a[0]);
+        auto* pose = unwrapPose(a[1]);
+        if (!skel || !pose) return ev::throwTypeError("IK.twoBone: skel and pose required");
+        int root = static_cast<int>(ev::toDouble(a[2]));
+        int mid = static_cast<int>(ev::toDouble(a[3]));
+        int end = static_cast<int>(ev::toDouble(a[4]));
+        auto tVec = toFloatVector(a[5]);
+        if (tVec.size() < 3) return ev::throwTypeError("IK.twoBone: target must have [x, y, z]");
+        float target[3] = {tVec[0], tVec[1], tVec[2]};
+        float pole[3] = {0, 0, 0};
+        const float* polePtr = nullptr;
+        if (a.size() > 6 && !ev::isUndefined(a[6]) && !ev::isNull(a[6])) {
+            auto pVec = toFloatVector(a[6]);
+            if (pVec.size() >= 3) {
+                pole[0] = pVec[0]; pole[1] = pVec[1]; pole[2] = pVec[2];
+                polePtr = pole;
             }
         }
-        return ev::undefined();
+        bool ok = bromesh::solveTwoBoneIK(skel->skeleton, pose->pose, root, mid, end, target, polePtr);
+        return ev::fromBool(ok);
+    });
+
+    ikBuilder.def("FABRIK", 5, [](Value, std::span<const Value> a) -> Value {
+        if (a.size() < 4) return ev::throwTypeError("IK.FABRIK: skel, pose, chain, target required");
+        auto* skel = unwrapSkeleton(a[0]);
+        auto* pose = unwrapPose(a[1]);
+        if (!skel || !pose) return ev::throwTypeError("IK.FABRIK: skel and pose required");
+        std::vector<int> chain;
+        if (ev::isObject(a[2])) {
+            Value lenV = ev::getProperty(a[2], "length");
+            size_t n = ev::isNumber(lenV) ? static_cast<size_t>(ev::toDouble(lenV)) : 0;
+            for (size_t i = 0; i < n; ++i) {
+                chain.push_back(static_cast<int>(ev::toDouble(ev::getElement(a[2], static_cast<uint32_t>(i)))));
+            }
+        }
+        auto tVec = toFloatVector(a[3]);
+        if (tVec.size() < 3) return ev::throwTypeError("IK.FABRIK: target must have [x, y, z]");
+        float target[3] = {tVec[0], tVec[1], tVec[2]};
+        int iters = 10;
+        float tol = 1e-3f;
+        if (a.size() > 4 && ev::isObject(a[4])) {
+            Value itV = ev::getProperty(a[4], "iterations");
+            Value toV = ev::getProperty(a[4], "tolerance");
+            if (ev::isNumber(itV)) iters = static_cast<int>(ev::toDouble(itV));
+            if (ev::isNumber(toV)) tol = static_cast<float>(ev::toDouble(toV));
+        }
+        bool ok = bromesh::solveFABRIK(skel->skeleton, pose->pose, chain, target, iters, tol);
+        return ev::fromBool(ok);
+    });
+
+    ikBuilder.def("lookAt", 5, [](Value, std::span<const Value> a) -> Value {
+        if (a.size() < 4) return ev::throwTypeError("IK.lookAt: skel, pose, bone, target required");
+        auto* skel = unwrapSkeleton(a[0]);
+        auto* pose = unwrapPose(a[1]);
+        if (!skel || !pose) return ev::throwTypeError("IK.lookAt: skel and pose required");
+        int bone = static_cast<int>(ev::toDouble(a[2]));
+        auto tVec = toFloatVector(a[3]);
+        if (tVec.size() < 3) return ev::throwTypeError("IK.lookAt: target must have [x, y, z]");
+        float target[3] = {tVec[0], tVec[1], tVec[2]};
+        float fwd[3] = {0, 0, 1};
+        float up[3] = {0, 1, 0};
+        const float* fwdPtr = nullptr;
+        const float* upPtr = nullptr;
+        if (a.size() > 4 && ev::isObject(a[4])) {
+            Value fV = ev::getProperty(a[4], "forward");
+            Value uV = ev::getProperty(a[4], "up");
+            if (ev::isObject(fV)) {
+                auto fVec = toFloatVector(fV);
+                if (fVec.size() >= 3) { fwd[0] = fVec[0]; fwd[1] = fVec[1]; fwd[2] = fVec[2]; fwdPtr = fwd; }
+            }
+            if (ev::isObject(uV)) {
+                auto uVec = toFloatVector(uV);
+                if (uVec.size() >= 3) { up[0] = uVec[0]; up[1] = uVec[1]; up[2] = uVec[2]; upPtr = up; }
+            }
+        }
+        bool ok = bromesh::solveLookAt(skel->skeleton, pose->pose, bone, target, fwdPtr, upPtr);
+        return ev::fromBool(ok);
     });
 
     ikBuilder.def("solveTwoBone", 1, [](Value self, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(self, "twoBone"), self, a).value;
-    });
-
-    ikBuilder.def("solveFabrik", 1, [](Value, std::span<const Value> a) -> Value {
-        if (a.empty() || !ev::isObject(a[0])) return hostArrayOf(std::span<const Value>{});
+        if (a.empty() || !ev::isObject(a[0])) return ev::fromBool(false);
         Value opts = a[0];
-        Value ptsVal = ev::getProperty(opts, "jointPositions");
-        Value tgtVal = ev::getProperty(opts, "targetPos");
-        auto tgt = toFloatVector(tgtVal);
-        if (tgt.size() < 3 || !ev::isObject(ptsVal)) return ptsVal;
-
-        Value lenVal = ev::getProperty(ptsVal, "length");
-        size_t n = ev::isNumber(lenVal) ? static_cast<size_t>(ev::toDouble(lenVal)) : 0;
-        std::vector<bromath::Vec3> points;
-        points.reserve(n);
-        for (size_t i = 0; i < n; ++i) {
-            auto pt = toFloatVector(ev::getElement(ptsVal, static_cast<uint32_t>(i)));
-            if (pt.size() >= 3) points.push_back({pt[0], pt[1], pt[2]});
-        }
-        if (points.size() < 2) return ptsVal;
-
-        bromath::Vec3 target{tgt[0], tgt[1], tgt[2]};
-        std::vector<float> dists(points.size() - 1);
-        for (size_t i = 0; i < points.size() - 1; ++i) {
-            dists[i] = bromath::vlen(points[i + 1] - points[i]);
-        }
-
-        bromath::Vec3 origin = points[0];
-        for (int iter = 0; iter < 10; ++iter) {
-            // Backward
-            points.back() = target;
-            for (int i = static_cast<int>(points.size()) - 2; i >= 0; --i) {
-                bromath::Vec3 r = bromath::vnorm(points[i] - points[i + 1]);
-                points[i] = points[i + 1] + r * dists[i];
-            }
-            // Forward
-            points[0] = origin;
-            for (size_t i = 0; i < points.size() - 1; ++i) {
-                bromath::Vec3 r = bromath::vnorm(points[i + 1] - points[i]);
-                points[i + 1] = points[i] + r * dists[i];
-            }
-            if (bromath::vlen(points.back() - target) < 1e-3f) break;
-        }
-
-        return hostArrayOf(points.size(), [&](size_t i) {
-            const float pt[3] = {points[i].x, points[i].y, points[i].z};
-            return makeFloat32Array(pt, 3);
-        });
+        Value skel = ev::getProperty(opts, "skel");
+        Value pose = ev::getProperty(opts, "pose");
+        Value root = ev::getProperty(opts, "root");
+        Value mid = ev::getProperty(opts, "mid");
+        Value end = ev::getProperty(opts, "end");
+        Value tgt = ev::getProperty(opts, "targetPos");
+        Value pole = ev::getProperty(opts, "poleVector");
+        const Value args[7] = {skel, pose, root, mid, end, tgt, pole};
+        return ev::call(ev::getProperty(self, "twoBone"), self, std::span<const Value>(args, 7)).value;
     });
 
-    ikBuilder.def("fabrik", 1, [](Value self, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(self, "solveFabrik"), self, a).value;
-    });
-
-    ikBuilder.def("solveLookAt", 1, [](Value, std::span<const Value> a) -> Value {
-        if (a.empty() || !ev::isObject(a[0])) return hostArrayOf(std::span<const Value>{});
+    ikBuilder.def("solveFabrik", 1, [](Value self, std::span<const Value> a) -> Value {
+        if (a.empty() || !ev::isObject(a[0])) return ev::fromBool(false);
         Value opts = a[0];
-        auto head = toFloatVector(ev::getProperty(opts, "headPos"));
-        auto tgt = toFloatVector(ev::getProperty(opts, "targetPos"));
-        if (head.size() < 3 || tgt.size() < 3) return hostArrayOf(std::span<const Value>{});
-
-        bromath::Vec3 forward = bromath::vnorm(bromath::Vec3{tgt[0] - head[0], tgt[1] - head[1], tgt[2] - head[2]});
-        bromath::Vec3 up{0, 1, 0};
-        bromath::Vec3 right = bromath::vnorm(bromath::vcross(up, forward));
-        up = bromath::vcross(forward, right);
-
-        float rot[4] = {0, 0, 0, 1}; // Quaternion approximation
-        float tr = right.x + up.y + forward.z;
-        if (tr > 0) {
-            float s = 0.5f / std::sqrt(tr + 1.0f);
-            rot[3] = 0.25f / s;
-            rot[0] = (up.z - forward.y) * s;
-            rot[1] = (forward.x - right.z) * s;
-            rot[2] = (right.y - up.x) * s;
-        }
-        return makeFloat32Array(rot, 4);
+        Value skel = ev::getProperty(opts, "skel");
+        Value pose = ev::getProperty(opts, "pose");
+        Value chain = ev::getProperty(opts, "chain");
+        Value tgt = ev::getProperty(opts, "targetPos");
+        ObjectBuilder cOpts;
+        cOpts.set("iterations", ev::getProperty(opts, "maxIterations"));
+        cOpts.set("tolerance", ev::getProperty(opts, "tolerance"));
+        const Value args[5] = {skel, pose, chain, tgt, cOpts.build()};
+        return ev::call(ev::getProperty(self, "FABRIK"), self, std::span<const Value>(args, 5)).value;
     });
 
-    ikBuilder.def("lookAt", 1, [](Value self, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(self, "solveLookAt"), self, a).value;
+    ikBuilder.def("solveLookAt", 1, [](Value self, std::span<const Value> a) -> Value {
+        if (a.empty() || !ev::isObject(a[0])) return ev::fromBool(false);
+        Value opts = a[0];
+        Value skel = ev::getProperty(opts, "skel");
+        Value pose = ev::getProperty(opts, "pose");
+        Value bone = ev::getProperty(opts, "bone");
+        Value tgt = ev::getProperty(opts, "targetPos");
+        ObjectBuilder cOpts;
+        cOpts.set("forward", ev::getProperty(opts, "forward"));
+        cOpts.set("up", ev::getProperty(opts, "up"));
+        const Value args[5] = {skel, pose, bone, tgt, cOpts.build()};
+        return ev::call(ev::getProperty(self, "lookAt"), self, std::span<const Value>(args, 5)).value;
     });
 
     // =========================================================================
@@ -428,6 +455,25 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
     meshProto.def("applyMorphTarget", 4, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.applyMorphTarget: not a Mesh instance");
+        if (a.empty()) return ev::throwTypeError("Mesh.applyMorphTarget: target or name required");
+        if (ev::isObject(a[0])) {
+            Value opt = a[0];
+            bromesh::MorphTarget mt;
+            Value nVal = ev::getProperty(opt, "name");
+            if (ev::isString(nVal)) mt.name = ev::toUtf8(nVal);
+            Value dpVal = ev::getProperty(opt, "deltaPositions");
+            if (!ev::isUndefined(dpVal)) mt.deltaPositions = toFloatVector(dpVal);
+            Value dnVal = ev::getProperty(opt, "deltaNormals");
+            if (!ev::isUndefined(dnVal)) mt.deltaNormals = toFloatVector(dnVal);
+            float w = 1.0f;
+            if (a.size() > 1 && ev::isNumber(a[1])) w = static_cast<float>(ev::toDouble(a[1]));
+            else {
+                Value wVal = ev::getProperty(opt, "weight");
+                if (ev::isNumber(wVal)) w = static_cast<float>(ev::toDouble(wVal));
+            }
+            bromesh::applyMorphTarget(m->mesh, mt, w);
+            return self;
+        }
         if (a.size() < 3) return ev::throwTypeError("Mesh.applyMorphTarget: name, deltaPositions, weight required");
         bromesh::MorphTarget mt;
         mt.name = ev::toUtf8(a[0]);
@@ -444,6 +490,34 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
     });
 
 #if BROMESH_HAS_GLTF
+    meshProto.def("saveGLTF", 2, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.saveGLTF: not a Mesh instance");
+        if (a.empty()) return ev::throwTypeError("Mesh.saveGLTF: path required");
+        std::string path = ev::toUtf8(a[0]);
+        const bromesh::SkinData* skinPtr = nullptr;
+        const bromesh::Skeleton* skelPtr = nullptr;
+        std::vector<bromesh::Animation> anims;
+        if (a.size() > 1 && ev::isObject(a[1])) {
+            Value opts = a[1];
+            Value sVal = ev::getProperty(opts, "skin");
+            Value kVal = ev::getProperty(opts, "skeleton");
+            Value anVal = ev::getProperty(opts, "animations");
+            if (auto* s = unwrapSkinData(sVal)) skinPtr = &s->skin;
+            if (auto* k = unwrapSkeleton(kVal)) skelPtr = &k->skeleton;
+            if (ev::isObject(anVal)) {
+                Value lenV = ev::getProperty(anVal, "length");
+                size_t n = ev::isNumber(lenV) ? static_cast<size_t>(ev::toDouble(lenV)) : 0;
+                for (size_t i = 0; i < n; ++i) {
+                    Value item = ev::getElement(anVal, static_cast<uint32_t>(i));
+                    if (auto* an = unwrapAnimation(item)) anims.push_back(an->animation);
+                }
+            }
+        }
+        bool ok = bromesh::saveGLTF(m->mesh, skinPtr, skelPtr, anims, path);
+        return ev::fromBool(ok);
+    });
+
     meshCls.setStatic("loadGLTF", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Mesh.loadGLTF: path required");
         std::string path = ev::toUtf8(a[0]);
@@ -460,6 +534,12 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         }));
         res.set("animations", hostArrayOf(scene.animations.size(), [&](size_t i) {
             return wrapAnimation(std::move(scene.animations[i]));
+        }));
+        res.set("meshSkeleton", hostArrayOf(scene.meshSkeleton.size(), [&](size_t i) {
+            return ev::fromDouble(static_cast<double>(scene.meshSkeleton[i]));
+        }));
+        res.set("animationSkeleton", hostArrayOf(scene.animationSkeleton.size(), [&](size_t i) {
+            return ev::fromDouble(static_cast<double>(scene.animationSkeleton[i]));
         }));
         return res.build();
     }, 1, "loadGLTF"));

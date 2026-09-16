@@ -529,6 +529,32 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             auto* r = unwrapSkeletonRig(self);
             return ev::fromUtf8(r ? r->spec.name : "");
         });
+        proto.accessor("boneCount", [](Value self, std::span<const Value>) -> Value {
+            auto* r = unwrapSkeletonRig(self);
+            return ev::fromDouble(r ? static_cast<double>(r->spec.bones.size()) : 0.0);
+        });
+        proto.accessor("landmarkCount", [](Value self, std::span<const Value>) -> Value {
+            auto* r = unwrapSkeletonRig(self);
+            return ev::fromDouble(r ? static_cast<double>(r->spec.landmarks.size()) : 0.0);
+        });
+        proto.def("toJSON", 0, [](Value self, std::span<const Value>) -> Value {
+            auto* r = unwrapSkeletonRig(self);
+            return ev::fromUtf8(r ? bromesh::serializeRigSpecJSON(r->spec) : "");
+        });
+        proto.def("landmarkNames", 0, [](Value self, std::span<const Value>) -> Value {
+            auto* r = unwrapSkeletonRig(self);
+            if (!r) return hostArrayOf(std::span<const Value>{});
+            return hostArrayOf(r->spec.landmarks.size(), [&](size_t i) {
+                return ev::fromUtf8(r->spec.landmarks[i].name);
+            });
+        });
+        proto.def("boneNames", 0, [](Value self, std::span<const Value>) -> Value {
+            auto* r = unwrapSkeletonRig(self);
+            if (!r) return hostArrayOf(std::span<const Value>{});
+            return hostArrayOf(r->spec.bones.size(), [&](size_t i) {
+                return ev::fromUtf8(r->spec.bones[i].name);
+            });
+        });
     });
 
     // Aliases on globalThis
@@ -540,13 +566,22 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         rigCls.setStatic(name, ev::makeFunction(std::move(fn), arity, name));
     };
 
+    bindRigStatic("spec", 1, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty()) return wrapSkeletonRig(bromesh::RigSpec{});
+        std::string name = ev::toUtf8(a[0]);
+        return wrapSkeletonRig(bromesh::builtinRigSpec(name));
+    });
+
+    bindRigStatic("specFromJSON", 1, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty()) return wrapSkeletonRig(bromesh::RigSpec{});
+        std::string json = ev::toUtf8(a[0]);
+        return wrapSkeletonRig(bromesh::parseRigSpecJSON(json));
+    });
+
     bindRigStatic("specFromFile", 1, [](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Rig.specFromFile: path required");
         std::string path = ev::toUtf8(a[0]);
-        std::ifstream in(path);
-        if (!in) return ev::throwError("Rig.specFromFile: could not open " + path);
-        std::stringstream ss; ss << in.rdbuf();
-        return wrapSkeletonRig(bromesh::parseRigSpecJSON(ss.str()));
+        return wrapSkeletonRig(bromesh::loadRigSpecFile(path));
     });
 
     bindRigStatic("detectHumanoid", 1, [](Value, std::span<const Value> a) -> Value {
@@ -594,7 +629,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         return wrapSkeleton(bromesh::fitSkeleton(spec, lm, m->mesh));
     });
 
-    bindRigStatic("autoRig", 2, [](Value, std::span<const Value> a) -> Value {
+    bindRigStatic("autoRig", 4, [](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Rig.autoRig: mesh required");
         auto* m = unwrapMesh(a[0]);
         if (!m) return ev::throwTypeError("Rig.autoRig: mesh must be a Mesh instance");
@@ -602,15 +637,24 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         bromesh::RigSpec spec = bromesh::builtinHumanoidSpec();
         bromesh::Landmarks lm;
         bool hasLandmarks = false;
+        Value opts = ev::undefined();
 
-        if (a.size() > 1 && ev::isObject(a[1])) {
-            Value opts = a[1];
+        if (a.size() >= 3 && unwrapSkeletonRig(a[1])) {
+            spec = unwrapSkeletonRig(a[1])->spec;
+            if (ev::isObject(a[2])) {
+                lm = landmarksFromObject(a[2]);
+                hasLandmarks = true;
+            }
+            if (a.size() > 3 && ev::isObject(a[3])) opts = a[3];
+        } else if (a.size() > 1 && ev::isObject(a[1])) {
+            opts = a[1];
             Value specVal = ev::getProperty(opts, "spec");
             if (auto* r = unwrapSkeletonRig(specVal)) spec = r->spec;
             else {
                 Value typeVal = ev::getProperty(opts, "rigType");
-                if (ev::isString(typeVal) && ev::toUtf8(typeVal) == "quadruped") {
-                    spec = bromesh::builtinQuadrupedSpec();
+                if (ev::isString(typeVal)) {
+                    spec = bromesh::builtinRigSpec(ev::toUtf8(typeVal));
+                    if (spec.name.empty()) spec.name = ev::toUtf8(typeVal);
                 }
             }
             Value lmVal = ev::getProperty(opts, "landmarks");
@@ -625,7 +669,17 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             else lm = bromesh::detectHumanoidLandmarks(m->mesh);
         }
 
-        auto res = bromesh::autoRig(m->mesh, spec, lm);
+        bromesh::WeightingOptions wopts;
+        if (ev::isObject(opts)) {
+            Value mVal = ev::getProperty(opts, "method");
+            if (ev::isString(mVal)) {
+                wopts.method = bromesh::parseWeightingMethod(ev::toUtf8(mVal).c_str());
+            }
+            Value smVal = ev::getProperty(opts, "smoothIterations");
+            if (ev::isNumber(smVal)) wopts.smoothIterations = static_cast<int>(ev::toDouble(smVal));
+        }
+
+        auto res = bromesh::autoRig(m->mesh, spec, lm, wopts);
         ObjectBuilder obj;
         {
             ev::Persistent skel(wrapSkeleton(std::move(res.skeleton)));
@@ -642,6 +696,19 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             return ev::fromUtf8(res.warnings[i]);
         }));
         return obj.build();
+    });
+
+    bindRigStatic("generateLocomotionCycle", 3, [](Value, std::span<const Value> a) -> Value {
+        if (a.size() < 2) return ev::throwTypeError("Rig.generateLocomotionCycle: skeleton and spec required");
+        auto* s = unwrapSkeleton(a[0]);
+        auto* r = unwrapSkeletonRig(a[1]);
+        if (!s || !r) return ev::throwTypeError("Rig.generateLocomotionCycle: invalid arguments");
+        bromesh::LocomotionParams params;
+        if (a.size() > 2 && ev::isString(a[2])) {
+            params.gait.name = ev::toUtf8(a[2]);
+        }
+        auto anim = bromesh::generateLocomotionCycle(s->skeleton, r->spec, params);
+        return wrapAnimation(std::move(anim));
     });
 
     bindRigStatic("transferWeights", 3, [](Value, std::span<const Value> a) -> Value {
@@ -677,9 +744,29 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             auto* v = unwrapVoxelChunk(self);
             return ev::fromDouble(v && v->chunk ? static_cast<double>(v->chunk->cellSize()) : 1.0);
         });
-        proto.accessor("isDirty", [](Value self, std::span<const Value>) -> Value {
+        proto.accessor("isDirty",
+            [](Value self, std::span<const Value>) -> Value {
+                auto* v = unwrapVoxelChunk(self);
+                return ev::fromBool(v && v->chunk ? v->chunk->isDirty() : false);
+            },
+            [](Value self, std::span<const Value> a) -> Value {
+                auto* v = unwrapVoxelChunk(self);
+                if (v && v->chunk) {
+                    if (!a.empty() && ev::toBool(a[0])) v->chunk->markDirty();
+                    else v->chunk->clearDirty();
+                }
+                return ev::undefined();
+            });
+
+        proto.def("clearDirty", 0, [](Value self, std::span<const Value>) -> Value {
             auto* v = unwrapVoxelChunk(self);
-            return ev::fromBool(v && v->chunk ? v->chunk->isDirty() : false);
+            if (v && v->chunk) v->chunk->clearDirty();
+            return self;
+        });
+        proto.def("markDirty", 0, [](Value self, std::span<const Value>) -> Value {
+            auto* v = unwrapVoxelChunk(self);
+            if (v && v->chunk) v->chunk->markDirty();
+            return self;
         });
 
         proto.def("set", 4, [](Value self, std::span<const Value> a) -> Value {

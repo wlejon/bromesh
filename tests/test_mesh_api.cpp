@@ -154,13 +154,8 @@ int main() {
         if (skin.boneCount !== 2) throw new Error("Skin boneCount mismatch");
 
         // IK
-        const ikRes = IK.twoBone({
-            rootPos: [0, 0, 0],
-            midPos: [0, 1, 0],
-            endPos: [0, 2, 0],
-            targetPos: [1, 1, 0]
-        });
-        if (!ikRes || !ikRes.midPos) throw new Error("IK twoBone failed");
+        const ikRes = IK.twoBone(skel, pose, 0, 1, 2, [1, 1, 0]);
+        if (typeof ikRes !== "boolean") throw new Error("IK twoBone failed");
 
         // VoxelChunk
         const chunk = new VoxelChunk(8, 8, 8, 1.0);
