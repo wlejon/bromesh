@@ -37,5 +37,23 @@ add_test(NAME bromesh_test COMMAND bromesh_test)
 if(BROMESH_ENABLE_API AND TARGET bromesh_api)
     add_executable(test_mesh_api test_mesh_api.cpp)
     target_link_libraries(test_mesh_api PRIVATE bromesh_api bromesh bromath::bromath bronze_runtime_shared)
+    # bronze's shared runtime is built into BRONZE_SHARED_RUNTIME_DIR, not
+    # beside this executable, and the PE loader only looks beside the .exe
+    # (0xc0000135 + a modal "dll was not found" otherwise). Stage it next to
+    # the test as a post-build step and put both dirs on ctest's PATH.
+    if(WIN32)
+        add_custom_command(TARGET test_mesh_api POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:bronze_runtime_shared>
+                $<TARGET_FILE_DIR:test_mesh_api>
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_LINKER_FILE:bronze_runtime_shared>
+                $<TARGET_FILE_DIR:test_mesh_api>
+        )
+    endif()
     add_test(NAME test_mesh_api COMMAND test_mesh_api)
+    if(WIN32)
+        set_tests_properties(test_mesh_api PROPERTIES
+            ENVIRONMENT "PATH=$<TARGET_FILE_DIR:bronze_runtime_shared>;$<TARGET_FILE_DIR:test_mesh_api>;$ENV{PATH}")
+    endif()
 endif()
