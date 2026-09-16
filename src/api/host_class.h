@@ -39,10 +39,12 @@ public:
 
     Value prototype() const;
     Value constructor() const;
+    void setInstancePrototype(Value p);
 
 private:
     ev::Persistent* proto_ = nullptr;
     ev::Persistent* ctor_ = nullptr;
+    ev::Persistent* instanceProto_ = nullptr;
 };
 
 } // namespace bromesh::api

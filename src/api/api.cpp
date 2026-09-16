@@ -98,6 +98,15 @@ void installMesh() {
     // Mount bro.mesh
     Value meshVal = makeMeshNamespace();
     broP.set(ev::setProperty(broP.get(), "mesh", meshVal));
+
+    if (!ev::isUndefined(globalThisVal)) {
+        ev::setProperty(globalThisVal, "Mesh", g_meshClass.constructor());
+        ev::setProperty(globalThisVal, "MeshBVH", g_meshBvhClass.constructor());
+        ev::setProperty(globalThisVal, "ProgressiveMesh", g_progressiveMeshClass.constructor());
+    }
+    ev::registerGlobal("Mesh", g_meshClass.constructor());
+    ev::registerGlobal("MeshBVH", g_meshBvhClass.constructor());
+    ev::registerGlobal("ProgressiveMesh", g_progressiveMeshClass.constructor());
 }
 
 void installRigging() {
@@ -131,6 +140,31 @@ void installRigging() {
     // Mount bro.rigging
     Value rigVal = makeRiggingNamespace();
     broP.set(ev::setProperty(broP.get(), "rigging", rigVal));
+
+    if (!ev::isUndefined(globalThisVal)) {
+        ev::setProperty(globalThisVal, "SkinData", g_skinDataClass.constructor());
+        ev::setProperty(globalThisVal, "Skeleton", g_skeletonClass.constructor());
+        ev::setProperty(globalThisVal, "Joint", g_jointClass.constructor());
+        ev::setProperty(globalThisVal, "SkeletonRig", g_skeletonRigClass.constructor());
+        ev::setProperty(globalThisVal, "RigSpec", g_skeletonRigClass.constructor());
+        ev::setProperty(globalThisVal, "Rig", g_skeletonRigClass.constructor());
+        ev::setProperty(globalThisVal, "Pose", g_poseClass.constructor());
+        ev::setProperty(globalThisVal, "AnimationClip", g_animationClass.constructor());
+        ev::setProperty(globalThisVal, "Animation", g_animationClass.constructor());
+        ev::setProperty(globalThisVal, "SkeletalAnimation", g_animationClass.constructor());
+        ev::setProperty(globalThisVal, "VoxelChunk", g_voxelChunkClass.constructor());
+    }
+    ev::registerGlobal("SkinData", g_skinDataClass.constructor());
+    ev::registerGlobal("Skeleton", g_skeletonClass.constructor());
+    ev::registerGlobal("Joint", g_jointClass.constructor());
+    ev::registerGlobal("SkeletonRig", g_skeletonRigClass.constructor());
+    ev::registerGlobal("RigSpec", g_skeletonRigClass.constructor());
+    ev::registerGlobal("Rig", g_skeletonRigClass.constructor());
+    ev::registerGlobal("Pose", g_poseClass.constructor());
+    ev::registerGlobal("AnimationClip", g_animationClass.constructor());
+    ev::registerGlobal("Animation", g_animationClass.constructor());
+    ev::registerGlobal("SkeletalAnimation", g_animationClass.constructor());
+    ev::registerGlobal("VoxelChunk", g_voxelChunkClass.constructor());
 }
 
 } // namespace bromesh::api

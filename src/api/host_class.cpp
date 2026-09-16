@@ -48,9 +48,15 @@ void HostClass::inherit(const HostClass& base) const {
     ev::call(setProto.get(), ev::undefined(), std::span<const Value>(args, 2));
 }
 
+void HostClass::setInstancePrototype(Value p) {
+    if (instanceProto_) delete instanceProto_;
+    instanceProto_ = new ev::Persistent(p);
+}
+
 Value HostClass::make(void* data, ev::HandleDestructor dtor, ev::Finalize when) const {
-    if (!proto_) return ev::makeHandle(data, dtor, when);
-    return ev::makeHandle(data, dtor, when, proto_->get());
+    Value p = instanceProto_ ? instanceProto_->get() : (proto_ ? proto_->get() : ev::undefined());
+    if (ev::isUndefined(p)) return ev::makeHandle(data, dtor, when);
+    return ev::makeHandle(data, dtor, when, p);
 }
 
 void HostClass::setStatic(const char* name, Value v) const {

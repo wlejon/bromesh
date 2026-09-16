@@ -434,6 +434,41 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         return self;
     });
 
+    proto.def("analyzeVertexCache", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.analyzeVertexCache: not a Mesh instance");
+        unsigned int cacheSize = !a.empty() && ev::isNumber(a[0]) ? static_cast<unsigned int>(ev::toDouble(a[0])) : 16u;
+        auto st = bromesh::analyzeVertexCache(m->mesh, cacheSize > 0 ? cacheSize : 16u);
+        ObjectBuilder out;
+        out.set("verticesTransformed", static_cast<double>(st.verticesTransformed));
+        out.set("warpsExecuted", static_cast<double>(st.warpsExecuted));
+        out.set("acmr", static_cast<double>(st.acmr));
+        out.set("atvr", static_cast<double>(st.atvr));
+        return out.build();
+    });
+
+    proto.def("analyzeVertexFetch", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.analyzeVertexFetch: not a Mesh instance");
+        size_t vertexSize = !a.empty() && ev::isNumber(a[0]) ? static_cast<size_t>(ev::toDouble(a[0])) : 32u;
+        auto st = bromesh::analyzeVertexFetch(m->mesh, vertexSize > 0 ? vertexSize : 32u);
+        ObjectBuilder out;
+        out.set("bytesFetched", static_cast<double>(st.bytesFetched));
+        out.set("overfetch", static_cast<double>(st.overfetch));
+        return out.build();
+    });
+
+    proto.def("analyzeOverdraw", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.analyzeOverdraw: not a Mesh instance");
+        auto st = bromesh::analyzeOverdraw(m->mesh);
+        ObjectBuilder out;
+        out.set("pixelsCovered", static_cast<double>(st.pixelsCovered));
+        out.set("pixelsShaded", static_cast<double>(st.pixelsShaded));
+        out.set("overdraw", static_cast<double>(st.overdraw));
+        return out.build();
+    });
+
     proto.def("optimizeVertexCache", 0, [](Value self, std::span<const Value>) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.optimizeVertexCache: not a Mesh instance");

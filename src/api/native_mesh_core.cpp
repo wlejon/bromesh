@@ -488,6 +488,18 @@ void ensureMeshClassesInstalled() {
         initMeshAnalysis(proto, g_meshClass);
     });
 
+    auto objVal = ev::globalValue("Object");
+    if (objVal.found && ev::isObject(objVal.value)) {
+        Value createFn = ev::getProperty(objVal.value, "create");
+        if (ev::isFunction(createFn)) {
+            Value baseProto = g_meshClass.prototype();
+            Value subProto = ev::call(createFn, ev::undefined(), std::span<const Value>(&baseProto, 1)).value;
+            if (ev::isObject(subProto)) {
+                g_meshClass.setInstancePrototype(subProto);
+            }
+        }
+    }
+
     initMeshBvh(g_meshBvhClass);
     initProgressiveMesh(g_progressiveMeshClass);
 }
