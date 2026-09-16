@@ -26,10 +26,15 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
     // ---- Normal Operations -------------------------------------------------
     proto.def("computeNormals", 1, [](Value self, std::span<const Value>) -> Value {
         auto* m = unwrapMesh(self);
-        if (!m) return ev::throwTypeError("Mesh.computeNormals: not a Mesh instance");
+        if (!m) {
+            auto* b = unwrapBVH(self);
+            if (b) return ev::throwTypeError("expected a __bro_native.mesh.Mesh handle, got a __bro_native.mesh.MeshBVH handle");
+            return ev::throwTypeError("Mesh.computeNormals: not a Mesh instance");
+        }
         bromesh::computeNormals(m->mesh);
         return self;
     });
+
 
     proto.def("computeFlatNormals", 0, [](Value self, std::span<const Value>) -> Value {
         auto* m = unwrapMesh(self);
@@ -138,7 +143,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.subdivideLoop: not a Mesh instance");
         int iters = a.empty() ? 1 : i32At(a, 0);
-        bromesh::subdivideLoop(m->mesh, iters > 0 ? iters : 1);
+        m->mesh = bromesh::subdivideLoop(m->mesh, iters > 0 ? iters : 1);
         return self;
     });
 
@@ -146,7 +151,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.subdivideCatmullClark: not a Mesh instance");
         int iters = a.empty() ? 1 : i32At(a, 0);
-        bromesh::subdivideCatmullClark(m->mesh, iters > 0 ? iters : 1);
+        m->mesh = bromesh::subdivideCatmullClark(m->mesh, iters > 0 ? iters : 1);
         return self;
     });
 
@@ -185,7 +190,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.remesh: not a Mesh instance");
         double len = a.empty() ? 0.1 : numAt(a, 0);
-        bromesh::remeshIsotropic(m->mesh, static_cast<float>(len), 3);
+        m->mesh = bromesh::remeshIsotropic(m->mesh, static_cast<float>(len), 3);
         return self;
     });
 
@@ -195,7 +200,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         ArgReader r(a);
         float len = static_cast<float>(r.getDouble(0, 0.1));
         int iters = r.getInt(1, 3);
-        bromesh::remeshIsotropic(m->mesh, len, iters > 0 ? iters : 3);
+        m->mesh = bromesh::remeshIsotropic(m->mesh, len, iters > 0 ? iters : 3);
         return self;
     });
 
@@ -205,13 +210,23 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (a.empty()) return ev::throwTypeError("Mesh.shrinkwrap: target mesh required");
         auto* target = unwrapMesh(a[0]);
         if (!target) return ev::throwTypeError("Mesh.shrinkwrap: target must be a Mesh");
+        int mode = 0;
+        if (a.size() > 1) {
+            if (ev::isString(a[1])) {
+                std::string sm = ev::toUtf8(a[1]);
+                if (sm == "normal" || sm == "projectAlongNormal") mode = 1;
+                else if (sm == "axis" || sm == "projectAlongAxis") mode = 2;
+                else mode = 0;
+            } else {
+                mode = i32At(a, 1);
+            }
+        }
         ArgReader r(a);
-        int mode = r.getInt(1, 0);
         float maxDist = static_cast<float>(r.getDouble(2, 0.0));
         float offset = static_cast<float>(r.getDouble(3, 0.0));
         bromath::Vec3 axis{0, 1, 0};
         const float* axisPtr = nullptr;
-        if (a.size() > 4) {
+        if (a.size() > 4 && !ev::isNull(a[4]) && !ev::isUndefined(a[4])) {
             std::vector<float> v = toFloatVector(a[4]);
             if (v.size() >= 3) {
                 axis = {v[0], v[1], v[2]};
@@ -221,6 +236,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         bromesh::shrinkwrap(m->mesh, target->mesh, static_cast<bromesh::ShrinkwrapMode>(mode), maxDist, offset, axisPtr);
         return self;
     });
+
 
     // ---- Splitting / CSG / Decomposition -----------------------------------
     proto.def("splitByPlane", 4, [](Value self, std::span<const Value> a) -> Value {
@@ -428,17 +444,39 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
                 for (size_t i = 0; i < n; ++i) {
                     Value elem = ev::getElement(a[0], static_cast<uint32_t>(i));
                     auto* m = unwrapMesh(elem);
-                    if (m) meshes.push_back(m->mesh);
+                    if (!m) {
+                        return ev::throwTypeError("expected a __bro_native.mesh.Mesh handle, got a " + std::string(ev::isObject(elem) ? "wrong object" : "non-object"));
+                    }
+                    meshes.push_back(m->mesh);
                 }
             } else {
                 for (size_t i = 0; i < a.size(); ++i) {
                     auto* m = unwrapMesh(a[i]);
-                    if (m) meshes.push_back(m->mesh);
+                    if (!m) {
+                        return ev::throwTypeError("expected a __bro_native.mesh.Mesh handle, got a " + std::string(ev::isObject(a[i]) ? "wrong object" : "non-object"));
+                    }
+                    meshes.push_back(m->mesh);
                 }
             }
         }
         return wrapMesh(bromesh::mergeMeshes(meshes));
     });
+
+    bindStatic("splitByPlane", 5, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty()) return ev::throwTypeError("Mesh.splitByPlane: mesh required");
+        auto* m = unwrapMesh(a[0]);
+        if (!m) return ev::throwTypeError("Mesh.splitByPlane: not a Mesh instance");
+        ArgReader r(a.subspan(1));
+        float nx = static_cast<float>(r.getDouble(0, 0.0));
+        float ny = static_cast<float>(r.getDouble(1, 1.0));
+        float nz = static_cast<float>(r.getDouble(2, 0.0));
+        float d = static_cast<float>(r.getDouble(3, 0.0));
+        auto pair = bromesh::splitByPlane(m->mesh, nx, ny, nz, d);
+        return hostArrayOf(2, [&](size_t i) {
+            return wrapMesh(i == 0 ? std::move(pair.first) : std::move(pair.second));
+        });
+    });
+
 
     bindStatic("booleanUnion", 2, [](Value, std::span<const Value> a) -> Value {
         if (a.size() < 2) return ev::throwTypeError("Mesh.booleanUnion(a, b): two meshes required");

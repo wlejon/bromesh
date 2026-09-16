@@ -347,10 +347,23 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     proto.def("buildMeshlets", 3, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.buildMeshlets: not a Mesh instance");
-        ArgReader r(a);
-        size_t maxV = static_cast<size_t>(r.getInt(0, 64));
-        size_t maxT = static_cast<size_t>(r.getInt(1, 124));
-        float coneW = static_cast<float>(r.getDouble(2, 0.5));
+        size_t maxV = 64;
+        size_t maxT = 124;
+        float coneW = 0.5f;
+        if (!a.empty() && ev::isObject(a[0])) {
+            Value opts = a[0];
+            Value mv = ev::getProperty(opts, "maxVertices");
+            Value mt = ev::getProperty(opts, "maxTriangles");
+            Value cw = ev::getProperty(opts, "coneWeight");
+            if (!ev::isUndefined(mv) && !ev::isNull(mv)) maxV = static_cast<size_t>(ev::toDouble(mv));
+            if (!ev::isUndefined(mt) && !ev::isNull(mt)) maxT = static_cast<size_t>(ev::toDouble(mt));
+            if (!ev::isUndefined(cw) && !ev::isNull(cw)) coneW = static_cast<float>(ev::toDouble(cw));
+        } else {
+            ArgReader r(a);
+            maxV = static_cast<size_t>(r.getInt(0, 64));
+            maxT = static_cast<size_t>(r.getInt(1, 124));
+            coneW = static_cast<float>(r.getDouble(2, 0.5));
+        }
         bromesh::MeshletParams opts;
         opts.maxVertices = maxV > 0 ? maxV : 64;
         opts.maxTriangles = maxT > 0 ? maxT : 124;
@@ -393,6 +406,12 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
             ObjectBuilder mo;
             mo.set("vertexCount", static_cast<double>(meshlets[i].vertices.size()));
             mo.set("triangleCount", static_cast<double>(meshlets[i].triangles.size() / 3));
+            mo.set("vertices", makeUint32Array(meshlets[i].vertices.data(), meshlets[i].vertices.size()));
+            mo.set("triangles", makeUint8Array(meshlets[i].triangles.data(), meshlets[i].triangles.size()));
+            ObjectBuilder bnd;
+            bnd.set("radius", static_cast<double>(meshlets[i].bounds.radius));
+            bnd.set("coneCutoff", static_cast<double>(meshlets[i].bounds.coneCutoff));
+            mo.set("bounds", bnd.build());
             return mo.build();
         });
 
@@ -405,6 +424,7 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         ev::setProperty(arr, "meshlets", ev::getProperty(rBuf.get(), "buffer"));
         return arr;
     });
+
 
     proto.def("optimize", 0, [](Value self, std::span<const Value>) -> Value {
         auto* m = unwrapMesh(self);
@@ -457,10 +477,70 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         return makeUint32Array(s.data(), s.size());
     });
 
-    // ---- Static Isosurfaces ------------------------------------------------
+    proto.def("encode", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.encode: not a Mesh instance");
+        bromesh::EncodedMesh enc = bromesh::encodeMesh(m->mesh);
+        ObjectBuilder out;
+        out.set("vertexData", makeUint8Array(enc.vertexData.data(), enc.vertexData.size()));
+        out.set("indexData", makeUint8Array(enc.indexData.data(), enc.indexData.size()));
+        out.set("vertexCount", static_cast<double>(enc.vertexCount));
+        out.set("vertexSize", static_cast<double>(enc.vertexSize));
+        out.set("indexCount", static_cast<double>(enc.indexCount));
+        out.set("hasNormals", ev::fromBool(!m->mesh.normals.empty()));
+        out.set("hasUVs", ev::fromBool(!m->mesh.uvs.empty()));
+        out.set("hasColors", ev::fromBool(!m->mesh.colors.empty()));
+        return out.build();
+    });
+
+    // ---- Static Isosurfaces & Compression ----------------------------------
     auto bindStatic = [&](const char* name, uint32_t arity, ev::NativeFn fn) {
         cls.setStatic(name, ev::makeFunction(std::move(fn), arity, name));
     };
+
+    bindStatic("stripify", 3, [](Value, std::span<const Value> a) -> Value {
+        if (a.size() < 2) return ev::throwTypeError("Mesh.stripify(indices, vertexCount): required arguments");
+        std::vector<uint32_t> indices = toUint32Vector(a[0]);
+        size_t vertexCount = static_cast<size_t>(ev::toDouble(a[1]));
+        uint32_t restartIndex = a.size() > 2 && ev::isNumber(a[2]) ? static_cast<uint32_t>(ev::toDouble(a[2])) : 0xFFFFFFFF;
+        auto strip = bromesh::stripify(indices, vertexCount, restartIndex);
+        return makeUint32Array(strip.data(), strip.size());
+    });
+
+    bindStatic("unstripify", 2, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty()) return ev::throwTypeError("Mesh.unstripify(strip): strip required");
+        std::vector<uint32_t> strip = toUint32Vector(a[0]);
+        uint32_t restartIndex = a.size() > 1 && ev::isNumber(a[1]) ? static_cast<uint32_t>(ev::toDouble(a[1])) : 0xFFFFFFFF;
+        auto indices = bromesh::unstripify(strip, restartIndex);
+        return makeUint32Array(indices.data(), indices.size());
+    });
+
+    bindStatic("decode", 1, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty() || !ev::isObject(a[0])) return ev::throwTypeError("Mesh.decode: encoded object required");
+        Value encVal = a[0];
+        bromesh::EncodedMesh enc;
+        enc.vertexData = toUint8Vector(ev::getProperty(encVal, "vertexData"));
+        enc.indexData = toUint8Vector(ev::getProperty(encVal, "indexData"));
+        Value vc = ev::getProperty(encVal, "vertexCount");
+        Value vs = ev::getProperty(encVal, "vertexSize");
+        Value ic = ev::getProperty(encVal, "indexCount");
+        enc.vertexCount = ev::isNumber(vc) ? static_cast<size_t>(ev::toDouble(vc)) : 0;
+        enc.vertexSize = ev::isNumber(vs) ? static_cast<size_t>(ev::toDouble(vs)) : 0;
+        enc.indexCount = ev::isNumber(ic) ? static_cast<size_t>(ev::toDouble(ic)) : 0;
+
+        bool hasNormals = true;
+        bool hasUVs = true;
+        bool hasColors = false;
+        Value hn = ev::getProperty(encVal, "hasNormals");
+        Value hu = ev::getProperty(encVal, "hasUVs");
+        Value hc = ev::getProperty(encVal, "hasColors");
+        if (ev::isBool(hn)) hasNormals = ev::toBool(hn);
+        if (ev::isBool(hu)) hasUVs = ev::toBool(hu);
+        if (ev::isBool(hc)) hasColors = ev::toBool(hc);
+
+        bromesh::MeshData mesh = bromesh::decodeMesh(enc, hasNormals, hasUVs, hasColors);
+        return wrapMesh(std::move(mesh));
+    });
 
     bindStatic("marchingCubes", 5, [](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Mesh.marchingCubes: field required");
@@ -533,7 +613,11 @@ void initMeshBvh(HostClass& cls) {
     cls.install("MeshBVH", 2, [](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("MeshBVH constructor: mesh required");
         auto* m = unwrapMesh(a[0]);
-        if (!m) return ev::throwTypeError("MeshBVH: argument must be a Mesh");
+        if (!m) {
+            auto* b = unwrapBVH(a[0]);
+            if (b) return ev::throwTypeError("expected a __bro_native.mesh.Mesh handle, got a __bro_native.mesh.MeshBVH handle");
+            return ev::throwTypeError("expected a __bro_native.mesh.Mesh handle, got an ordinary object");
+        }
         int leafSize = a.size() > 1 && ev::isNumber(a[1]) ? static_cast<int>(ev::toDouble(a[1])) : 8;
         auto h = std::make_unique<HostMeshBVH>();
         h->meshCopy = m->mesh;
@@ -580,25 +664,52 @@ void initMeshBvh(HostClass& cls) {
         proto.def("raycast", 7, [](Value self, std::span<const Value> a) -> Value {
             auto* b = unwrapBVH(self);
             if (!b || !b->bvh) return ev::throwTypeError("MeshBVH.raycast: not an instance");
+            const bromesh::MeshData* targetMesh = &b->meshCopy;
+            std::span<const Value> rayArgs = a;
+            if (!a.empty()) {
+                auto* m = unwrapMesh(a[0]);
+                if (m) {
+                    targetMesh = &m->mesh;
+                    rayArgs = a.subspan(1);
+                }
+            }
             float o[3] = {0, 0, 0}, d[3] = {0, -1, 0}, maxDist = 0.0f;
-            parseRayArgs(a, o, d, maxDist);
-            bromesh::RayHit hit = b->bvh->raycast(b->meshCopy, o, d, maxDist);
-            return makeRayHitObject(hit, b->meshCopy);
+            parseRayArgs(rayArgs, o, d, maxDist);
+            bromesh::RayHit hit = b->bvh->raycast(*targetMesh, o, d, maxDist);
+            return makeRayHitObject(hit, *targetMesh);
         });
         proto.def("raycastTest", 7, [](Value self, std::span<const Value> a) -> Value {
             auto* b = unwrapBVH(self);
             if (!b || !b->bvh) return ev::throwTypeError("MeshBVH.raycastTest: not an instance");
+            const bromesh::MeshData* targetMesh = &b->meshCopy;
+            std::span<const Value> rayArgs = a;
+            if (!a.empty()) {
+                auto* m = unwrapMesh(a[0]);
+                if (m) {
+                    targetMesh = &m->mesh;
+                    rayArgs = a.subspan(1);
+                }
+            }
             float o[3] = {0, 0, 0}, d[3] = {0, -1, 0}, maxDist = 0.0f;
-            parseRayArgs(a, o, d, maxDist);
-            return ev::fromBool(b->bvh->raycastTest(b->meshCopy, o, d, maxDist));
+            parseRayArgs(rayArgs, o, d, maxDist);
+            return ev::fromBool(b->bvh->raycastTest(*targetMesh, o, d, maxDist));
         });
         proto.def("closestPoint", 3, [](Value self, std::span<const Value> a) -> Value {
             auto* b = unwrapBVH(self);
             if (!b || !b->bvh) return ev::throwTypeError("MeshBVH.closestPoint: not an instance");
+            const bromesh::MeshData* targetMesh = &b->meshCopy;
+            std::span<const Value> ptArgs = a;
+            if (!a.empty()) {
+                auto* m = unwrapMesh(a[0]);
+                if (m) {
+                    targetMesh = &m->mesh;
+                    ptArgs = a.subspan(1);
+                }
+            }
             float p[3] = {0, 0, 0};
-            parsePointArg(a, p);
-            bromesh::RayHit hit = b->bvh->closestPoint(b->meshCopy, p);
-            return makeRayHitObject(hit, b->meshCopy);
+            parsePointArg(ptArgs, p);
+            bromesh::RayHit hit = b->bvh->closestPoint(*targetMesh, p);
+            return makeRayHitObject(hit, *targetMesh);
         });
     });
 }

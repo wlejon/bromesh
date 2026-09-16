@@ -22,11 +22,20 @@ Value meshConstructor(Value, std::span<const Value> args) {
         Value cVal = ev::getProperty(opts, "colors");
         Value iVal = ev::getProperty(opts, "indices");
 
-        if (!ev::isUndefined(pVal)) hm->mesh.positions = toFloatVector(pVal);
-        if (!ev::isUndefined(nVal)) hm->mesh.normals = toFloatVector(nVal);
-        if (!ev::isUndefined(uVal)) hm->mesh.uvs = toFloatVector(uVal);
-        if (!ev::isUndefined(cVal)) hm->mesh.colors = toFloatVector(cVal);
-        if (!ev::isUndefined(iVal)) hm->mesh.indices = toUint32Vector(iVal);
+        if (!ev::isUndefined(pVal) && !ev::isNull(pVal)) {
+            if (!ev::isTypedArray(pVal)) {
+                return ev::throwTypeError("expected a Float32Array, got a non-typed-array object");
+            }
+            ev::TypedArrayInfo info = ev::typedArrayInfo(pVal);
+            if (info.elementKind != ev::elements::Float32) {
+                return ev::throwTypeError("expected a Float32Array, got a Float64Array");
+            }
+            hm->mesh.positions = toFloatVector(pVal);
+        }
+        if (!ev::isUndefined(nVal) && !ev::isNull(nVal)) hm->mesh.normals = toFloatVector(nVal);
+        if (!ev::isUndefined(uVal) && !ev::isNull(uVal)) hm->mesh.uvs = toFloatVector(uVal);
+        if (!ev::isUndefined(cVal) && !ev::isNull(cVal)) hm->mesh.colors = toFloatVector(cVal);
+        if (!ev::isUndefined(iVal) && !ev::isNull(iVal)) hm->mesh.indices = toUint32Vector(iVal);
     } else {
         // Positional arguments: positions, normals, uvs, colors, indices
         if (args.size() > 0 && !ev::isUndefined(args[0])) hm->mesh.positions = toFloatVector(args[0]);
@@ -139,7 +148,7 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
             if (v.size() % 3 != 0) return ev::throwTypeError("indices length must be a multiple of 3");
             const size_t verts = m->mesh.vertexCount();
             for (uint32_t idx : v) {
-                if (idx >= verts) return ev::throwRangeError("index " + std::to_string(idx) + " out of range");
+                if (idx >= verts) return ev::throwRangeError("Mesh.indices: index " + std::to_string(idx) + " is out of range");
             }
             m->mesh.indices = std::move(v);
             return ev::undefined();
@@ -210,6 +219,12 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
     proto.def("computeBBox", 0, [](Value self, std::span<const Value> a) -> Value {
         return ev::call(ev::getProperty(self, "bounds"), self, a).value;
     });
+    proto.def("computeVolume", 0, [](Value self, std::span<const Value> a) -> Value {
+        return ev::call(ev::getProperty(self, "volume"), self, a).value;
+    });
+    proto.def("computeSurfaceArea", 0, [](Value self, std::span<const Value> a) -> Value {
+        return ev::call(ev::getProperty(self, "surfaceArea"), self, a).value;
+    });
 
     // ---- In-place transforms -----------------------------------------------
     proto.def("translate", 3, [](Value self, std::span<const Value> a) -> Value {
@@ -273,11 +288,12 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
         if (a.empty()) return self;
         std::vector<float> mat = toFloatVector(a[0]);
         if (mat.size() != 16) {
-            return ev::throwTypeError("Mesh.transform: matrix must have 16 elements");
+            return ev::throwTypeError("Mesh.transform: matrix must have 16 elements, got " + std::to_string(mat.size()));
         }
         bromesh::transformMesh(m->mesh, mat.data());
         return self;
     });
+
 
     proto.def("mirror", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
@@ -326,13 +342,14 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
         return wrapMesh(bromesh::capsule(radius, halfH, segs > 2 ? segs : 16, rings > 0 ? rings : 8));
     });
 
-    bindStatic("cone", 4, [](Value, std::span<const Value> a) -> Value {
+    bindStatic("cone", 5, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 0.5));
         float height = static_cast<float>(r.getDouble(1, 1.0));
         int segs = r.getInt(2, 16);
         int stacks = r.getInt(3, 4);
-        return wrapMesh(bromesh::cone(radius, height, segs > 2 ? segs : 16, stacks > 0 ? stacks : 4));
+        bool capped = r.has(4) ? r.getBool(4, true) : true;
+        return wrapMesh(bromesh::cone(radius, height, segs > 2 ? segs : 16, stacks > 0 ? stacks : 4, capped));
     });
 
     bindStatic("plane", 4, [](Value, std::span<const Value> a) -> Value {
@@ -398,17 +415,18 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
     bindStatic("geodesicSphere", 2, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 1.0));
-        int subdiv = r.getInt(1, 2);
-        return wrapMesh(bromesh::geodesicSphere(radius > 0.0f ? radius : 1.0f, subdiv > 0 ? subdiv : 2));
+        int subdiv = a.size() > 1 ? (r.getInt(1, 2) >= 0 ? r.getInt(1, 2) : 0) : 2;
+        return wrapMesh(bromesh::geodesicSphere(radius > 0.0f ? radius : 1.0f, subdiv));
     });
 
     bindStatic("rock", 3, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 1.0));
         int seed = r.getInt(1, 1);
-        int subdiv = r.getInt(2, 2);
-        return wrapMesh(bromesh::rock(radius > 0.0f ? radius : 1.0f, seed, subdiv > 0 ? subdiv : 2));
+        int subdiv = a.size() > 2 ? (r.getInt(2, 2) >= 0 ? r.getInt(2, 2) : 0) : 2;
+        return wrapMesh(bromesh::rock(radius > 0.0f ? radius : 1.0f, seed, subdiv));
     });
+
 
     bindStatic("blob", 8, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
