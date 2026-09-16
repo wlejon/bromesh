@@ -447,6 +447,9 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (!ma || !mb) return ev::throwTypeError("Mesh.booleanUnion: arguments must be Meshes");
         return wrapMesh(bromesh::booleanUnion(ma->mesh, mb->mesh));
     });
+    bindStatic("union", 2, [](Value, std::span<const Value> a) -> Value {
+        return ev::call(ev::getProperty(g_meshClass.constructor(), "booleanUnion"), ev::undefined(), a).value;
+    });
 
     bindStatic("booleanDifference", 2, [](Value, std::span<const Value> a) -> Value {
         if (a.size() < 2) return ev::throwTypeError("Mesh.booleanDifference(a, b): two meshes required");
@@ -455,6 +458,9 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (!ma || !mb) return ev::throwTypeError("Mesh.booleanDifference: arguments must be Meshes");
         return wrapMesh(bromesh::booleanDifference(ma->mesh, mb->mesh));
     });
+    bindStatic("subtract", 2, [](Value, std::span<const Value> a) -> Value {
+        return ev::call(ev::getProperty(g_meshClass.constructor(), "booleanDifference"), ev::undefined(), a).value;
+    });
 
     bindStatic("booleanIntersection", 2, [](Value, std::span<const Value> a) -> Value {
         if (a.size() < 2) return ev::throwTypeError("Mesh.booleanIntersection(a, b): two meshes required");
@@ -462,6 +468,9 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* mb = unwrapMesh(a[1]);
         if (!ma || !mb) return ev::throwTypeError("Mesh.booleanIntersection: arguments must be Meshes");
         return wrapMesh(bromesh::booleanIntersection(ma->mesh, mb->mesh));
+    });
+    bindStatic("intersect", 2, [](Value, std::span<const Value> a) -> Value {
+        return ev::call(ev::getProperty(g_meshClass.constructor(), "booleanIntersection"), ev::undefined(), a).value;
     });
 
     bindStatic("convexHull", 1, [](Value, std::span<const Value> a) -> Value {

@@ -10,41 +10,28 @@ HostClass g_progressiveMeshClass;
 
 namespace {
 
+inline std::string triple(const float* v) {
+    return "[" + std::to_string(v[0]) + "," + std::to_string(v[1]) + "," + std::to_string(v[2]) + "]";
+}
+
 Value makeRayHitObject(const bromesh::RayHit& h, const bromesh::MeshData& m) {
     if (!h.hit) return ev::null();
-    ObjectBuilder obj;
-    obj.set("hit", true);
-    obj.set("distance", static_cast<double>(h.distance));
-    obj.set("triangle", static_cast<double>(h.triangleIndex));
-    obj.set("triangleIndex", static_cast<double>(h.triangleIndex));
-
-    const float pos[3] = {h.position[0], h.position[1], h.position[2]};
-    {
-        ev::Persistent p(makeFloat32Array(pos, 3));
-        obj.set("point", p.get());
-        obj.set("position", p.get());
-    }
-    const float norm[3] = {h.normal[0], h.normal[1], h.normal[2]};
-    {
-        ev::Persistent n(makeFloat32Array(norm, 3));
-        obj.set("normal", n.get());
-    }
-    const float bary[3] = {h.baryU, h.baryV, h.baryW};
-    {
-        ev::Persistent b(makeFloat32Array(bary, 3));
-        obj.set("barycentric", b.get());
-    }
-    if (m.hasUVs() && h.triangleIndex * 3 + 2 < m.indices.size()) {
-        const uint32_t i0 = m.indices[h.triangleIndex * 3];
-        const uint32_t i1 = m.indices[h.triangleIndex * 3 + 1];
-        const uint32_t i2 = m.indices[h.triangleIndex * 3 + 2];
+    std::string s = "{\"hit\":true,\"distance\":" + std::to_string(h.distance) +
+                    ",\"triangle\":" + std::to_string(h.triangleIndex) +
+                    ",\"triangleIndex\":" + std::to_string(h.triangleIndex) +
+                    ",\"point\":" + triple(h.position) +
+                    ",\"position\":" + triple(h.position) +
+                    ",\"normal\":" + triple(h.normal) +
+                    ",\"barycentric\":[" + std::to_string(h.baryU) + "," + std::to_string(h.baryV) + "," + std::to_string(h.baryW) + "]";
+    const size_t t = static_cast<size_t>(h.triangleIndex);
+    if (m.hasUVs() && t * 3 + 2 < m.indices.size()) {
+        const uint32_t i0 = m.indices[t * 3], i1 = m.indices[t * 3 + 1], i2 = m.indices[t * 3 + 2];
         const float u = h.baryU * m.uvs[i0 * 2] + h.baryV * m.uvs[i1 * 2] + h.baryW * m.uvs[i2 * 2];
         const float v = h.baryU * m.uvs[i0 * 2 + 1] + h.baryV * m.uvs[i1 * 2 + 1] + h.baryW * m.uvs[i2 * 2 + 1];
-        const float uvArr[2] = {u, v};
-        ev::Persistent uv(makeFloat32Array(uvArr, 2));
-        obj.set("uv", uv.get());
+        s += ",\"uv\":[" + std::to_string(u) + "," + std::to_string(v) + "]";
     }
-    return obj.build();
+    s += "}";
+    return ev::parseJson(s).value;
 }
 
 inline void parseRayArgs(std::span<const Value> a, float o[3], float d[3], float& maxDist) {
@@ -271,6 +258,14 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         return makeRayHitObject(hit, m->mesh);
     });
 
+    proto.def("buildBVH", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.buildBVH: not a Mesh instance");
+        Value bvhCtor = g_meshBvhClass.constructor();
+        std::array<Value, 2> args = {self, a.empty() ? ev::fromDouble(8.0) : a[0]};
+        return ev::call(bvhCtor, ev::undefined(), args).value;
+    });
+
     // ---- UV Operations -----------------------------------------------------
     proto.def("unwrapUVs", 0, [](Value self, std::span<const Value>) -> Value {
         auto* m = unwrapMesh(self);
@@ -288,25 +283,48 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     proto.def("projectUVs", 2, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.projectUVs: not a Mesh instance");
-        ArgReader r(a);
-        int type = r.getInt(0, 0);
-        float scale = static_cast<float>(r.getDouble(1, 1.0));
+        int type = 0;
+        if (!a.empty()) {
+            if (ev::isString(a[0])) {
+                std::string s = ev::toUtf8(a[0]);
+                if (s == "box") type = 0;
+                else if (s == "planarXY") type = 1;
+                else if (s == "planarXZ") type = 2;
+                else if (s == "planarYZ") type = 3;
+                else if (s == "cylindrical") type = 4;
+                else if (s == "spherical") type = 5;
+                else return ev::throwTypeError(("Mesh.projectUVs: unknown projection '" + s + "'").c_str());
+            } else if (ev::isNumber(a[0])) {
+                type = static_cast<int>(ev::toDouble(a[0]));
+            }
+        }
+        float scale = a.size() > 1 && ev::isNumber(a[1]) ? static_cast<float>(ev::toDouble(a[1])) : 1.0f;
         bromesh::projectUVs(m->mesh, static_cast<bromesh::ProjectionType>(type), scale);
         return self;
+    });
+
+    proto.def("generateUVs", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.generateUVs: not a Mesh instance");
+        std::string method = "unwrap";
+        if (!a.empty() && ev::isString(a[0])) method = ev::toUtf8(a[0]);
+        if (method == "unwrap" || method == "xatlas") {
+            return ev::call(ev::getProperty(self, "unwrapUVs"), self, {}).value;
+        }
+        return ev::call(ev::getProperty(self, "projectUVs"), self, std::array<Value, 2>{a[0], ev::fromDouble(1.0)}).value;
     });
 
     proto.def("computeUVDistortion", 0, [](Value self, std::span<const Value>) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.computeUVDistortion: not a Mesh instance");
         auto d = bromesh::computeUVDistortion(m->mesh);
-        std::vector<float> dist;
-        dist.reserve(d.size() * 3);
-        for (const auto& item : d) {
-            dist.push_back(item.stretch);
-            dist.push_back(item.areaDistortion);
-            dist.push_back(item.angleDistortion);
-        }
-        return makeFloat32Array(dist.data(), dist.size());
+        return hostArrayOf(d.size(), [&](size_t i) -> Value {
+            ObjectBuilder item;
+            item.set("stretch", static_cast<double>(d[i].stretch));
+            item.set("areaDistortion", static_cast<double>(d[i].areaDistortion));
+            item.set("angleDistortion", static_cast<double>(d[i].angleDistortion));
+            return item.build();
+        });
     });
 
     proto.def("measureUVQuality", 0, [](Value self, std::span<const Value>) -> Value {
@@ -334,20 +352,58 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         size_t maxT = static_cast<size_t>(r.getInt(1, 124));
         float coneW = static_cast<float>(r.getDouble(2, 0.5));
         bromesh::MeshletParams opts;
-        opts.maxVertices = maxV;
-        opts.maxTriangles = maxT;
-        opts.coneWeight = coneW;
+        opts.maxVertices = maxV > 0 ? maxV : 64;
+        opts.maxTriangles = maxT > 0 ? maxT : 124;
+        opts.coneWeight = coneW >= 0.0f ? coneW : 0.5f;
         auto meshlets = bromesh::buildMeshlets(m->mesh, opts);
-        return hostArrayOf(meshlets.size(), [&](size_t i) {
+
+        std::vector<uint32_t> allVertices;
+        std::vector<uint8_t> allTriangles;
+        std::vector<uint8_t> records;
+        records.reserve(meshlets.size() * 64);
+
+        auto putU32 = [&](uint32_t v) {
+            uint8_t b[4];
+            std::memcpy(b, &v, 4);
+            records.insert(records.end(), b, b + 4);
+        };
+        auto putF32 = [&](float v) {
+            uint8_t b[4];
+            std::memcpy(b, &v, 4);
+            records.insert(records.end(), b, b + 4);
+        };
+
+        for (const auto& item : meshlets) {
+            putU32(static_cast<uint32_t>(allVertices.size()));
+            putU32(static_cast<uint32_t>(item.vertices.size()));
+            putU32(static_cast<uint32_t>(allTriangles.size()));
+            putU32(static_cast<uint32_t>(item.triangles.size() / 3));
+            for (float f : item.bounds.center) putF32(f);
+            putF32(item.bounds.radius);
+            for (float f : item.bounds.coneApex) putF32(f);
+            for (float f : item.bounds.coneAxis) putF32(f);
+            putF32(item.bounds.coneCutoff);
+            putU32(0);
+
+            allVertices.insert(allVertices.end(), item.vertices.begin(), item.vertices.end());
+            allTriangles.insert(allTriangles.end(), item.triangles.begin(), item.triangles.end());
+        }
+
+        Value arr = hostArrayOf(meshlets.size(), [&](size_t i) -> Value {
             ObjectBuilder mo;
-            mo.set("vertexCount", static_cast<double>(meshlets[i].vertexCount()));
-            mo.set("triangleCount", static_cast<double>(meshlets[i].triangleCount()));
-            ev::Persistent vb(makeUint32Array(meshlets[i].vertices.data(), meshlets[i].vertices.size()));
-            mo.set("vertices", vb.get());
-            ev::Persistent tb(makeUint8Array(meshlets[i].triangles.data(), meshlets[i].triangles.size()));
-            mo.set("triangles", tb.get());
+            mo.set("vertexCount", static_cast<double>(meshlets[i].vertices.size()));
+            mo.set("triangleCount", static_cast<double>(meshlets[i].triangles.size() / 3));
             return mo.build();
         });
+
+        ev::setProperty(arr, "meshletCount", ev::fromDouble(meshlets.size()));
+        ev::Persistent vBuf(makeUint32Array(allVertices.data(), allVertices.size()));
+        ev::setProperty(arr, "vertices", vBuf.get());
+        ev::Persistent tBuf(makeUint8Array(allTriangles.data(), allTriangles.size()));
+        ev::setProperty(arr, "triangles", tBuf.get());
+        ev::Persistent rBuf(makeUint8Array(records.data(), records.size()));
+        ev::setProperty(arr, "meshlets", ev::getProperty(rBuf.get(), "buffer"));
+        return arr;
     });
 
     proto.def("optimize", 0, [](Value self, std::span<const Value>) -> Value {
@@ -441,6 +497,9 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         }
         return wrapMesh(bromesh::dualContour(field.data(), gx, gy, gz, iso));
     });
+    bindStatic("dualContour", 5, [](Value, std::span<const Value> a) -> Value {
+        return ev::call(ev::getProperty(g_meshClass.constructor(), "dualContouring"), ev::undefined(), a).value;
+    });
 
     bindStatic("transvoxel", 6, [](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Mesh.transvoxel: field required");
@@ -471,15 +530,53 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
 // MeshBVH Class
 // ---------------------------------------------------------------------------
 void initMeshBvh(HostClass& cls) {
-    cls.install("MeshBVH", 1, [](Value, std::span<const Value> a) -> Value {
+    cls.install("MeshBVH", 2, [](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("MeshBVH constructor: mesh required");
         auto* m = unwrapMesh(a[0]);
         if (!m) return ev::throwTypeError("MeshBVH: argument must be a Mesh");
+        int leafSize = a.size() > 1 && ev::isNumber(a[1]) ? static_cast<int>(ev::toDouble(a[1])) : 8;
         auto h = std::make_unique<HostMeshBVH>();
         h->meshCopy = m->mesh;
-        h->bvh = std::make_unique<bromesh::MeshBVH>(bromesh::MeshBVH::build(h->meshCopy));
+        h->bvh = std::make_unique<bromesh::MeshBVH>(bromesh::MeshBVH::build(h->meshCopy, leafSize > 0 ? leafSize : 8));
         return g_meshBvhClass.createInstance(std::move(h));
     }, [](ObjectBuilder& proto) {
+        proto.accessor("empty", [](Value self, std::span<const Value>) -> Value {
+            auto* b = unwrapBVH(self);
+            return ev::fromBool(!b || !b->bvh || b->bvh->empty());
+        });
+        proto.accessor("triangleCount", [](Value self, std::span<const Value>) -> Value {
+            auto* b = unwrapBVH(self);
+            return ev::fromDouble(b && b->bvh ? static_cast<double>(b->bvh->triangleCount()) : 0.0);
+        });
+        proto.accessor("nodeCount", [](Value self, std::span<const Value>) -> Value {
+            auto* b = unwrapBVH(self);
+            return ev::fromDouble(b && b->bvh ? static_cast<double>(b->bvh->nodeCount()) : 0.0);
+        });
+        proto.def("bounds", 0, [](Value self, std::span<const Value>) -> Value {
+            auto* b = unwrapBVH(self);
+            if (!b || !b->bvh) return ev::throwTypeError("MeshBVH.bounds: not an instance");
+            const bromath::AABB3 bb = b->bvh->bounds();
+            ObjectBuilder out;
+            out.set("minX", static_cast<double>(bb.min.x));
+            out.set("minY", static_cast<double>(bb.min.y));
+            out.set("minZ", static_cast<double>(bb.min.z));
+            out.set("maxX", static_cast<double>(bb.max.x));
+            out.set("maxY", static_cast<double>(bb.max.y));
+            out.set("maxZ", static_cast<double>(bb.max.z));
+            out.set("centerX", static_cast<double>((bb.min.x + bb.max.x) * 0.5f));
+            out.set("centerY", static_cast<double>((bb.min.y + bb.max.y) * 0.5f));
+            out.set("centerZ", static_cast<double>((bb.min.z + bb.max.z) * 0.5f));
+            out.set("extentX", static_cast<double>(bb.max.x - bb.min.x));
+            out.set("extentY", static_cast<double>(bb.max.y - bb.min.y));
+            out.set("extentZ", static_cast<double>(bb.max.z - bb.min.z));
+            out.set("min", hostArrayOf(3, [&](size_t i) {
+                return ev::fromDouble(i == 0 ? bb.min.x : (i == 1 ? bb.min.y : bb.min.z));
+            }));
+            out.set("max", hostArrayOf(3, [&](size_t i) {
+                return ev::fromDouble(i == 0 ? bb.max.x : (i == 1 ? bb.max.y : bb.max.z));
+            }));
+            return out.build();
+        });
         proto.def("raycast", 7, [](Value self, std::span<const Value> a) -> Value {
             auto* b = unwrapBVH(self);
             if (!b || !b->bvh) return ev::throwTypeError("MeshBVH.raycast: not an instance");
@@ -488,7 +585,13 @@ void initMeshBvh(HostClass& cls) {
             bromesh::RayHit hit = b->bvh->raycast(b->meshCopy, o, d, maxDist);
             return makeRayHitObject(hit, b->meshCopy);
         });
-
+        proto.def("raycastTest", 7, [](Value self, std::span<const Value> a) -> Value {
+            auto* b = unwrapBVH(self);
+            if (!b || !b->bvh) return ev::throwTypeError("MeshBVH.raycastTest: not an instance");
+            float o[3] = {0, 0, 0}, d[3] = {0, -1, 0}, maxDist = 0.0f;
+            parseRayArgs(a, o, d, maxDist);
+            return ev::fromBool(b->bvh->raycastTest(b->meshCopy, o, d, maxDist));
+        });
         proto.def("closestPoint", 3, [](Value self, std::span<const Value> a) -> Value {
             auto* b = unwrapBVH(self);
             if (!b || !b->bvh) return ev::throwTypeError("MeshBVH.closestPoint: not an instance");

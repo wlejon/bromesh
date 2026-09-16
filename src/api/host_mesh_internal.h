@@ -85,55 +85,55 @@ inline constexpr uint32_t kHostAnimationTag   = 0x414E494Du; // 'ANIM'
 inline constexpr uint32_t kHostVoxelChunkTag  = 0x564F5843u; // 'VOXC'
 
 struct HostMesh {
-    uint32_t tag = kHostMeshTag;
     bromesh::MeshData mesh;
+    uint32_t tag = kHostMeshTag;
 };
 
 struct HostMeshBVH {
-    uint32_t tag = kHostMeshBVHTag;
     std::unique_ptr<bromesh::MeshBVH> bvh;
     bromesh::MeshData meshCopy;
+    uint32_t tag = kHostMeshBVHTag;
 };
 
 struct HostProgressiveMesh {
-    uint32_t tag = kHostProgressiveTag;
     std::unique_ptr<bromesh::ProgressiveMesh> pm;
+    uint32_t tag = kHostProgressiveTag;
 };
 
 struct HostSkinData {
-    uint32_t tag = kHostSkinDataTag;
     bromesh::SkinData skin;
+    uint32_t tag = kHostSkinDataTag;
 };
 
 struct HostSkeleton {
-    uint32_t tag = kHostSkeletonTag;
     bromesh::Skeleton skeleton;
+    uint32_t tag = kHostSkeletonTag;
 };
 
 struct HostJoint {
-    uint32_t tag = kHostJointTag;
     bromesh::Bone bone;
     int index = -1;
+    uint32_t tag = kHostJointTag;
 };
 
 struct HostSkeletonRig {
-    uint32_t tag = kHostSkeletonRigTag;
     bromesh::RigSpec spec;
+    uint32_t tag = kHostSkeletonRigTag;
 };
 
 struct HostPose {
-    uint32_t tag = kHostPoseTag;
     bromesh::Pose pose;
+    uint32_t tag = kHostPoseTag;
 };
 
 struct HostAnimation {
-    uint32_t tag = kHostAnimationTag;
     bromesh::Animation animation;
+    uint32_t tag = kHostAnimationTag;
 };
 
 struct HostVoxelChunk {
-    uint32_t tag = kHostVoxelChunkTag;
     std::unique_ptr<bromesh::VoxelChunk> chunk;
+    uint32_t tag = kHostVoxelChunkTag;
 };
 
 // ---------------------------------------------------------------------------

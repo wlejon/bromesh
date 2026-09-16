@@ -109,7 +109,7 @@ int main() {
 
         m.translate(1, 2, 3);
         const b = m.bounds();
-        if (b.length !== 6) throw new Error("Bounds should have 6 components");
+        if (!b || !b.min || b.min.length !== 3 || !b.max || b.max.length !== 3) throw new Error("Bounds should have min and max with 3 components");
 
         // MeshBVH raycasting
         const bvh = new MeshBVH(m);

@@ -186,8 +186,29 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.bounds: not a Mesh instance");
         const bromath::AABB3 bb = bromesh::computeBBox(m->mesh);
-        const float b[6] = {bb.min.x, bb.min.y, bb.min.z, bb.max.x, bb.max.y, bb.max.z};
-        return makeFloat32Array(b, 6);
+        ObjectBuilder out;
+        out.set("minX", static_cast<double>(bb.min.x));
+        out.set("minY", static_cast<double>(bb.min.y));
+        out.set("minZ", static_cast<double>(bb.min.z));
+        out.set("maxX", static_cast<double>(bb.max.x));
+        out.set("maxY", static_cast<double>(bb.max.y));
+        out.set("maxZ", static_cast<double>(bb.max.z));
+        out.set("centerX", static_cast<double>((bb.min.x + bb.max.x) * 0.5f));
+        out.set("centerY", static_cast<double>((bb.min.y + bb.max.y) * 0.5f));
+        out.set("centerZ", static_cast<double>((bb.min.z + bb.max.z) * 0.5f));
+        out.set("extentX", static_cast<double>(bb.max.x - bb.min.x));
+        out.set("extentY", static_cast<double>(bb.max.y - bb.min.y));
+        out.set("extentZ", static_cast<double>(bb.max.z - bb.min.z));
+        out.set("min", hostArrayOf(3, [&](size_t i) {
+            return ev::fromDouble(i == 0 ? bb.min.x : (i == 1 ? bb.min.y : bb.min.z));
+        }));
+        out.set("max", hostArrayOf(3, [&](size_t i) {
+            return ev::fromDouble(i == 0 ? bb.max.x : (i == 1 ? bb.max.y : bb.max.z));
+        }));
+        return out.build();
+    });
+    proto.def("computeBBox", 0, [](Value self, std::span<const Value> a) -> Value {
+        return ev::call(ev::getProperty(self, "bounds"), self, a).value;
     });
 
     // ---- In-place transforms -----------------------------------------------
@@ -361,6 +382,12 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
     });
 
     bindStatic("disk", 2, [](Value, std::span<const Value> a) -> Value {
+        ArgReader r(a);
+        float radius = static_cast<float>(r.getDouble(0, 1.0));
+        int segs = r.getInt(1, 16);
+        return wrapMesh(bromesh::disc(radius > 0.0f ? radius : 1.0f, segs > 2 ? segs : 16));
+    });
+    bindStatic("disc", 2, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 1.0));
         int segs = r.getInt(1, 16);

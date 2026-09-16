@@ -449,37 +449,22 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         std::string path = ev::toUtf8(a[0]);
         auto scene = bromesh::loadGLTF(path);
         ObjectBuilder res;
-        Value meshesArr = ev::createArray();
-        for (size_t i = 0; i < scene.meshes.size(); ++i) {
-            ev::Persistent item(wrapMesh(std::move(scene.meshes[i])));
-            ev::setElement(meshesArr, static_cast<uint32_t>(i), item.get());
-        }
-        res.set("meshes", meshesArr);
-
-        Value skinsArr = ev::createArray();
-        for (size_t i = 0; i < scene.skins.size(); ++i) {
-            ev::Persistent item(wrapSkinData(std::move(scene.skins[i])));
-            ev::setElement(skinsArr, static_cast<uint32_t>(i), item.get());
-        }
-        res.set("skins", skinsArr);
-
-        Value skelsArr = ev::createArray();
-        for (size_t i = 0; i < scene.skeletons.size(); ++i) {
-            ev::Persistent item(wrapSkeleton(std::move(scene.skeletons[i])));
-            ev::setElement(skelsArr, static_cast<uint32_t>(i), item.get());
-        }
-        res.set("skeletons", skelsArr);
-
-        Value animsArr = ev::createArray();
-        for (size_t i = 0; i < scene.animations.size(); ++i) {
-            ev::Persistent item(wrapAnimation(std::move(scene.animations[i])));
-            ev::setElement(animsArr, static_cast<uint32_t>(i), item.get());
-        }
-        res.set("animations", animsArr);
-
+        res.set("meshes", hostArrayOf(scene.meshes.size(), [&](size_t i) {
+            return wrapMesh(std::move(scene.meshes[i]));
+        }));
+        res.set("skins", hostArrayOf(scene.skins.size(), [&](size_t i) {
+            return wrapSkinData(std::move(scene.skins[i]));
+        }));
+        res.set("skeletons", hostArrayOf(scene.skeletons.size(), [&](size_t i) {
+            return wrapSkeleton(std::move(scene.skeletons[i]));
+        }));
+        res.set("animations", hostArrayOf(scene.animations.size(), [&](size_t i) {
+            return wrapAnimation(std::move(scene.animations[i]));
+        }));
         return res.build();
     }, 1, "loadGLTF"));
 #endif
+
 }
 
 void ensureRiggingClassesInstalled() {
