@@ -24,6 +24,9 @@ Value makeMeshNamespace() {
 #if BROMESH_HAS_GLTF
         , "loadGLTF"
 #endif
+#if BROMESH_HAS_DRACO
+        , "decodeDraco", "encodeDraco"
+#endif
     };
     for (const char* f : factories) {
         Value fn = ev::getProperty(meshCtor, f);

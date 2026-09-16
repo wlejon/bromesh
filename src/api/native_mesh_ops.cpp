@@ -1,4 +1,7 @@
 #include "host_mesh_internal.h"
+#if BROMESH_HAS_DRACO
+#include <bromesh/io/draco.h>
+#endif
 #include <vector>
 #include <utility>
 
@@ -517,6 +520,100 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (!m) return ev::throwTypeError("Mesh.convexHull: argument must be a Mesh");
         return wrapMesh(bromesh::convexHull(m->mesh));
     });
+
+#if BROMESH_HAS_DRACO
+    bindStatic("decodeDraco", 1, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty()) return ev::throwTypeError("Mesh.decodeDraco: bytes required");
+        const uint8_t* data = nullptr;
+        size_t size = 0;
+        if (!readUint8Array(a[0], data, size)) {
+            ev::TypedArrayInfo info = ev::typedArrayInfo(a[0]);
+            if (info && info.data) {
+                data = reinterpret_cast<const uint8_t*>(info.data);
+                size = info.byteLength;
+            } else {
+                return ev::throwTypeError("Mesh.decodeDraco: expected Uint8Array or TypedArray view");
+            }
+        }
+        bromesh::DracoDecoded dec = bromesh::decodeDraco(data, size);
+        if (!dec.ok()) {
+            return ev::throwError("Mesh.decodeDraco: " + (dec.error.empty() ? "decode failed" : dec.error));
+        }
+        ObjectBuilder res;
+        res.set("positions", makeFloat32Array(dec.mesh.positions.data(), dec.mesh.positions.size()));
+        res.set("indices", makeUint32Array(dec.mesh.indices.data(), dec.mesh.indices.size()));
+        res.set("normals", makeFloat32Array(dec.mesh.normals.data(), dec.mesh.normals.size()));
+        res.set("uvs", makeFloat32Array(dec.mesh.uvs.data(), dec.mesh.uvs.size()));
+        res.set("colors", makeFloat32Array(dec.mesh.colors.data(), dec.mesh.colors.size()));
+        res.set("mesh", wrapMesh(std::move(dec.mesh)));
+
+        Value attrs = hostArrayOf(dec.attributes.size(), [&](size_t i) -> Value {
+            const auto& attr = dec.attributes[i];
+            ObjectBuilder ab;
+            ab.set("type", ev::fromUtf8(attr.type.c_str()));
+            ab.set("uniqueId", ev::fromDouble(attr.uniqueId));
+            ab.set("components", ev::fromDouble(attr.components));
+            ab.set("count", ev::fromDouble(attr.count));
+            const char* kindName = "float32";
+            switch (attr.kind) {
+                case bromesh::DracoAttribute::Kind::Float32: kindName = "float32"; break;
+                case bromesh::DracoAttribute::Kind::Int8:    kindName = "int8"; break;
+                case bromesh::DracoAttribute::Kind::Uint8:   kindName = "uint8"; break;
+                case bromesh::DracoAttribute::Kind::Int16:   kindName = "int16"; break;
+                case bromesh::DracoAttribute::Kind::Uint16:  kindName = "uint16"; break;
+                case bromesh::DracoAttribute::Kind::Int32:   kindName = "int32"; break;
+                case bromesh::DracoAttribute::Kind::Uint32:  kindName = "uint32"; break;
+            }
+            ab.set("kind", ev::fromUtf8(kindName));
+            ab.set("bytes", makeUint8Array(attr.bytes.data(), attr.bytes.size()));
+            return ab.build();
+        });
+        res.set("attributes", attrs);
+        return res.build();
+    });
+
+    bindStatic("encodeDraco", 2, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty()) return ev::throwTypeError("Mesh.encodeDraco: mesh or {positions, indices} required");
+        bromesh::MeshData mesh;
+        auto* m = unwrapMesh(a[0]);
+        if (m) {
+            mesh = m->mesh;
+        } else if (ev::isObject(a[0])) {
+            Value posVal = ev::getProperty(a[0], "positions");
+            Value idxVal = ev::getProperty(a[0], "indices");
+            Value normVal = ev::getProperty(a[0], "normals");
+            Value uvVal = ev::getProperty(a[0], "uvs");
+            Value colVal = ev::getProperty(a[0], "colors");
+            mesh.positions = toFloatVector(posVal);
+            mesh.indices = toUint32Vector(idxVal);
+            if (!ev::isUndefined(normVal)) mesh.normals = toFloatVector(normVal);
+            if (!ev::isUndefined(uvVal)) mesh.uvs = toFloatVector(uvVal);
+            if (!ev::isUndefined(colVal)) mesh.colors = toFloatVector(colVal);
+        } else {
+            return ev::throwTypeError("Mesh.encodeDraco: first argument must be a Mesh or object");
+        }
+
+        bromesh::DracoEncodeOptions opts;
+        if (a.size() > 1 && ev::isObject(a[1])) {
+            auto getPropInt = [](Value obj, const char* key, int defVal) -> int {
+                Value v = ev::getProperty(obj, key);
+                return ev::isNumber(v) ? static_cast<int>(ev::toDouble(v)) : defVal;
+            };
+            opts.positionBits = getPropInt(a[1], "positionBits", opts.positionBits);
+            opts.normalBits   = getPropInt(a[1], "normalBits", opts.normalBits);
+            opts.uvBits       = getPropInt(a[1], "uvBits", opts.uvBits);
+            opts.colorBits    = getPropInt(a[1], "colorBits", opts.colorBits);
+            opts.speed        = getPropInt(a[1], "speed", getPropInt(a[1], "compressionLevel", opts.speed));
+        }
+
+        std::string err;
+        std::vector<uint8_t> bytes = bromesh::encodeDraco(mesh, opts, &err);
+        if (bytes.empty() && !err.empty()) {
+            return ev::throwError("Mesh.encodeDraco: " + err);
+        }
+        return makeUint8Array(bytes.data(), bytes.size());
+    });
+#endif
 }
 
 } // namespace bromesh::api
