@@ -415,7 +415,7 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
             return mo.build();
         });
 
-        ev::setProperty(arr, "meshletCount", ev::fromDouble(meshlets.size()));
+        ev::setProperty(arr, "meshletCount", ev::fromDouble(static_cast<double>(meshlets.size())));
         ev::Persistent vBuf(makeUint32Array(allVertices.data(), allVertices.size()));
         ev::setProperty(arr, "vertices", vBuf.get());
         ev::Persistent tBuf(makeUint8Array(allTriangles.data(), allTriangles.size()));
