@@ -567,8 +567,11 @@ TEST(fbx_api_smoke) {
 }
 
 TEST(fbx_parsing_valid_file) {
-    // Load existing test FBX file from third_party/OpenFBX/runtime/b.fbx
+    // Load existing test FBX file from third_party/OpenFBX/runtime/b.fbx.
+    // BROMESH_SOURCE_DIR (from tests/CMakeLists.txt) is the real location;
+    // the relative spellings only cover a hand-run from inside the tree.
     const char* candidates[] = {
+        BROMESH_SOURCE_DIR "/third_party/OpenFBX/runtime/b.fbx",
         "third_party/OpenFBX/runtime/b.fbx",
         "../third_party/OpenFBX/runtime/b.fbx",
         "../../third_party/OpenFBX/runtime/b.fbx"

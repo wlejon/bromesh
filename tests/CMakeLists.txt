@@ -31,6 +31,11 @@ target_link_libraries(bromesh_test PRIVATE bromesh)
 if(TARGET tinygltf)
     target_link_libraries(bromesh_test PRIVATE tinygltf)
 endif()
+# Where the checked-in fixtures are (OpenFBX's sample b.fbx). The build tree
+# is not necessarily inside the source tree — CI builds beside the checkout —
+# so the tests must not guess at them from the working directory.
+target_compile_definitions(bromesh_test PRIVATE
+    BROMESH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 add_test(NAME bromesh_test COMMAND bromesh_test)
 
