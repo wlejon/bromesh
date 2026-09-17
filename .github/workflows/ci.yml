@@ -10,10 +10,23 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Every dependency, bromath included, is a submodule under third_party/, so a
-# recursive checkout is the whole setup. (On dev machines bromath resolves from
+# Every C++ dependency, bromath included, is a submodule under third_party/,
+# so a recursive checkout covers those. (On dev machines bromath resolves from
 # the ../bromath sibling instead; in CI that path doesn't exist and the
-# submodule fallback kicks in.)
+# submodule fallback kicks in.) bronze — the JavaScript runtime bromesh_api
+# binds — has no submodule and resolves from ../bronze only, so every job
+# checks this repo out under bromesh/ and lays bronze and brass beside it
+# with bronze's checkout-toolchain action:
+#
+#     $GITHUB_WORKSPACE/
+#       bromesh/    <- this repo, with submodules
+#       bronze/
+#       brass/      <- bronze's code generator; bronze add_subdirectory()s it
+#
+# Both compile inside this build tree with the job's own compiler and CRT —
+# the api is bound across bronze's C++ embed boundary, so a prebuilt bronze
+# would be an unverifiable ABI hazard. That is what makes test_mesh_api the
+# check that the library works the way bro uses it.
 #
 # Release, not Debug: meshoptimizer's Debug assertions fire during the mesh
 # tests and, on Windows, surface as a modal abort() dialog that hangs the runner
@@ -38,13 +51,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          path: bromesh
           submodules: recursive
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Configure
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S bromesh -B build -DCMAKE_BUILD_TYPE=Release
         shell: bash
 
       - name: Build
@@ -65,14 +81,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          path: bromesh
           submodules: recursive
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install gcovr
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcovr
 
       - name: Configure (instrumented)
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Debug \
+          cmake -S bromesh -B build -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_FLAGS="--coverage" \
             -DCMAKE_EXE_LINKER_FLAGS="--coverage"
 
@@ -90,7 +109,7 @@ jobs:
           set -o pipefail
           mkdir -p coverage-html
           gcovr --root . \
-            --filter 'include/bromesh/' --filter 'src/' \
+            --filter 'bromesh/include/bromesh/' --filter 'bromesh/src/' \
             --exclude-unreachable-branches \
             --gcov-ignore-errors=no_working_dir_found \
             --print-summary \

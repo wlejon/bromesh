@@ -9,4 +9,6 @@ queries:
 # vendored *header* pulled into a bromesh translation unit, which build order
 # cannot catch. Together they scope the Security tab to bromesh's own code.
 paths-ignore:
-  - third_party
+  - bromesh/third_party
+  - bronze
+  - brass
