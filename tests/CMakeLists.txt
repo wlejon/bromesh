@@ -56,9 +56,18 @@ if(BROMESH_ENABLE_API AND TARGET bromesh_api)
                 $<TARGET_FILE_DIR:test_mesh_api>
         )
     endif()
-    add_test(NAME test_mesh_api COMMAND test_mesh_api)
-    if(WIN32)
-        set_tests_properties(test_mesh_api PROPERTIES
-            ENVIRONMENT "PATH=$<TARGET_FILE_DIR:bronze_runtime_shared>;$<TARGET_FILE_DIR:test_mesh_api>;$ENV{PATH}")
+    # It runs JavaScript, which brass compiles to machine code for the target;
+    # on one brass has no code generator for (BRASS_HOST_BACKEND, decided in
+    # brass's CMakeLists — Apple Silicon today) that code cannot run. The
+    # executable still builds there, which is the check that the embed links;
+    # the test is not registered rather than registered to bus-error.
+    if(NOT BRASS_HOST_BACKEND)
+        message(STATUS "bromesh: test_mesh_api not registered (brass has no code generator for this target)")
+    else()
+        add_test(NAME test_mesh_api COMMAND test_mesh_api)
+        if(WIN32)
+            set_tests_properties(test_mesh_api PROPERTIES
+                ENVIRONMENT "PATH=$<TARGET_FILE_DIR:bronze_runtime_shared>;$<TARGET_FILE_DIR:test_mesh_api>;$ENV{PATH}")
+        endif()
     endif()
 endif()
