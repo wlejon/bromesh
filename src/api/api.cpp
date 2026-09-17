@@ -8,16 +8,22 @@ Value makeMeshNamespace() {
     ns.set("Mesh", g_meshClass.constructor());
     ns.set("MeshBVH", g_meshBvhClass.constructor());
     ns.set("ProgressiveMesh", g_progressiveMeshClass.constructor());
+    ns.set("CapsuleField", g_capsuleFieldClass.constructor());
+    ns.set("LSystem", g_lsystemClass.constructor());
 
     // Forward static methods of Mesh onto bro.mesh
-    Value meshCtor = g_meshClass.constructor();
     const char* factories[] = {
         "box", "sphere", "cylinder", "capsule", "cone", "plane", "torus",
         "icosahedron", "dodecahedron", "octahedron", "tetrahedron", "disk",
 #if BROMESH_HAS_PAR_SHAPES
-        "geodesicSphere", "rock", "blob",
+        "geodesicSphere", "rock",
 #endif
-        "tube", "heightmapGrid",
+        "blob", "tube", "sweep", "bezierSweep", "heightmapGrid",
+        "leafCard", "flower", "bladeStrip", "bladePath",
+        "spaceColonize", "thickenBranches", "meshBranches",
+        "placeLeavesOnBranches", "scatterLeaves", "tree",
+        "capsuleField", "capsuleFieldFromSegments", "packAnchors",
+        "parseLSystem", "lsystemToBranches",
         "merge", "booleanUnion", "booleanDifference", "booleanIntersection",
         "convexHull", "marchingCubes", "surfaceNets", "dualContouring",
         "transvoxel", "greedyMesh"
@@ -29,7 +35,9 @@ Value makeMeshNamespace() {
 #endif
     };
     for (const char* f : factories) {
-        Value fn = ev::getProperty(meshCtor, f);
+        // Re-fetch the constructor each round: ns.set allocates, and a raw
+        // Value is only good until the next allocation.
+        Value fn = ev::getProperty(g_meshClass.constructor(), f);
         if (ev::isFunction(fn)) {
             ns.set(f, fn);
         }
@@ -106,10 +114,14 @@ void installMesh() {
         ev::setProperty(globalThisVal, "Mesh", g_meshClass.constructor());
         ev::setProperty(globalThisVal, "MeshBVH", g_meshBvhClass.constructor());
         ev::setProperty(globalThisVal, "ProgressiveMesh", g_progressiveMeshClass.constructor());
+        ev::setProperty(globalThisVal, "CapsuleField", g_capsuleFieldClass.constructor());
+        ev::setProperty(globalThisVal, "LSystem", g_lsystemClass.constructor());
     }
     ev::registerGlobal("Mesh", g_meshClass.constructor());
     ev::registerGlobal("MeshBVH", g_meshBvhClass.constructor());
     ev::registerGlobal("ProgressiveMesh", g_progressiveMeshClass.constructor());
+    ev::registerGlobal("CapsuleField", g_capsuleFieldClass.constructor());
+    ev::registerGlobal("LSystem", g_lsystemClass.constructor());
 }
 
 void installRigging() {

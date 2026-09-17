@@ -142,6 +142,8 @@ struct HostVoxelChunk {
 extern HostClass g_meshClass;
 extern HostClass g_meshBvhClass;
 extern HostClass g_progressiveMeshClass;
+extern HostClass g_capsuleFieldClass;
+extern HostClass g_lsystemClass;
 
 extern HostClass g_skinDataClass;
 extern HostClass g_skeletonClass;
@@ -423,8 +425,12 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls);
 void initMeshOps(ObjectBuilder& proto, HostClass& cls);
 void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls);
 
+void initMeshPlants(HostClass& cls);
+
 void initMeshBvh(HostClass& cls);
 void initProgressiveMesh(HostClass& cls);
+void initCapsuleField(HostClass& cls);
+void initLSystem(HostClass& cls);
 
 void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls,
                      HostClass& rigCls, HostClass& voxelCls);

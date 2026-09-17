@@ -426,39 +426,10 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
         int subdiv = a.size() > 2 ? (r.getInt(2, 2) >= 0 ? r.getInt(2, 2) : 0) : 2;
         return wrapMesh(bromesh::rock(radius > 0.0f ? radius : 1.0f, seed, subdiv));
     });
-
-
-    bindStatic("blob", 8, [](Value, std::span<const Value> a) -> Value {
-        ArgReader r(a);
-        float radius = static_cast<float>(r.getDouble(0, 1.0));
-        int segs = r.getInt(1, 16);
-        int rings = r.getInt(2, 12);
-        float fx = static_cast<float>(r.getDouble(3, 1.0));
-        float fy = static_cast<float>(r.getDouble(4, 1.0));
-        float fz = static_cast<float>(r.getDouble(5, 1.0));
-        float strength = static_cast<float>(r.getDouble(6, 0.2));
-        float phase = static_cast<float>(r.getDouble(7, 0.0));
-        return wrapMesh(bromesh::blob(radius, segs, rings, fx, fy, fz, strength, phase));
-    });
 #endif
 
-    bindStatic("tube", 3, [](Value, std::span<const Value> a) -> Value {
-        if (a.empty()) return ev::throwTypeError("Mesh.tube: points required");
-        std::vector<float> pts = toFloatVector(a[0]);
-        if (pts.size() < 6 || pts.size() % 3 != 0) return ev::throwTypeError("Mesh.tube: invalid path points");
-        ArgReader r(a);
-        double rad = r.getDouble(1, 0.1);
-        int sides = r.getInt(2, 8);
-
-        std::vector<bromath::Vec3> path;
-        path.reserve(pts.size() / 3);
-        for (size_t i = 0; i < pts.size(); i += 3) {
-            path.push_back({pts[i], pts[i + 1], pts[i + 2]});
-        }
-        bromesh::TubeOptions opts;
-        if (sides > 2) opts.sides = sides;
-        return wrapMesh(bromesh::tube(path, std::vector<float>{static_cast<float>(rad)}, opts));
-    });
+    // blob, tube, sweep and the plant/branch/L-system statics live in
+    // native_mesh_plants.cpp (initMeshPlants).
 
     bindStatic("heightmapGrid", 5, [](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Mesh.heightmapGrid: heights required");
@@ -486,6 +457,7 @@ void ensureMeshClassesInstalled() {
         initMeshCore(proto, g_meshClass);
         initMeshOps(proto, g_meshClass);
         initMeshAnalysis(proto, g_meshClass);
+        initMeshPlants(g_meshClass);
     });
 
     auto objVal = ev::globalValue("Object");
@@ -502,6 +474,8 @@ void ensureMeshClassesInstalled() {
 
     initMeshBvh(g_meshBvhClass);
     initProgressiveMesh(g_progressiveMeshClass);
+    initCapsuleField(g_capsuleFieldClass);
+    initLSystem(g_lsystemClass);
 }
 
 } // namespace bromesh::api
