@@ -42,6 +42,8 @@
 #include <bromesh/optimization/strips.h>
 #include <bromesh/optimization/encode.h>
 #include <bromesh/optimization/progressive.h>
+#include <bromesh/manipulation/polygon.h>
+#include <bromesh/reconstruction/reconstruct.h>
 #include <bromesh/isosurface/marching_cubes.h>
 #include <bromesh/isosurface/surface_nets.h>
 #include <bromesh/isosurface/dual_contouring.h>
@@ -144,6 +146,7 @@ extern HostClass g_meshBvhClass;
 extern HostClass g_progressiveMeshClass;
 extern HostClass g_capsuleFieldClass;
 extern HostClass g_lsystemClass;
+extern HostClass g_polyMeshClass;
 
 extern HostClass g_skinDataClass;
 extern HostClass g_skeletonClass;
@@ -426,11 +429,20 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls);
 void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls);
 
 void initMeshPlants(HostClass& cls);
+void initMeshIo(ObjectBuilder& proto, HostClass& cls);
 
 void initMeshBvh(HostClass& cls);
 void initProgressiveMesh(HostClass& cls);
 void initCapsuleField(HostClass& cls);
 void initLSystem(HostClass& cls);
+void initPolyMesh(HostClass& cls);
+
+// A file path as the host's resolver sees it (api.h setPathResolver), or as
+// given when no resolver is set (native_mesh_io.cpp).
+std::string resolveMeshPath(const std::string& path);
+// The same for a file about to be written: its parent directory is what
+// gets resolved, since the file itself does not exist yet.
+std::string resolveMeshWritePath(const std::string& path);
 
 void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls,
                      HostClass& rigCls, HostClass& voxelCls);

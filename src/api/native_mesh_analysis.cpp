@@ -10,6 +10,21 @@ HostClass g_progressiveMeshClass;
 
 namespace {
 
+// A contour list is an array of flat coordinate arrays; a missing or
+// non-array value is no contours.
+std::vector<std::vector<float>> readContours(Value v) {
+    std::vector<std::vector<float>> contours;
+    if (!ev::isObject(v)) return contours;
+    Value lenV = ev::getProperty(v, "length");
+    if (!ev::isNumber(lenV)) return contours;
+    const size_t len = static_cast<size_t>(ev::toDouble(lenV));
+    contours.reserve(len);
+    for (size_t i = 0; i < len; ++i) {
+        contours.push_back(toFloatVector(ev::getElement(v, static_cast<uint32_t>(i))));
+    }
+    return contours;
+}
+
 inline std::string triple(const float* v) {
     return "[" + std::to_string(v[0]) + "," + std::to_string(v[1]) + "," + std::to_string(v[2]) + "]";
 }
@@ -575,6 +590,38 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
 
         bromesh::MeshData mesh = bromesh::decodeMesh(enc, hasNormals, hasUVs, hasColors);
         return wrapMesh(std::move(mesh));
+    });
+
+    // ---- Polygon triangulation and point-cloud reconstruction -----------
+    bindStatic("polygon2D", 3, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty()) return ev::throwTypeError("Mesh.polygon2D: (outer[, holes[, z]]) required");
+        std::vector<float> outer = toFloatVector(a[0]);
+        std::vector<std::vector<float>> holes = readContours(argAt(a, 1));
+        const float z = static_cast<float>(numAt(a, 2));
+        return wrapMesh(bromesh::triangulatePolygon2D(outer, holes, z));
+    });
+    bindStatic("polygon3D", 3, [](Value, std::span<const Value> a) -> Value {
+        if (a.empty()) return ev::throwTypeError("Mesh.polygon3D: (outer, holes, normal) required");
+        std::vector<float> outer = toFloatVector(a[0]);
+        std::vector<std::vector<float>> holes = readContours(argAt(a, 1));
+        float normal[3] = {0.0f, 0.0f, 1.0f};
+        std::vector<float> n = toFloatVector(argAt(a, 2));
+        if (n.size() >= 3) { normal[0] = n[0]; normal[1] = n[1]; normal[2] = n[2]; }
+        return wrapMesh(bromesh::triangulatePolygon3D(outer, holes, normal));
+    });
+    bindStatic("reconstruct", 2, [](Value, std::span<const Value> a) -> Value {
+        HostMesh* cloud = a.empty() ? nullptr : unwrapMesh(a[0]);
+        if (!cloud) return ev::throwTypeError("Mesh.reconstruct: a Mesh point cloud (positions + normals) required");
+        bromesh::ReconstructParams params;
+        if (a.size() > 1 && ev::isObject(a[1])) {
+            Value gr = ev::getProperty(a[1], "gridResolution");
+            if (ev::isNumber(gr)) params.gridResolution = static_cast<int>(ev::toDouble(gr));
+            Value sr = ev::getProperty(a[1], "supportRadius");
+            if (ev::isNumber(sr)) params.supportRadius = static_cast<float>(ev::toDouble(sr));
+            Value il = ev::getProperty(a[1], "isoLevel");
+            if (ev::isNumber(il)) params.isoLevel = static_cast<float>(ev::toDouble(il));
+        }
+        return wrapMesh(bromesh::reconstructFromPointCloud(cloud->mesh, params));
     });
 
     bindStatic("marchingCubes", 5, [](Value, std::span<const Value> a) -> Value {

@@ -494,7 +494,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.saveGLTF: not a Mesh instance");
         if (a.empty()) return ev::throwTypeError("Mesh.saveGLTF: path required");
-        std::string path = ev::toUtf8(a[0]);
+        std::string path = resolveMeshWritePath(ev::toUtf8(a[0]));
         const bromesh::SkinData* skinPtr = nullptr;
         const bromesh::Skeleton* skelPtr = nullptr;
         std::vector<bromesh::Animation> anims;
@@ -520,7 +520,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
 
     meshCls.setStatic("loadGLTF", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Mesh.loadGLTF: path required");
-        std::string path = ev::toUtf8(a[0]);
+        std::string path = resolveMeshPath(ev::toUtf8(a[0]));
         auto scene = bromesh::loadGLTF(path);
         ObjectBuilder res;
         res.set("meshes", hostArrayOf(scene.meshes.size(), [&](size_t i) {
@@ -548,7 +548,8 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
 }
 
 void ensureRiggingClassesInstalled() {
-    static bool installed = false;
+    // Per thread, like ensureMeshClassesInstalled.
+    static thread_local bool installed = false;
     if (installed) return;
     installed = true;
 

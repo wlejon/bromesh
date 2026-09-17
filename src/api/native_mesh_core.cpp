@@ -449,7 +449,10 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
 }
 
 void ensureMeshClassesInstalled() {
-    static bool installed = false;
+    // Once per THREAD, not per process: a class's constructor and prototype
+    // are the installing thread's (host_class.h), so a Worker realm installs
+    // its own.
+    static thread_local bool installed = false;
     if (installed) return;
     installed = true;
 
@@ -458,6 +461,7 @@ void ensureMeshClassesInstalled() {
         initMeshOps(proto, g_meshClass);
         initMeshAnalysis(proto, g_meshClass);
         initMeshPlants(g_meshClass);
+        initMeshIo(proto, g_meshClass);
     });
 
     auto objVal = ev::globalValue("Object");
@@ -476,6 +480,7 @@ void ensureMeshClassesInstalled() {
     initProgressiveMesh(g_progressiveMeshClass);
     initCapsuleField(g_capsuleFieldClass);
     initLSystem(g_lsystemClass);
+    initPolyMesh(g_polyMeshClass);
 }
 
 } // namespace bromesh::api

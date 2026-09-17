@@ -5,6 +5,7 @@ add_library(bromesh_api STATIC
     native_mesh_ops.cpp
     native_mesh_analysis.cpp
     native_mesh_plants.cpp
+    native_mesh_io.cpp
     native_rigging_core.cpp
     native_rigging_anim.cpp
 )

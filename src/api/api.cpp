@@ -10,6 +10,7 @@ Value makeMeshNamespace() {
     ns.set("ProgressiveMesh", g_progressiveMeshClass.constructor());
     ns.set("CapsuleField", g_capsuleFieldClass.constructor());
     ns.set("LSystem", g_lsystemClass.constructor());
+    ns.set("PolyMesh", g_polyMeshClass.constructor());
 
     // Forward static methods of Mesh onto bro.mesh
     const char* factories[] = {
@@ -26,7 +27,8 @@ Value makeMeshNamespace() {
         "parseLSystem", "lsystemToBranches",
         "merge", "booleanUnion", "booleanDifference", "booleanIntersection",
         "convexHull", "marchingCubes", "surfaceNets", "dualContouring",
-        "transvoxel", "greedyMesh"
+        "transvoxel", "greedyMesh", "polygon2D", "polygon3D", "reconstruct",
+        "loadOBJ", "loadPLY", "loadSTL", "loadVOX", "loadFBX", "loadSplatPLY", "saveSplatPLY"
 #if BROMESH_HAS_GLTF
         , "loadGLTF"
 #endif
@@ -116,12 +118,31 @@ void installMesh() {
         ev::setProperty(globalThisVal, "ProgressiveMesh", g_progressiveMeshClass.constructor());
         ev::setProperty(globalThisVal, "CapsuleField", g_capsuleFieldClass.constructor());
         ev::setProperty(globalThisVal, "LSystem", g_lsystemClass.constructor());
+        ev::setProperty(globalThisVal, "PolyMesh", g_polyMeshClass.constructor());
     }
     ev::registerGlobal("Mesh", g_meshClass.constructor());
     ev::registerGlobal("MeshBVH", g_meshBvhClass.constructor());
     ev::registerGlobal("ProgressiveMesh", g_progressiveMeshClass.constructor());
     ev::registerGlobal("CapsuleField", g_capsuleFieldClass.constructor());
     ev::registerGlobal("LSystem", g_lsystemClass.constructor());
+    ev::registerGlobal("PolyMesh", g_polyMeshClass.constructor());
+}
+
+bool isMeshValue(Value v) {
+    return unwrapMesh(v) != nullptr;
+}
+
+bool takeMeshData(Value v, bromesh::MeshData& out) {
+    HostMesh* h = unwrapMesh(v);
+    if (!h) return false;
+    out = std::move(h->mesh);
+    h->mesh = bromesh::MeshData();
+    return true;
+}
+
+Value makeMeshValue(bromesh::MeshData mesh) {
+    ensureMeshClassesInstalled();
+    return wrapMesh(std::move(mesh));
 }
 
 void installRigging() {
@@ -155,6 +176,20 @@ void installRigging() {
     // Mount bro.rigging
     Value rigVal = makeRiggingNamespace();
     broP.set(ev::setProperty(broP.get(), "rigging", rigVal));
+
+    // Mesh.loadGLTF is a rigging-side static (it returns skins and
+    // skeletons), so it exists only now — after installMesh built bro.mesh.
+    // Forward it late, the way the mesh-side statics were forwarded early.
+#if BROMESH_HAS_GLTF
+    {
+        Value meshNs = ev::getProperty(broP.get(), "mesh");
+        if (ev::isObject(meshNs)) {
+            ev::Persistent meshNsP(meshNs);
+            Value fn = ev::getProperty(g_meshClass.constructor(), "loadGLTF");
+            if (ev::isFunction(fn)) ev::setProperty(meshNsP.get(), "loadGLTF", fn);
+        }
+    }
+#endif
 
     if (!ev::isUndefined(globalThisVal)) {
         ev::setProperty(globalThisVal, "SkinData", g_skinDataClass.constructor());
