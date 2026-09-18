@@ -63,6 +63,7 @@
 #if BROMESH_HAS_GLTF
 #include <bromesh/io/gltf.h>
 #endif
+#include <bromesh/isosurface/jit/sdf_node.h>
 
 #include <algorithm>
 #include <cmath>
@@ -85,6 +86,12 @@ inline constexpr uint32_t kHostSkeletonRigTag = 0x53524947u; // 'SRIG'
 inline constexpr uint32_t kHostPoseTag        = 0x504F5345u; // 'POSE'
 inline constexpr uint32_t kHostAnimationTag   = 0x414E494Du; // 'ANIM'
 inline constexpr uint32_t kHostVoxelChunkTag  = 0x564F5843u; // 'VOXC'
+inline constexpr uint32_t kHostSdfGraphTag    = 0x53444647u; // 'SDFG'
+
+struct HostSdfGraph {
+    bromesh::SdfGraph graph;
+    uint32_t tag = kHostSdfGraphTag;
+};
 
 struct HostMesh {
     bromesh::MeshData mesh;
@@ -147,6 +154,7 @@ extern HostClass g_progressiveMeshClass;
 extern HostClass g_capsuleFieldClass;
 extern HostClass g_lsystemClass;
 extern HostClass g_polyMeshClass;
+extern HostClass g_sdfGraphClass;
 
 extern HostClass g_skinDataClass;
 extern HostClass g_skeletonClass;
@@ -229,6 +237,13 @@ inline HostVoxelChunk* unwrapVoxelChunk(Value v) {
     return (h && h->tag == kHostVoxelChunkTag) ? h : nullptr;
 }
 
+inline HostSdfGraph* unwrapSdfGraph(Value v) {
+    void* ptr = g_sdfGraphClass.unwrap(v);
+    if (!ptr) return nullptr;
+    auto* h = static_cast<HostSdfGraph*>(ptr);
+    return (h && h->tag == kHostSdfGraphTag) ? h : nullptr;
+}
+
 // ---------------------------------------------------------------------------
 // Wrap Helpers
 // ---------------------------------------------------------------------------
@@ -273,6 +288,12 @@ inline Value wrapSkeletonRig(bromesh::RigSpec spec) {
     auto h = std::make_unique<HostSkeletonRig>();
     h->spec = std::move(spec);
     return g_skeletonRigClass.createInstance(std::move(h));
+}
+
+inline Value wrapSdfGraph(bromesh::SdfGraph graph) {
+    auto h = std::make_unique<HostSdfGraph>();
+    h->graph = std::move(graph);
+    return g_sdfGraphClass.createInstance(std::move(h));
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +457,8 @@ void initProgressiveMesh(HostClass& cls);
 void initCapsuleField(HostClass& cls);
 void initLSystem(HostClass& cls);
 void initPolyMesh(HostClass& cls);
+void initMeshSdf(ObjectBuilder& proto, HostClass& cls);
+void initSdfGraph(HostClass& cls);
 
 // A file path as the host's resolver sees it (api.h setPathResolver), or as
 // given when no resolver is set (native_mesh_io.cpp).

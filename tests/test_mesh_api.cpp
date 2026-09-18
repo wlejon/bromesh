@@ -162,6 +162,22 @@ int main() {
         chunk.set(2, 2, 2, 1);
         if (chunk.get(2, 2, 2) !== 1) throw new Error("VoxelChunk get/set mismatch");
 
+        // SDFGraph and JIT SDF meshing
+        const sdf = Mesh.createSDF();
+        const s0 = sdf.sphere(1.0);
+        const b0 = sdf.box([0.7, 0.7, 0.7]);
+        const u0 = sdf.opSmoothUnion(s0, b0, 0.2);
+        sdf.setRoot(u0);
+        if (sdf.size !== 3) throw new Error("SDFGraph size should be 3");
+
+        const sdfMesh = sdf.marchingCubes({ dims: [32, 32, 32], bounds: { min: [-1.5, -1.5, -1.5], max: [1.5, 1.5, 1.5] } });
+        if (!sdfMesh || sdfMesh.triangleCount === 0) throw new Error("SDF marching cubes returned empty mesh");
+        if (sdfMesh.volume() <= 0) throw new Error("SDF marching cubes volume must be positive");
+
+        const snMesh = Mesh.surfaceNetsSDF(sdf, { dims: [32, 32, 32], bounds: { min: [-1.5, -1.5, -1.5], max: [1.5, 1.5, 1.5] } });
+        if (!snMesh || snMesh.triangleCount === 0) throw new Error("SDF surface nets returned empty mesh");
+        if (snMesh.volume() <= 0) throw new Error("SDF surface nets volume must be positive");
+
         "SUCCESS";
     )JS";
 

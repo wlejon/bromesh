@@ -236,6 +236,9 @@ add_library(bromesh STATIC
     src/isosurface/surface_nets.cpp
     src/isosurface/dual_contouring.cpp
     src/isosurface/transvoxel.cpp
+    src/isosurface/jit/sdf_node.cpp
+    src/isosurface/jit/sdf_compiler.cpp
+    src/isosurface/jit/jit_mesher.cpp
 
     # Discrete voxel
     src/voxel/greedy_mesh.cpp
@@ -431,6 +434,11 @@ endif()
 if(TARGET osqpstatic)
     target_link_libraries(bromesh PRIVATE osqpstatic)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_OSQP=1)
+endif()
+
+if(TARGET brass)
+    target_link_libraries(bromesh PUBLIC brass)
+    target_compile_definitions(bromesh PUBLIC BROMESH_HAS_BRASS_JIT=1)
 endif()
 
 # Standalone Bronze JavaScript API

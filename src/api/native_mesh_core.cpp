@@ -462,6 +462,7 @@ void ensureMeshClassesInstalled() {
         initMeshAnalysis(proto, g_meshClass);
         initMeshPlants(g_meshClass);
         initMeshIo(proto, g_meshClass);
+        initMeshSdf(proto, g_meshClass);
     });
 
     auto objVal = ev::globalValue("Object");
@@ -481,6 +482,7 @@ void ensureMeshClassesInstalled() {
     initCapsuleField(g_capsuleFieldClass);
     initLSystem(g_lsystemClass);
     initPolyMesh(g_polyMeshClass);
+    initSdfGraph(g_sdfGraphClass);
 }
 
 } // namespace bromesh::api

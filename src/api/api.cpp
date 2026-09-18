@@ -11,6 +11,7 @@ Value makeMeshNamespace() {
     ns.set("CapsuleField", g_capsuleFieldClass.constructor());
     ns.set("LSystem", g_lsystemClass.constructor());
     ns.set("PolyMesh", g_polyMeshClass.constructor());
+    ns.set("SDFGraph", g_sdfGraphClass.constructor());
 
     // Forward static methods of Mesh onto bro.mesh
     const char* factories[] = {
@@ -28,6 +29,7 @@ Value makeMeshNamespace() {
         "merge", "booleanUnion", "booleanDifference", "booleanIntersection",
         "convexHull", "marchingCubes", "surfaceNets", "dualContouring",
         "transvoxel", "greedyMesh", "polygon2D", "polygon3D", "reconstruct",
+        "createSDF", "marchingCubesSDF", "surfaceNetsSDF",
         "loadOBJ", "loadPLY", "loadSTL", "loadVOX", "loadFBX", "loadSplatPLY", "saveSplatPLY"
 #if BROMESH_HAS_GLTF
         , "loadGLTF"
@@ -119,6 +121,7 @@ void installMesh() {
         ev::setProperty(globalThisVal, "CapsuleField", g_capsuleFieldClass.constructor());
         ev::setProperty(globalThisVal, "LSystem", g_lsystemClass.constructor());
         ev::setProperty(globalThisVal, "PolyMesh", g_polyMeshClass.constructor());
+        ev::setProperty(globalThisVal, "SDFGraph", g_sdfGraphClass.constructor());
     }
     ev::registerGlobal("Mesh", g_meshClass.constructor());
     ev::registerGlobal("MeshBVH", g_meshBvhClass.constructor());
@@ -126,6 +129,7 @@ void installMesh() {
     ev::registerGlobal("CapsuleField", g_capsuleFieldClass.constructor());
     ev::registerGlobal("LSystem", g_lsystemClass.constructor());
     ev::registerGlobal("PolyMesh", g_polyMeshClass.constructor());
+    ev::registerGlobal("SDFGraph", g_sdfGraphClass.constructor());
 }
 
 bool isMeshValue(Value v) {
