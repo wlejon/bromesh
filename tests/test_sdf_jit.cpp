@@ -49,6 +49,8 @@ TEST(sdf_jit_volume_evaluation_primitives) {
 
     bromath::AABB3 bounds{{-2.0f, -2.0f, -2.0f}, {2.0f, 2.0f, 2.0f}};
     int dim = 33; // center voxel is exactly at index 16
+    auto compiled = bromesh::JitSdfCompiler::instance().compile(gSphere);
+    ASSERT(compiled.isJit && compiled.gridFn != nullptr && compiled.pointFn != nullptr, "JIT compilation must succeed and produce valid native function pointers");
     auto vol = bromesh::JitSdfCompiler::instance().evaluateVolume(gSphere, dim, dim, dim, bounds);
 
     ASSERT(vol.dimX == dim && vol.dimY == dim && vol.dimZ == dim, "volume dimensions match");
