@@ -189,6 +189,7 @@ if(NOT TARGET osqpstatic AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/osq
     set(OSQP_ENABLE_PROFILING OFF CACHE BOOL "" FORCE)
     set(OSQP_ENABLE_INTERRUPT OFF CACHE BOOL "" FORCE)
     set(OSQP_ALGEBRA_BACKEND "builtin" CACHE STRING "" FORCE)
+    set(CMAKE_WARN_DEPRECATED OFF)
     add_subdirectory(third_party/osqp EXCLUDE_FROM_ALL)
 endif()
 if(NOT TARGET osqpstatic)
@@ -220,6 +221,7 @@ if(NOT TARGET draco::draco AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/d
     set(DRACO_TESTS OFF CACHE BOOL "" FORCE)
     set(DRACO_INSTALL OFF CACHE BOOL "" FORCE)
     set(DRACO_TRANSCODER_SUPPORTED OFF CACHE BOOL "" FORCE)
+    set(CMAKE_POLICY_DEFAULT_CMP0148 OLD)
     # Draco names its library `draco` on MSVC and `draco_static` elsewhere;
     # the draco::draco alias is the one spelling both branches provide.
     add_subdirectory(third_party/draco EXCLUDE_FROM_ALL)
