@@ -45,6 +45,16 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         return wrapMesh(bromesh::computeFlatNormals(m->mesh));
     });
 
+    // Per-vertex tangents as a flat Float32Array (xyzw per vertex, w = the
+    // bitangent sign). Needed for normal-mapped materials; dropped by the
+    // bronze port (bro docs/transition-drift.md H7).
+    proto.def("computeTangents", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.computeTangents: not a Mesh instance");
+        std::vector<float> tangents = bromesh::computeTangents(m->mesh);
+        return makeFloat32Array(tangents.data(), tangents.size());
+    });
+
     proto.def("computeCreaseNormals", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.computeCreaseNormals: not a Mesh instance");
@@ -120,6 +130,21 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         return self;
     });
 
+    // simplifyWithAttributes(ratio, error=0.01, uvWeight=1, normalWeight=0.5) —
+    // quadric simplification that folds UV and normal error into the metric, so
+    // UV seams and hard edges survive. The plain simplify() does not.
+    proto.def("simplifyWithAttributes", 4, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.simplifyWithAttributes: not a Mesh instance");
+        ArgReader r(a);
+        float ratio = static_cast<float>(r.getDouble(0, 0.5));
+        float targetError = static_cast<float>(r.getDouble(1, 0.01));
+        float uvWeight = static_cast<float>(r.getDouble(2, 1.0));
+        float normalWeight = static_cast<float>(r.getDouble(3, 0.5));
+        m->mesh = bromesh::simplifyWithAttributes(m->mesh, ratio, targetError, uvWeight, normalWeight);
+        return self;
+    });
+
     proto.def("simplifyToTriangleCount", 2, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.simplifyToTriangleCount: not a Mesh instance");
@@ -155,6 +180,16 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (!m) return ev::throwTypeError("Mesh.subdivideCatmullClark: not a Mesh instance");
         int iters = a.empty() ? 1 : i32At(a, 0);
         m->mesh = bromesh::subdivideCatmullClark(m->mesh, iters > 0 ? iters : 1);
+        return self;
+    });
+
+    // Plain 1-to-4 midpoint split: no smoothing, so the surface is unchanged
+    // and only density rises. The subdivision a displacement pass wants.
+    proto.def("subdivideMidpoint", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.subdivideMidpoint: not a Mesh instance");
+        int iters = a.empty() ? 1 : i32At(a, 0);
+        m->mesh = bromesh::subdivideMidpoint(m->mesh, iters > 0 ? iters : 1);
         return self;
     });
 
@@ -268,11 +303,31 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
     proto.def("convexDecomposition", 4, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.convexDecomposition: not a Mesh instance");
-        ArgReader r(a);
-        int maxHulls = r.getInt(0, 16);
-        int maxVerts = r.getInt(1, 32);
-        double res = r.getDouble(2, 100000.0);
-        double minVol = r.getDouble(3, 0.0001);
+        // Two call forms: the pre-transition options object
+        // ({maxHulls, maxVerticesPerHull, resolution, minVolumePerHull}) and
+        // the bronze-era positional one. The object form was the documented
+        // shape and the only one the old binding read.
+        int maxHulls = 16;
+        int maxVerts = 32;
+        double res = 100000.0;
+        double minVol = 0.0001;
+        if (!a.empty() && ev::isObject(a[0])) {
+            ev::Persistent o(a[0]);
+            Value v = ev::getProperty(o.get(), "maxHulls");
+            if (ev::isNumber(v)) maxHulls = static_cast<int>(ev::toDouble(v));
+            v = ev::getProperty(o.get(), "maxVerticesPerHull");
+            if (ev::isNumber(v)) maxVerts = static_cast<int>(ev::toDouble(v));
+            v = ev::getProperty(o.get(), "resolution");
+            if (ev::isNumber(v)) res = ev::toDouble(v);
+            v = ev::getProperty(o.get(), "minVolumePerHull");
+            if (ev::isNumber(v)) minVol = ev::toDouble(v);
+        } else {
+            ArgReader r(a);
+            maxHulls = r.getInt(0, 16);
+            maxVerts = r.getInt(1, 32);
+            res = r.getDouble(2, 100000.0);
+            minVol = r.getDouble(3, 0.0001);
+        }
         bromesh::ConvexDecompParams opts;
         opts.maxHulls = maxHulls > 0 ? maxHulls : 16;
         opts.maxVerticesPerHull = maxVerts > 3 ? maxVerts : 32;

@@ -474,6 +474,17 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             return ev::fromDouble(static_cast<double>(s->skeleton.sockets.size() - 1));
         });
 
+        // addRigifySockets() -> number — append the standard attachment
+        // sockets (hands, feet, head, spine) for a Rigify / Mixamo-named
+        // skeleton, matching "ORG-"/"DEF-"/bare/"mixamorig:" bone spellings.
+        // Returns how many were added. Dropped by the bronze port
+        // (bro docs/transition-drift.md H7).
+        proto.def("addRigifySockets", 0, [](Value self, std::span<const Value>) -> Value {
+            auto* s = unwrapSkeleton(self);
+            if (!s) return ev::throwTypeError("Skeleton.addRigifySockets: not an instance");
+            return ev::fromDouble(static_cast<double>(bromesh::addRigifySockets(s->skeleton)));
+        });
+
         proto.def("bindPose", 0, [](Value self, std::span<const Value>) -> Value {
             auto* s = unwrapSkeleton(self);
             if (!s) return ev::throwTypeError("Skeleton.bindPose: not an instance");

@@ -10,6 +10,10 @@
 namespace ev = bronze::embed;
 using bronze::Value;
 
+// tests/test_mesh_api_restored.cpp — the Mesh / Skeleton members the bronze
+// port dropped (bro docs/transition-drift.md row H7).
+void bromeshTestRestoredSurface();
+
 int main() {
     std::cout << "========================================" << std::endl;
     std::cout << "Running bromesh Standalone Bronze API Tests" << std::endl;
@@ -188,6 +192,8 @@ int main() {
     }
     std::cout << "  Bronze eval returned: " << ev::toUtf8(evalRes.value) << std::endl;
     assert(ev::toUtf8(evalRes.value) == "SUCCESS");
+
+    bromeshTestRestoredSurface();
 
     std::cout << "========================================" << std::endl;
     std::cout << "All bromesh Bronze API tests PASSED!" << std::endl;

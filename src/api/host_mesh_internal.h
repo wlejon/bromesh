@@ -28,6 +28,7 @@
 #include <bromesh/analysis/sample.h>
 #include <bromesh/analysis/raycast.h>
 #include <bromesh/analysis/bvh.h>
+#include <bromesh/analysis/intersect.h>
 #include <bromesh/analysis/bake.h>
 #include <bromesh/analysis/bake_texture.h>
 #include <bromesh/analysis/bake_transfer.h>

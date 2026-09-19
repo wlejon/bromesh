@@ -273,6 +273,39 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         return makeRayHitObject(hit, m->mesh);
     });
 
+    // ---- Self-intersection -------------------------------------------------
+    // Dropped by the bronze port (bro docs/transition-drift.md H7); the three
+    // together are how a caller validates a mesh before a boolean or a
+    // physics bake.
+    proto.def("hasSelfIntersections", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.hasSelfIntersections: not a Mesh instance");
+        return ev::fromBool(bromesh::hasSelfIntersections(m->mesh));
+    });
+
+    // findSelfIntersections() -> [{ triA, triB }, ...]
+    proto.def("findSelfIntersections", 0, [](Value self, std::span<const Value>) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.findSelfIntersections: not a Mesh instance");
+        std::vector<bromesh::TrianglePair> pairs = bromesh::findSelfIntersections(m->mesh);
+        return hostArrayOf(pairs.size(), [&pairs](size_t i) -> Value {
+            ObjectBuilder o;
+            o.set("triA", static_cast<double>(pairs[i].triA));
+            o.set("triB", static_cast<double>(pairs[i].triB));
+            return o.build();
+        });
+    });
+
+    // intersectsMesh(other) -> bool — do the two surfaces overlap at all.
+    proto.def("intersectsMesh", 1, [](Value self, std::span<const Value> a) -> Value {
+        auto* m = unwrapMesh(self);
+        if (!m) return ev::throwTypeError("Mesh.intersectsMesh: not a Mesh instance");
+        if (a.empty()) return ev::throwTypeError("Mesh.intersectsMesh: other mesh required");
+        auto* other = unwrapMesh(a[0]);
+        if (!other) return ev::throwTypeError("Mesh.intersectsMesh: argument must be a Mesh");
+        return ev::fromBool(bromesh::meshesIntersect(m->mesh, other->mesh));
+    });
+
     proto.def("buildBVH", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.buildBVH: not a Mesh instance");
@@ -423,9 +456,30 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
             mo.set("triangleCount", static_cast<double>(meshlets[i].triangles.size() / 3));
             mo.set("vertices", makeUint32Array(meshlets[i].vertices.data(), meshlets[i].vertices.size()));
             mo.set("triangles", makeUint8Array(meshlets[i].triangles.data(), meshlets[i].triangles.size()));
+            // center / coneApex / coneAxis are what a cluster-cull shader
+            // actually needs; radius+cutoff alone cannot place the cone.
+            const auto& bb = meshlets[i].bounds;
             ObjectBuilder bnd;
-            bnd.set("radius", static_cast<double>(meshlets[i].bounds.radius));
-            bnd.set("coneCutoff", static_cast<double>(meshlets[i].bounds.coneCutoff));
+            {
+                ev::Persistent c(hostArrayOf(3, [&bb](size_t k) {
+                    return ev::fromDouble(static_cast<double>(bb.center[k]));
+                }));
+                bnd.set("center", c.get());
+            }
+            bnd.set("radius", static_cast<double>(bb.radius));
+            {
+                ev::Persistent ap(hostArrayOf(3, [&bb](size_t k) {
+                    return ev::fromDouble(static_cast<double>(bb.coneApex[k]));
+                }));
+                bnd.set("coneApex", ap.get());
+            }
+            {
+                ev::Persistent ax(hostArrayOf(3, [&bb](size_t k) {
+                    return ev::fromDouble(static_cast<double>(bb.coneAxis[k]));
+                }));
+                bnd.set("coneAxis", ax.get());
+            }
+            bnd.set("coneCutoff", static_cast<double>(bb.coneCutoff));
             mo.set("bounds", bnd.build());
             return mo.build();
         });
