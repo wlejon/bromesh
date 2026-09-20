@@ -160,15 +160,14 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         proto.def("validate", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* s = unwrapSkinData(self);
             if (!s) return ev::throwTypeError("SkinData.validate: not an instance");
-            bromesh::MeshData dummy;
             if (!a.empty()) {
                 auto* m = unwrapMesh(a[0]);
-                if (m) dummy = m->mesh;
+                if (m && !m->mesh.empty()) {
+                    auto v = bromesh::validateSkin(m->mesh, s->skin);
+                    return makeSkinValidationObject(v);
+                }
             }
-            if (dummy.empty() && !s->skin.boneWeights.empty()) {
-                dummy.positions.resize(s->skin.boneWeights.size() / 4 * 3, 0.0f);
-            }
-            auto v = bromesh::validateSkin(dummy, s->skin);
+            auto v = bromesh::validateSkin(s->skin);
             return makeSkinValidationObject(v);
         });
     });

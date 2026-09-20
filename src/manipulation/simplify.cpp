@@ -53,6 +53,9 @@ MeshData simplify(const MeshData& mesh, float targetRatio, float targetError) {
     if (mesh.hasNormals()) result.normals.resize(newVertCount * 3);
     if (mesh.hasUVs()) result.uvs.resize(newVertCount * 2);
     if (mesh.hasColors()) result.colors.resize(newVertCount * 4);
+    if (mesh.hasTangents()) result.tangents.resize(newVertCount * 4);
+    if (mesh.hasBoneWeights()) result.boneWeights.resize(newVertCount * 4);
+    if (mesh.hasBoneIndices()) result.boneIndices.resize(newVertCount * 4);
 
     // Copy vertex attributes using remap
     for (size_t v = 0; v < vertexCount; ++v) {
@@ -75,6 +78,24 @@ MeshData simplify(const MeshData& mesh, float targetRatio, float targetError) {
             result.colors[dst * 4 + 1] = mesh.colors[v * 4 + 1];
             result.colors[dst * 4 + 2] = mesh.colors[v * 4 + 2];
             result.colors[dst * 4 + 3] = mesh.colors[v * 4 + 3];
+        }
+        if (mesh.hasTangents()) {
+            result.tangents[dst * 4 + 0] = mesh.tangents[v * 4 + 0];
+            result.tangents[dst * 4 + 1] = mesh.tangents[v * 4 + 1];
+            result.tangents[dst * 4 + 2] = mesh.tangents[v * 4 + 2];
+            result.tangents[dst * 4 + 3] = mesh.tangents[v * 4 + 3];
+        }
+        if (mesh.hasBoneWeights()) {
+            result.boneWeights[dst * 4 + 0] = mesh.boneWeights[v * 4 + 0];
+            result.boneWeights[dst * 4 + 1] = mesh.boneWeights[v * 4 + 1];
+            result.boneWeights[dst * 4 + 2] = mesh.boneWeights[v * 4 + 2];
+            result.boneWeights[dst * 4 + 3] = mesh.boneWeights[v * 4 + 3];
+        }
+        if (mesh.hasBoneIndices()) {
+            result.boneIndices[dst * 4 + 0] = mesh.boneIndices[v * 4 + 0];
+            result.boneIndices[dst * 4 + 1] = mesh.boneIndices[v * 4 + 1];
+            result.boneIndices[dst * 4 + 2] = mesh.boneIndices[v * 4 + 2];
+            result.boneIndices[dst * 4 + 3] = mesh.boneIndices[v * 4 + 3];
         }
     }
 

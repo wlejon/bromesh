@@ -34,4 +34,9 @@ SkinValidation validateSkin(const MeshData& mesh,
                             int influences = 4,
                             float sumTolerance = 1e-3f);
 
+/// Walk a SkinData directly without requiring a MeshData.
+SkinValidation validateSkin(const SkinData& skin,
+                            int influences = 4,
+                            float sumTolerance = 1e-3f);
+
 } // namespace bromesh

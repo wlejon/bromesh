@@ -131,3 +131,63 @@ TEST(apply_morph_zero_weight) {
     ASSERT(mesh.positions == origPos, "morph_zero: no change at weight 0");
 }
 
+TEST(simplify_preserves_bone_weights_and_indices) {
+    auto mesh = bromesh::sphere(1.0f, 16, 16);
+    const size_t vCount = mesh.vertexCount();
+    mesh.boneWeights.resize(vCount * 4, 0.0f);
+    mesh.boneIndices.resize(vCount * 4, 0);
+
+    for (size_t v = 0; v < vCount; ++v) {
+        float y = mesh.positions[v * 3 + 1];
+        if (y > 0.0f) {
+            mesh.boneWeights[v * 4 + 0] = 0.75f;
+            mesh.boneWeights[v * 4 + 1] = 0.25f;
+            mesh.boneIndices[v * 4 + 0] = 1;
+            mesh.boneIndices[v * 4 + 1] = 2;
+        } else {
+            mesh.boneWeights[v * 4 + 0] = 1.0f;
+            mesh.boneIndices[v * 4 + 0] = 0;
+        }
+    }
+    ASSERT(mesh.hasBoneWeights(), "mesh has boneWeights");
+    ASSERT(mesh.hasBoneIndices(), "mesh has boneIndices");
+
+    auto simplified = bromesh::simplify(mesh, 0.5f);
+    ASSERT(simplified.triangleCount() < mesh.triangleCount(), "simplified drops triangles");
+    ASSERT(simplified.hasBoneWeights(), "simplified preserves boneWeights");
+    ASSERT(simplified.hasBoneIndices(), "simplified preserves boneIndices");
+    ASSERT(simplified.boneWeights.size() == simplified.vertexCount() * 4, "weights properly sized");
+    ASSERT(simplified.boneIndices.size() == simplified.vertexCount() * 4, "indices properly sized");
+
+    for (size_t v = 0; v < simplified.vertexCount(); ++v) {
+        float y = simplified.positions[v * 3 + 1];
+        if (y > 0.0f) {
+            ASSERT(std::fabs(simplified.boneWeights[v * 4 + 0] - 0.75f) < 1e-4f, "weight 0 preserved");
+            ASSERT(std::fabs(simplified.boneWeights[v * 4 + 1] - 0.25f) < 1e-4f, "weight 1 preserved");
+            ASSERT(simplified.boneIndices[v * 4 + 0] == 1, "index 0 preserved");
+            ASSERT(simplified.boneIndices[v * 4 + 1] == 2, "index 1 preserved");
+        } else {
+            ASSERT(std::fabs(simplified.boneWeights[v * 4 + 0] - 1.0f) < 1e-4f, "weight 0 preserved");
+            ASSERT(simplified.boneIndices[v * 4 + 0] == 0, "index 0 preserved");
+        }
+    }
+}
+
+TEST(validate_skin_standalone) {
+    bromesh::SkinData skin;
+    skin.boneWeights = { 0.6f, 0.4f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f, 0.0f };
+    skin.boneIndices = { 0, 1, 0, 0,  2, 0, 0, 0 };
+    skin.boneCount = 3;
+
+    auto val = bromesh::validateSkin(skin);
+    ASSERT(val.clean(), "valid skin reports clean");
+    ASSERT(val.vertexCount == 2, "skin reports 2 vertices");
+    ASSERT(val.maxInfluencesObserved == 2, "max influences 2");
+
+    // Orphan vertex test
+    skin.boneWeights[4] = 0.0f;
+    auto val2 = bromesh::validateSkin(skin);
+    ASSERT(!val2.clean(), "unweighted vertex is not clean");
+    ASSERT(val2.orphanCount == 1, "orphan detected");
+}
+

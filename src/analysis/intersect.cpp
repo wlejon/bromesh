@@ -1,4 +1,6 @@
 #include "bromesh/analysis/intersect.h"
+#include "bromesh/analysis/bvh.h"
+#include "bromesh/analysis/bbox.h"
 
 #include <algorithm>
 #include <cmath>
@@ -233,6 +235,7 @@ std::vector<TrianglePair> findSelfIntersections(const MeshData& mesh) {
     if (mesh.empty() || mesh.indices.empty()) return results;
 
     const size_t triCount = mesh.triangleCount();
+    if (triCount < 2) return results;
 
     // Precompute AABBs for early rejection
     std::vector<TriAABB> bounds(triCount);
@@ -243,21 +246,35 @@ std::vector<TrianglePair> findSelfIntersections(const MeshData& mesh) {
         bounds[t] = triBounds(&mesh.positions[i0*3], &mesh.positions[i1*3], &mesh.positions[i2*3]);
     }
 
+    MeshBVH bvh = MeshBVH::build(mesh);
+    if (bvh.empty()) return results;
+
+    std::vector<uint32_t> candidates;
     for (size_t a = 0; a < triCount; ++a) {
-        for (size_t b = a + 1; b < triCount; ++b) {
+        uint32_t ai0 = mesh.indices[a*3+0], ai1 = mesh.indices[a*3+1], ai2 = mesh.indices[a*3+2];
+        const float* pa0 = &mesh.positions[ai0*3];
+        const float* pa1 = &mesh.positions[ai1*3];
+        const float* pa2 = &mesh.positions[ai2*3];
+
+        candidates.clear();
+        bvh.queryBox(bounds[a].min, bounds[a].max, [&](uint32_t b) {
+            if (b > a) candidates.push_back(b);
+        });
+        std::sort(candidates.begin(), candidates.end());
+
+        for (uint32_t b : candidates) {
             // Skip adjacent triangles
             if (sharesVertex(&mesh.indices[a*3], &mesh.indices[b*3], mesh.positions.data())) continue;
 
             // AABB early rejection
             if (!aabbOverlap(bounds[a], bounds[b])) continue;
 
-            uint32_t ai0 = mesh.indices[a*3+0], ai1 = mesh.indices[a*3+1], ai2 = mesh.indices[a*3+2];
             uint32_t bi0 = mesh.indices[b*3+0], bi1 = mesh.indices[b*3+1], bi2 = mesh.indices[b*3+2];
 
             if (trianglesIntersect(
-                &mesh.positions[ai0*3], &mesh.positions[ai1*3], &mesh.positions[ai2*3],
+                pa0, pa1, pa2,
                 &mesh.positions[bi0*3], &mesh.positions[bi1*3], &mesh.positions[bi2*3])) {
-                results.push_back({(uint32_t)a, (uint32_t)b});
+                results.push_back({(uint32_t)a, b});
             }
         }
     }
@@ -269,6 +286,7 @@ bool hasSelfIntersections(const MeshData& mesh) {
     if (mesh.empty() || mesh.indices.empty()) return false;
 
     const size_t triCount = mesh.triangleCount();
+    if (triCount < 2) return false;
 
     std::vector<TriAABB> bounds(triCount);
     for (size_t t = 0; t < triCount; ++t) {
@@ -278,20 +296,32 @@ bool hasSelfIntersections(const MeshData& mesh) {
         bounds[t] = triBounds(&mesh.positions[i0*3], &mesh.positions[i1*3], &mesh.positions[i2*3]);
     }
 
+    MeshBVH bvh = MeshBVH::build(mesh);
+    if (bvh.empty()) return false;
+
+    bool found = false;
     for (size_t a = 0; a < triCount; ++a) {
-        for (size_t b = a + 1; b < triCount; ++b) {
-            if (sharesVertex(&mesh.indices[a*3], &mesh.indices[b*3], mesh.positions.data())) continue;
-            if (!aabbOverlap(bounds[a], bounds[b])) continue;
+        uint32_t ai0 = mesh.indices[a*3+0], ai1 = mesh.indices[a*3+1], ai2 = mesh.indices[a*3+2];
+        const float* pa0 = &mesh.positions[ai0*3];
+        const float* pa1 = &mesh.positions[ai1*3];
+        const float* pa2 = &mesh.positions[ai2*3];
 
-            uint32_t ai0 = mesh.indices[a*3+0], ai1 = mesh.indices[a*3+1], ai2 = mesh.indices[a*3+2];
+        bvh.queryBox(bounds[a].min, bounds[a].max, [&](uint32_t b) -> bool {
+            if (b <= a) return true;
+            if (sharesVertex(&mesh.indices[a*3], &mesh.indices[b*3], mesh.positions.data())) return true;
+            if (!aabbOverlap(bounds[a], bounds[b])) return true;
+
             uint32_t bi0 = mesh.indices[b*3+0], bi1 = mesh.indices[b*3+1], bi2 = mesh.indices[b*3+2];
-
             if (trianglesIntersect(
-                &mesh.positions[ai0*3], &mesh.positions[ai1*3], &mesh.positions[ai2*3],
+                pa0, pa1, pa2,
                 &mesh.positions[bi0*3], &mesh.positions[bi1*3], &mesh.positions[bi2*3])) {
-                return true;
+                found = true;
+                return false; // abort query
             }
-        }
+            return true;
+        });
+
+        if (found) return true;
     }
 
     return false;
@@ -300,31 +330,55 @@ bool hasSelfIntersections(const MeshData& mesh) {
 bool meshesIntersect(const MeshData& a, const MeshData& b) {
     if (a.empty() || b.empty() || a.indices.empty() || b.indices.empty()) return false;
 
-    const size_t triCountA = a.triangleCount();
-    const size_t triCountB = b.triangleCount();
-
-    // Precompute AABBs for mesh B
-    std::vector<TriAABB> boundsB(triCountB);
-    for (size_t t = 0; t < triCountB; ++t) {
-        uint32_t i0 = b.indices[t*3+0], i1 = b.indices[t*3+1], i2 = b.indices[t*3+2];
-        boundsB[t] = triBounds(&b.positions[i0*3], &b.positions[i1*3], &b.positions[i2*3]);
+    // Fast reject via overall mesh AABBs
+    bromath::AABB3 bbA = computeBBox(a);
+    bromath::AABB3 bbB = computeBBox(b);
+    if (bbA.min.x > bbB.max.x || bbB.min.x > bbA.max.x ||
+        bbA.min.y > bbB.max.y || bbB.min.y > bbA.max.y ||
+        bbA.min.z > bbB.max.z || bbB.min.z > bbA.max.z) {
+        return false;
     }
 
-    for (size_t ta = 0; ta < triCountA; ++ta) {
-        uint32_t ai0 = a.indices[ta*3+0], ai1 = a.indices[ta*3+1], ai2 = a.indices[ta*3+2];
-        TriAABB boundsA = triBounds(&a.positions[ai0*3], &a.positions[ai1*3], &a.positions[ai2*3]);
+    // Build BVH for mesh with more triangles to minimize queries
+    const MeshData* queryMesh = &a;
+    const MeshData* bvhMesh = &b;
+    if (a.triangleCount() > b.triangleCount()) {
+        queryMesh = &b;
+        bvhMesh = &a;
+    }
 
-        for (size_t tb = 0; tb < triCountB; ++tb) {
-            if (!aabbOverlap(boundsA, boundsB[tb])) continue;
+    MeshBVH bvh = MeshBVH::build(*bvhMesh);
+    if (bvh.empty()) return false;
 
-            uint32_t bi0 = b.indices[tb*3+0], bi1 = b.indices[tb*3+1], bi2 = b.indices[tb*3+2];
+    const size_t qTriCount = queryMesh->triangleCount();
+    bool found = false;
 
-            if (trianglesIntersect(
-                &a.positions[ai0*3], &a.positions[ai1*3], &a.positions[ai2*3],
-                &b.positions[bi0*3], &b.positions[bi1*3], &b.positions[bi2*3])) {
-                return true;
+    for (size_t ta = 0; ta < qTriCount; ++ta) {
+        uint32_t ai0 = queryMesh->indices[ta*3+0];
+        uint32_t ai1 = queryMesh->indices[ta*3+1];
+        uint32_t ai2 = queryMesh->indices[ta*3+2];
+        const float* pa0 = &queryMesh->positions[ai0*3];
+        const float* pa1 = &queryMesh->positions[ai1*3];
+        const float* pa2 = &queryMesh->positions[ai2*3];
+
+        TriAABB boundsA = triBounds(pa0, pa1, pa2);
+
+        bvh.queryBox(boundsA.min, boundsA.max, [&](uint32_t tb) -> bool {
+            uint32_t bi0 = bvhMesh->indices[tb*3+0];
+            uint32_t bi1 = bvhMesh->indices[tb*3+1];
+            uint32_t bi2 = bvhMesh->indices[tb*3+2];
+            const float* pb0 = &bvhMesh->positions[bi0*3];
+            const float* pb1 = &bvhMesh->positions[bi1*3];
+            const float* pb2 = &bvhMesh->positions[bi2*3];
+
+            if (trianglesIntersect(pa0, pa1, pa2, pb0, pb1, pb2)) {
+                found = true;
+                return false; // abort query
             }
-        }
+            return true;
+        });
+
+        if (found) return true;
     }
 
     return false;
