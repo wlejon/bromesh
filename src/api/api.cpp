@@ -149,6 +149,31 @@ Value makeMeshValue(bromesh::MeshData mesh) {
     return wrapMesh(std::move(mesh));
 }
 
+const bromesh::MeshData* meshDataOf(Value v) {
+    HostMesh* h = unwrapMesh(v);
+    return h ? &h->mesh : nullptr;
+}
+
+bromesh::MeshData* meshDataOfMut(Value v) {
+    HostMesh* h = unwrapMesh(v);
+    return h ? &h->mesh : nullptr;
+}
+
+const bromesh::SkinData* skinDataOf(Value v) {
+    HostSkinData* h = unwrapSkinData(v);
+    return h ? &h->skin : nullptr;
+}
+
+const bromesh::Skeleton* skeletonOf(Value v) {
+    HostSkeleton* h = unwrapSkeleton(v);
+    return h ? &h->skeleton : nullptr;
+}
+
+const bromesh::Animation* animationOf(Value v) {
+    HostAnimation* h = unwrapAnimation(v);
+    return h ? &h->animation : nullptr;
+}
+
 void installRigging() {
     ensureRiggingClassesInstalled();
 

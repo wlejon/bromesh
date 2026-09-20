@@ -29,6 +29,11 @@ void installRigging();
 bool isMeshValue(bronze::Value v);
 bool takeMeshData(bronze::Value v, bromesh::MeshData& out);
 bronze::Value makeMeshValue(bromesh::MeshData mesh);
+const bromesh::MeshData* meshDataOf(bronze::Value v);
+bromesh::MeshData* meshDataOfMut(bronze::Value v);
+const bromesh::SkinData* skinDataOf(bronze::Value v);
+const bromesh::Skeleton* skeletonOf(bronze::Value v);
+const bromesh::Animation* animationOf(bronze::Value v);
 
 /// How a path handed to the file loaders and savers (`Mesh.loadOBJ`,
 /// `mesh.saveGLTF`, ...) becomes a filesystem path. Unset, the path is used
