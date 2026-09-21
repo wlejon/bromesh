@@ -290,9 +290,6 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         });
     });
 
-    animCls.alias("Animation");
-    animCls.alias("SkeletalAnimation");
-
     // =========================================================================
     // IK Solvers (IK namespace)
     // =========================================================================
@@ -431,6 +428,9 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         auto retargeted = bromesh::retargetAnimation(anim->animation, src->skeleton, dst->skeleton);
         return wrapAnimation(std::move(retargeted));
     }, 3, "retarget"));
+
+    animCls.alias("Animation");
+    animCls.alias("SkeletalAnimation");
 
     // =========================================================================
     // Mesh Rigging Extensions

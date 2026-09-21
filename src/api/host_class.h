@@ -31,6 +31,7 @@ public:
         ev::Persistent* proto = nullptr;
         ev::Persistent* ctor = nullptr;
         ev::Persistent* instanceProto = nullptr;
+        std::vector<std::string> aliases;
     };
 
     void install(const char* name, uint32_t arity, ev::NativeFn body,
