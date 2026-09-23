@@ -1,6 +1,8 @@
 #include "bromesh/procedural/lsystem.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <random>
 #include <unordered_map>
@@ -16,15 +18,28 @@ void LSystem::setAxiom(std::vector<Module> axiom) {
 }
 
 std::vector<Module> LSystem::derive(int iterations, uint64_t seed) const {
+    std::vector<Module> out;
+    deriveWithin(iterations, seed, SIZE_MAX, out);
+    return out;
+}
+
+bool LSystem::deriveWithin(int iterations, uint64_t seed, size_t maxModules,
+                           std::vector<Module>& out, int* passes) const {
+    if (passes) *passes = 0;
+    out.clear();
+    if (axiom_.size() > maxModules) return false;
     std::vector<Module> current = axiom_;
-    if (iterations <= 0 || rules_.empty()) return current;
+    if (iterations <= 0 || rules_.empty()) {
+        out = std::move(current);
+        return true;
+    }
 
     std::mt19937_64 rng(seed);
     std::vector<Module> next;
 
     for (int it = 0; it < iterations; ++it) {
         next.clear();
-        next.reserve(current.size() * 2);
+        next.reserve(std::min(current.size() * 2, maxModules));
         for (const Module& m : current) {
             // Collect matching rules.
             float total = 0.0f;
@@ -38,6 +53,7 @@ std::vector<Module> LSystem::derive(int iterations, uint64_t seed) const {
                 total += (r.weight > 0.0f) ? r.weight : 0.0f;
             }
             if (matches.empty() || total <= 0.0f) {
+                if (next.size() >= maxModules) return false;
                 next.push_back(m);
                 continue;
             }
@@ -54,11 +70,14 @@ std::vector<Module> LSystem::derive(int iterations, uint64_t seed) const {
                 }
             }
             std::vector<Module> rep = chosen->successor(m.params);
+            if (rep.size() > maxModules - next.size()) return false;
             for (Module& rm : rep) next.push_back(std::move(rm));
         }
         current.swap(next);
+        if (passes) *passes = it + 1;
     }
-    return current;
+    out = std::move(current);
+    return true;
 }
 
 std::vector<Module> parseModules(std::string_view s) {

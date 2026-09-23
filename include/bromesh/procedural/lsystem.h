@@ -37,6 +37,15 @@ public:
     /// Run `iterations` rewrite passes. Deterministic given `seed`.
     std::vector<Module> derive(int iterations, uint64_t seed = 0) const;
 
+    /// derive() with a budget: a growing rule doubles the word (or more)
+    /// every pass, so an unbounded derivation runs out of memory. Stops and
+    /// returns false as soon as the word would hold more than `maxModules`
+    /// modules (the axiom included), leaving `out` empty; otherwise `out`
+    /// is exactly what derive() returns. `passes`, when given, receives the
+    /// number of passes completed.
+    bool deriveWithin(int iterations, uint64_t seed, size_t maxModules,
+                      std::vector<Module>& out, int* passes = nullptr) const;
+
     const std::vector<Module>& axiom() const { return axiom_; }
 
 private:

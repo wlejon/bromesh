@@ -89,6 +89,15 @@ TEST(lsystem_algae_fibonacci) {
     ASSERT(r5.size() == 13, "fibonacci length after 5 iterations");
     auto r6 = ls.derive(6);
     ASSERT(r6.size() == 21, "fibonacci length after 6 iterations");
+
+    // deriveWithin: the same word under the budget, false past it.
+    std::vector<Module> out;
+    int passes = -1;
+    ASSERT(ls.deriveWithin(6, 0, 21, out, &passes) && out.size() == 21 && passes == 6,
+           "deriveWithin at exactly the budget is the derive() word");
+    ASSERT(!ls.deriveWithin(6, 0, 20, out, &passes) && out.empty() && passes == 5,
+           "deriveWithin one module short stops in pass 6 with an empty word");
+    ASSERT(!ls.deriveWithin(0, 0, 0, out), "an axiom over the budget is refused");
 }
 
 TEST(lsystem_stochastic_determinism) {
