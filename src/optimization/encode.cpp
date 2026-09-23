@@ -82,6 +82,12 @@ MeshData decodeMesh(const EncodedMesh& encoded, bool hasNormals, bool hasUVs, bo
     size_t stride = encoded.vertexSize;
     size_t indexCount = encoded.indexCount;
 
+    // The layout the flags describe must fit in the stride, or the
+    // de-interleave below reads past each vertex; meshoptimizer's own limits
+    // (stride 4..256 in steps of 4, whole triangles) are asserts only.
+    const size_t needed = 12 + (hasNormals ? 12 : 0) + (hasUVs ? 8 : 0) + (hasColors ? 16 : 0);
+    if (stride < needed || stride > 256 || stride % 4 != 0 || indexCount % 3 != 0) return {};
+
     // Decode vertex buffer
     std::vector<uint8_t> interleavedVertices(vertexCount * stride);
     int vbResult = meshopt_decodeVertexBuffer(
@@ -97,6 +103,9 @@ MeshData decodeMesh(const EncodedMesh& encoded, bool hasNormals, bool hasUVs, bo
         encoded.indexData.data(), encoded.indexData.size()
     );
     if (ibResult != 0) return {};
+    for (uint32_t idx : indices) {
+        if (idx >= vertexCount) return {};  // corrupt or mismatched stream
+    }
 
     // De-interleave into MeshData
     MeshData result;
