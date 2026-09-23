@@ -63,6 +63,88 @@ Value landmarksToObject(const bromesh::Landmarks& lm) {
     return obj.build();
 }
 
+// Number-valued property setters: absent / non-number keys leave the default.
+template <typename T>
+void readNum(Value obj, const char* key, T& out) {
+    Value v = ev::getProperty(obj, key);
+    if (ev::isNumber(v)) out = static_cast<T>(ev::toDouble(v));
+}
+
+// Rig.autoRig's options bag: method + the shared smoothing / pruning keys,
+// then the per-method blocks { voxel, boneHeat, bbw }. Each block is read
+// independently so a caller can set all three and switch `method`.
+bromesh::WeightingOptions weightingOptionsFromObject(Value opts) {
+    bromesh::WeightingOptions wo;
+    if (!ev::isObject(opts)) return wo;
+    Value mVal = ev::getProperty(opts, "method");
+    if (ev::isString(mVal)) wo.method = bromesh::parseWeightingMethod(ev::toUtf8(mVal).c_str());
+    readNum(opts, "smoothIterations", wo.smoothIterations);
+    readNum(opts, "smoothAlpha", wo.smoothAlpha);
+    readNum(opts, "minWeight", wo.minWeight);
+
+    Value v = ev::getProperty(opts, "voxel");
+    if (ev::isObject(v)) {
+        readNum(v, "maxResolution", wo.voxel.maxResolution);
+        readNum(v, "maxInfluences", wo.voxel.maxInfluences);
+        readNum(v, "falloffPower", wo.voxel.falloffPower);
+        readNum(v, "minWeight", wo.voxel.minWeight);
+        readNum(v, "smoothIterations", wo.voxel.smoothIterations);
+        readNum(v, "smoothAlpha", wo.voxel.smoothAlpha);
+    }
+    v = ev::getProperty(opts, "boneHeat");
+    if (ev::isObject(v)) {
+        readNum(v, "maxInfluences", wo.boneHeat.maxInfluences);
+        readNum(v, "minWeight", wo.boneHeat.minWeight);
+        readNum(v, "heatStrength", wo.boneHeat.heatStrength);
+        readNum(v, "solverTol", wo.boneHeat.solverTol);
+        readNum(v, "solverMaxIter", wo.boneHeat.solverMaxIter);
+    }
+    v = ev::getProperty(opts, "bbw");
+    if (ev::isObject(v)) {
+        readNum(v, "maxInfluences", wo.bbw.maxInfluences);
+        readNum(v, "minWeight", wo.bbw.minWeight);
+        readNum(v, "anchorsPerBone", wo.bbw.anchorsPerBone);
+        readNum(v, "eps", wo.bbw.eps);
+        readNum(v, "maxIter", wo.bbw.maxIter);
+    }
+    return wo;
+}
+
+// Rig.generateLocomotionCycle's params: a gait name string, or
+// { strideLength, cycleDuration, footLiftHeight, keyframesPerCycle,
+//   bodyBobAmplitude, armSwingAmplitude, forwardAxis, upAxis,
+//   gait: string | { name, phases, dutyFactor } }.
+bromesh::LocomotionParams locomotionParamsFromValue(Value v) {
+    bromesh::LocomotionParams p;
+    if (ev::isString(v)) {
+        p.gait.name = ev::toUtf8(v);
+        return p;
+    }
+    if (!ev::isObject(v)) return p;
+    readNum(v, "strideLength", p.strideLength);
+    readNum(v, "cycleDuration", p.cycleDuration);
+    readNum(v, "footLiftHeight", p.footLiftHeight);
+    readNum(v, "keyframesPerCycle", p.keyframesPerCycle);
+    readNum(v, "bodyBobAmplitude", p.bodyBobAmplitude);
+    readNum(v, "armSwingAmplitude", p.armSwingAmplitude);
+    for (auto [key, dst] : {std::pair<const char*, float*>{"forwardAxis", p.forwardAxis},
+                            std::pair<const char*, float*>{"upAxis", p.upAxis}}) {
+        std::vector<float> axis = toFloatVector(ev::getProperty(v, key));
+        if (axis.size() >= 3) { dst[0] = axis[0]; dst[1] = axis[1]; dst[2] = axis[2]; }
+    }
+    Value g = ev::getProperty(v, "gait");
+    if (ev::isString(g)) {
+        p.gait.name = ev::toUtf8(g);
+    } else if (ev::isObject(g)) {
+        Value n = ev::getProperty(g, "name");
+        if (ev::isString(n)) p.gait.name = ev::toUtf8(n);
+        Value ph = ev::getProperty(g, "phases");
+        if (ev::isObject(ph)) p.gait.phases = toFloatVector(ph);
+        readNum(g, "dutyFactor", p.gait.dutyFactor);
+    }
+    return p;
+}
+
 } // namespace
 
 void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls,
@@ -547,6 +629,14 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             auto* r = unwrapSkeletonRig(self);
             return ev::fromDouble(r ? static_cast<double>(r->spec.landmarks.size()) : 0.0);
         });
+        proto.accessor("socketCount", [](Value self, std::span<const Value>) -> Value {
+            auto* r = unwrapSkeletonRig(self);
+            return ev::fromDouble(r ? static_cast<double>(r->spec.sockets.size()) : 0.0);
+        });
+        proto.accessor("symmetric", [](Value self, std::span<const Value>) -> Value {
+            auto* r = unwrapSkeletonRig(self);
+            return ev::fromBool(r && r->spec.symmetric);
+        });
         proto.def("toJSON", 0, [](Value self, std::span<const Value>) -> Value {
             auto* r = unwrapSkeletonRig(self);
             return ev::fromUtf8(r ? bromesh::serializeRigSpecJSON(r->spec) : "");
@@ -679,15 +769,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             else lm = bromesh::detectHumanoidLandmarks(m->mesh);
         }
 
-        bromesh::WeightingOptions wopts;
-        if (ev::isObject(opts)) {
-            Value mVal = ev::getProperty(opts, "method");
-            if (ev::isString(mVal)) {
-                wopts.method = bromesh::parseWeightingMethod(ev::toUtf8(mVal).c_str());
-            }
-            Value smVal = ev::getProperty(opts, "smoothIterations");
-            if (ev::isNumber(smVal)) wopts.smoothIterations = static_cast<int>(ev::toDouble(smVal));
-        }
+        bromesh::WeightingOptions wopts = weightingOptionsFromObject(opts);
 
         auto res = bromesh::autoRig(m->mesh, spec, lm, wopts);
         ObjectBuilder obj;
@@ -713,10 +795,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         auto* s = unwrapSkeleton(a[0]);
         auto* r = unwrapSkeletonRig(a[1]);
         if (!s || !r) return ev::throwTypeError("Rig.generateLocomotionCycle: invalid arguments");
-        bromesh::LocomotionParams params;
-        if (a.size() > 2 && ev::isString(a[2])) {
-            params.gait.name = ev::toUtf8(a[2]);
-        }
+        bromesh::LocomotionParams params = locomotionParamsFromValue(a.size() > 2 ? a[2] : ev::undefined());
         auto anim = bromesh::generateLocomotionCycle(s->skeleton, r->spec, params);
         return wrapAnimation(std::move(anim));
     });

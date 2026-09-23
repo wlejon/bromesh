@@ -870,6 +870,10 @@ void initProgressiveMesh(HostClass& cls) {
             auto* p = unwrapPM(self);
             return ev::fromDouble(p && p->pm ? static_cast<double>(p->pm->minTriangles()) : 0.0);
         });
+        proto.accessor("collapseCount", [](Value self, std::span<const Value>) -> Value {
+            auto* p = unwrapPM(self);
+            return ev::fromDouble(p && p->pm ? static_cast<double>(p->pm->collapses.size()) : 0.0);
+        });
         proto.def("atRatio", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* p = unwrapPM(self);
             if (!p || !p->pm) return ev::throwTypeError("ProgressiveMesh.atRatio: not an instance");
