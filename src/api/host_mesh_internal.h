@@ -390,6 +390,7 @@ inline std::vector<float> toFloatVector(Value val) {
         Value lenVal = ev::getProperty(arr.get(), "length");
         if (ev::isNumber(lenVal)) {
             const size_t n = lengthValue(lenVal);
+            if (!copyLengthOk(n)) return result;
             result.reserve(std::min<size_t>(n, kReserveCap));
             auto num = [](Value v, double& out) {
                 if (ev::isUndefined(v)) return false;
@@ -431,6 +432,7 @@ inline std::vector<uint32_t> toUint32Vector(Value val) {
         Value lenVal = ev::getProperty(arr.get(), "length");
         if (ev::isNumber(lenVal)) {
             const size_t n = lengthValue(lenVal);
+            if (!copyLengthOk(n)) return result;
             result.reserve(std::min<size_t>(n, kReserveCap));
             for (size_t i = 0; i < n; ++i) {
                 Value elem = ev::getElement(arr.get(), static_cast<uint32_t>(i));
@@ -453,6 +455,7 @@ inline std::vector<uint8_t> toUint8Vector(Value val) {
         Value lenVal = ev::getProperty(arr.get(), "length");
         if (ev::isNumber(lenVal)) {
             const size_t n = lengthValue(lenVal);
+            if (!copyLengthOk(n)) return result;
             result.reserve(std::min<size_t>(n, kReserveCap));
             for (size_t i = 0; i < n; ++i) {
                 Value elem = ev::getElement(arr.get(), static_cast<uint32_t>(i));

@@ -293,7 +293,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         });
     });
 
-    skinCls.setStatic("validate", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    skinCls.setStatic("validate", hostFunction([](Value, std::span<const Value> a) -> Value {
         bromesh::MeshData mesh;
         bromesh::SkinData skin;
         if (a.size() > 0) {
@@ -308,7 +308,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         return makeSkinValidationObject(v);
     }, 2, "validate"));
 
-    skinCls.setStatic("transfer", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    skinCls.setStatic("transfer", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.size() < 3) return ev::throwTypeError("SkinData.transfer: targetMesh, sourceMesh, sourceSkin required");
         auto* tgt = unwrapMesh(a[0]);
         auto* src = unwrapMesh(a[1]);
@@ -560,7 +560,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         });
     });
 
-    skelCls.setStatic("fromBones", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    skelCls.setStatic("fromBones", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return wrapSkeleton(bromesh::Skeleton{});
         ObjectBuilder opts;
         opts.set("bones", a[0]);
@@ -645,7 +645,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
 
     // Static Rig methods
     auto bindRigStatic = [&](const char* name, uint32_t arity, ev::NativeFn fn) {
-        rigCls.setStatic(name, ev::makeFunction(std::move(fn), arity, name));
+        rigCls.setStatic(name, hostFunction(std::move(fn), arity, name));
     };
 
     bindRigStatic("spec", 1, [](Value, std::span<const Value> a) -> Value {

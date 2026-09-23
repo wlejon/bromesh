@@ -118,6 +118,53 @@ void bromeshTestValidation() {
         expectThrow("RangeError", "LSystem.derive -1", () => ls.derive(-1));
         expectThrow("RangeError", "LSystem.derive 1000", () => ls.derive(1000));
         if (ls.derive(3) !== "FFFFFFFF") throw new Error("LSystem.derive(3) gave " + ls.derive(3));
+        // The depth cap does not bound the word: F -> FF doubles it every
+        // pass, so 40 passes would be 2^40 modules. Past 2^20 it throws.
+        expectThrow("RangeError", "LSystem.derive F->FF x 40", () => ls.derive(40));
+        expectThrow("RangeError", "LSystem.deriveModules F->FF x 40", () => ls.deriveModules(40));
+        if (ls.derive(20).length !== 1 << 20) throw new Error("2^20 modules is within the cap");
+        expectThrow("RangeError", "LSystem.derive 21 passes", () => ls.derive(21));
+
+        // ── seeds: integers in [0, max]; negatives used to wrap ─────────────
+        for (const bad of [-1, 1.5, NaN, Infinity]) {
+            expectThrow("RangeError", "derive seed " + bad, () => ls.derive(2, bad));
+            expectThrow("RangeError", "rock seed " + bad, () => Mesh.rock(1, bad));
+            expectThrow("RangeError", "blob seed " + bad, () => Mesh.blob({ seed: bad }));
+            expectThrow("RangeError", "blob positional seed " + bad, () => Mesh.blob(0.5, bad));
+            expectThrow("RangeError", "tree seed " + bad, () => Mesh.tree({ seed: bad, attractorCount: 10 }));
+            expectThrow("RangeError", "sampleSurface seed " + bad, () => Mesh.box(1, 1, 1).sampleSurface(4, bad));
+            expectThrow("RangeError", "packAnchors seed " + bad, () => Mesh.packAnchors([[0, 0, 0]], { seed: bad }));
+            expectThrow("RangeError", "placeLeavesOnBranches seed " + bad,
+                        () => Mesh.placeLeavesOnBranches([], { seed: bad }));
+        }
+        expectThrow("RangeError", "rock seed 2^31", () => Mesh.rock(1, 2 ** 31));
+        expectThrow("RangeError", "sampleSurface seed 2^32", () => Mesh.box(1, 1, 1).sampleSurface(4, 2 ** 32));
+        expectThrow("RangeError", "derive seed 2^53", () => ls.derive(2, 2 ** 53));
+        expectThrow("TypeError", "derive seed '3'", () => ls.derive(2, "3"));
+        ls.derive(2, 2 ** 53 - 1);
+        Mesh.rock(1, 2 ** 31 - 1);
+        Mesh.box(1, 1, 1).sampleSurface(4, 2 ** 32 - 1);
+
+        // ── lists whose length lies ───────────────────────────────────────
+        // Over 2^24 elements is a RangeError (it used to size a vector of
+        // that many, or loop four billion times); under it, a missing
+        // element ends the read before anything is sized by the length.
+        const huge = { length: 4294967295 };
+        expectThrow("RangeError", "thickenBranches huge", () => Mesh.thickenBranches(huge));
+        expectThrow("RangeError", "lsystemToBranches huge", () => Mesh.lsystemToBranches(huge));
+        expectThrow("RangeError", "capsuleField huge", () => Mesh.capsuleField(huge));
+        expectThrow("RangeError", "sweep path huge", () => Mesh.sweep([[0, 0], [1, 0]], huge));
+        expectThrow("RangeError", "Mesh indices huge", () => new Mesh({ positions: tri, indices: huge }));
+        expectThrow("RangeError", "polygon2D holes huge", () => Mesh.polygon2D([0, 0, 1, 0, 0, 1], huge));
+        expectThrow("RangeError", "polygon2D outer huge", () => Mesh.polygon2D(huge));
+        expectThrow("RangeError", "Pose.blendN huge", () => Pose.blendN(huge, [1]));
+        const lying = { length: 16777216 };
+        expectThrow("TypeError", "thickenBranches lying", () => Mesh.thickenBranches(lying));
+        expectThrow("TypeError", "lsystemToBranches lying", () => Mesh.lsystemToBranches(lying));
+        expectThrow("TypeError", "capsuleField lying", () => Mesh.capsuleField(lying));
+        expectThrow("TypeError", "capsuleField spheres lying", () => Mesh.capsuleField([], lying));
+        if (Mesh.capsuleField([{ a: [0, 0, 0], b: [0, 1, 0], radius: 0.1 }]).capsuleCount !== 1)
+            throw new Error("a valid capsule list was refused");
 
         // ── SDF graph: node ids must exist (a self-reference recursed forever)
         const sdf = Mesh.createSDF();

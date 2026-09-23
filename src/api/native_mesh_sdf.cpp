@@ -355,7 +355,7 @@ void initSdfGraph(HostClass& cls) {
 
 void initMeshSdf(ObjectBuilder&, HostClass& meshCls) {
     auto bindStatic = [&](const char* name, uint32_t arity, ev::NativeFn fn) {
-        meshCls.setStatic(name, ev::makeFunction(std::move(fn), arity, name));
+        meshCls.setStatic(name, hostFunction(std::move(fn), arity, name));
     };
 
     bindStatic("createSDF", 0, [](Value, std::span<const Value>) -> Value {

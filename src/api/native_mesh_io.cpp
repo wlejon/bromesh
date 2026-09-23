@@ -195,7 +195,7 @@ std::string resolveMeshWritePath(const std::string& path) {
 
 void initMeshIo(ObjectBuilder& proto, HostClass& cls) {
     auto bindStatic = [&](const char* name, uint32_t arity, ev::NativeFn fn) {
-        cls.setStatic(name, ev::makeFunction(std::move(fn), arity, name));
+        cls.setStatic(name, hostFunction(std::move(fn), arity, name));
     };
 
     // ---- Loaders: one Mesh per file for the single-mesh formats ---------
@@ -512,7 +512,7 @@ void initPolyMesh(HostClass& cls) {
     });
 
     // ---- Factories -----------------------------------------------------------
-    cls.setStatic("fromMeshData", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    cls.setStatic("fromMeshData", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.size() < 2) return ev::throwTypeError("PolyMesh.fromMeshData(positions, indices[, triToGroup])");
         std::vector<float> positions = toFloatVector(a[0]);
         std::vector<uint32_t> indices = toUint32Vector(a[1]);
@@ -521,21 +521,21 @@ void initPolyMesh(HostClass& cls) {
         if (!vertexRefsOk(indices, positions.size() / 3, "PolyMesh.fromMeshData")) return ev::undefined();
         return wrapPolyMesh(bromesh::PolyMesh::fromMeshData(positions, indices, triToGroup));
     }, 3, "fromMeshData"));
-    cls.setStatic("fromMesh", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    cls.setStatic("fromMesh", hostFunction([](Value, std::span<const Value> a) -> Value {
         auto* m = a.empty() ? nullptr : unwrapMesh(a[0]);
         if (!m) return ev::throwTypeError("PolyMesh.fromMesh: expects a Mesh");
         std::vector<int32_t> triToGroup;
         if (a.size() > 1 && ev::isObject(a[1])) triToGroup = toInt32Vector(a[1]);
         return wrapPolyMesh(bromesh::PolyMesh::fromMeshData(m->mesh.positions, m->mesh.indices, triToGroup));
     }, 2, "fromMesh"));
-    cls.setStatic("fromPolygon", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    cls.setStatic("fromPolygon", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.size() < 2) return ev::throwTypeError("PolyMesh.fromPolygon(positionsXYZ, normal[, group])");
         std::vector<float> positions = toFloatVector(a[0]);
         float n[3];
         readVec3Into(a[1], n);
         return wrapPolyMesh(bromesh::PolyMesh::fromPolygon(positions, n, i32OrAt(a, 2, 0)));
     }, 3, "fromPolygon"));
-    cls.setStatic("fromPolygons", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    cls.setStatic("fromPolygons", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.size() < 3) {
             return ev::throwTypeError("PolyMesh.fromPolygons(positions, polyVerts, polyOffsets[, faceGroups])");
         }

@@ -532,7 +532,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
 
     // ---- Static helpers ----------------------------------------------------
     auto bindStatic = [&](const char* name, uint32_t arity, ev::NativeFn fn) {
-        cls.setStatic(name, ev::makeFunction(std::move(fn), arity, name));
+        cls.setStatic(name, hostFunction(std::move(fn), arity, name));
     };
 
     bindStatic("merge", 1, [](Value, std::span<const Value> a) -> Value {

@@ -308,7 +308,7 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
 
     // ---- Static Primitive Factories ----------------------------------------
     auto bindStatic = [&](const char* name, uint32_t arity, ev::NativeFn fn) {
-        cls.setStatic(name, ev::makeFunction(std::move(fn), arity, name));
+        cls.setStatic(name, hostFunction(std::move(fn), arity, name));
     };
 
     bindStatic("box", 3, [](Value, std::span<const Value> a) -> Value {
@@ -438,7 +438,8 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
     bindStatic("rock", 3, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 1.0));
-        int seed = r.getInt(1, 1);
+        int seed = 1;
+        if (!seedArg(a, 1, "Mesh.rock: seed", kMaxInt32, seed)) return ev::undefined();
         int subdiv = 2;
         if (!countArg(a, 2, "Mesh.rock: subdivisions", 0, kMaxSubdivisions, subdiv)) return ev::undefined();
         return wrapMesh(bromesh::rock(radius > 0.0f ? radius : 1.0f, seed, subdiv));

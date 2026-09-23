@@ -151,7 +151,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
     });
 
     // Static blend on Pose
-    poseCls.setStatic("blend", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    poseCls.setStatic("blend", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.size() < 3) return ev::throwTypeError("Pose.blend: a, b, weight required");
         auto* pa = unwrapPose(a[0]);
         auto* pb = unwrapPose(a[1]);
@@ -168,11 +168,12 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         return a[0];
     }, 4, "blend"));
 
-    poseCls.setStatic("blendN", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    poseCls.setStatic("blendN", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.size() < 2) return ev::throwTypeError("Pose.blendN: poses and weights required");
         std::vector<const bromesh::Pose*> posePtrs;
         if (ev::isObject(a[0])) {
-            size_t n = lengthValue(ev::getProperty(a[0], "length"));
+            size_t n = 0;
+            if (!listLength(ev::getProperty(a[0], "length"), "Pose.blendN: poses", n)) return ev::undefined();
             for (size_t i = 0; i < n; ++i) {
                 Value elem = ev::getElement(a[0], static_cast<uint32_t>(i));
                 auto* p = unwrapPose(elem);
@@ -485,7 +486,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
     // =========================================================================
     // Retargeting
     // =========================================================================
-    animCls.setStatic("retarget", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    animCls.setStatic("retarget", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.size() < 3) return ev::throwTypeError("AnimationClip.retarget: anim, srcSkel, dstSkel required");
         auto* anim = unwrapAnimation(a[0]);
         auto* src = unwrapSkeleton(a[1]);
@@ -579,7 +580,10 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
             if (auto* k = unwrapSkeleton(ev::getProperty(opts, "skeleton"))) skelPtr = &k->skeleton;
             Rooted anVal(ev::getProperty(opts, "animations"));
             if (ev::isObject(anVal)) {
-                size_t n = lengthValue(ev::getProperty(anVal, "length"));
+                size_t n = 0;
+                if (!listLength(ev::getProperty(anVal, "length"), "Mesh.saveGLTF: opts.animations", n)) {
+                    return ev::undefined();
+                }
                 for (size_t i = 0; i < n; ++i) {
                     Value item = ev::getElement(anVal, static_cast<uint32_t>(i));
                     if (auto* an = unwrapAnimation(item)) anims.push_back(an->animation);
@@ -590,7 +594,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         return ev::fromBool(ok);
     });
 
-    meshCls.setStatic("loadGLTF", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    meshCls.setStatic("loadGLTF", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Mesh.loadGLTF: path required");
         std::string path = resolveMeshPath(ev::toUtf8(a[0]));
         auto scene = bromesh::loadGLTF(path);

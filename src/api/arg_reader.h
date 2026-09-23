@@ -1,6 +1,7 @@
 #pragma once
 
 #include "embed/embed.h"
+#include "object_builder.h"
 
 #include <algorithm>
 #include <cmath>
@@ -142,6 +143,26 @@ inline bool countField(Value obj, std::string_view key, std::string_view what,
     return true;
 }
 
+// ── Seeds ──────────────────────────────────────────────────────────────
+//
+// A seed is an integer in [0, hi]: hi is 2^53 - 1 (the largest integer a JS
+// number holds exactly) for a 64-bit seed and the type's maximum for a
+// narrower one. Undefined keeps the default; a non-number is a TypeError; a
+// negative, fractional, NaN or infinite one a RangeError. (Negative seeds
+// used to wrap as two's complement, and a 32-bit one modulo 2^32, so two
+// different arguments silently seeded alike.)
+inline constexpr double kMaxSeed64 = 9007199254740991.0;
+
+template <typename T>
+inline bool seedArg(std::span<const Value> args, size_t i, std::string_view what, double hi, T& out) {
+    return countArg(args, i, what, 0.0, hi, out);
+}
+
+template <typename T>
+inline bool seedField(Value obj, std::string_view key, std::string_view what, double hi, T& out) {
+    return countField(obj, key, what, 0.0, hi, out);
+}
+
 // A 3D grid's cell count x * y * z against kMaxVolumeCells, each axis
 // already validated.
 inline bool volumeCellsOk(std::string_view what, double x, double y, double z) {
@@ -181,6 +202,18 @@ inline bool listLength(Value lenV, std::string_view what, size_t& n) {
 // Most elements a copy loop reserves up front; a longer (or lying) array-like
 // grows the vector as it is read.
 inline constexpr size_t kReserveCap = size_t{1} << 20;
+
+// For a list reader with no error channel: whether a list of `n` elements
+// may be copied. Past kMaxElements it is refused (refuseList, raised as a
+// RangeError when the binding returns) and the reader answers empty, so an
+// array-like claiming 2^32 - 1 elements is neither a 16 GB vector nor a
+// four-billion-read loop.
+inline bool copyLengthOk(size_t n) {
+    if (static_cast<double>(n) <= kMaxElements) return true;
+    refuseList("a list of " + std::to_string(n) + " elements is over the " +
+               numberText(kMaxElements) + "-element limit");
+    return false;
+}
 
 // JS ToUint32 (what storing into a Uint32Array does): NaN and infinities are
 // 0, anything else truncates and wraps modulo 2^32. The narrowing then is

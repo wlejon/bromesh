@@ -89,7 +89,7 @@ void HostClass::install(const char* name, uint32_t arity, ev::NativeFn body,
     }
 
     Slots& s = slots();
-    ev::Persistent ctor(ev::makeFunction(std::move(ctorBody), arity, name));
+    ev::Persistent ctor(hostFunction(std::move(ctorBody), arity, name));
     s.ctor = new ev::Persistent(ctor.get());
 
     {

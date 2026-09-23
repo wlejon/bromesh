@@ -19,6 +19,7 @@ std::vector<std::vector<float>> readContours(Value v) {
     Value lenV = ev::getProperty(list.get(), "length");
     if (!ev::isNumber(lenV)) return contours;
     const size_t len = lengthValue(lenV);
+    if (!copyLengthOk(len)) return contours;
     contours.reserve(std::min<size_t>(len, kReserveCap));
     for (size_t i = 0; i < len; ++i) {
         contours.push_back(toFloatVector(ev::getElement(list.get(), static_cast<uint32_t>(i))));
@@ -252,10 +253,10 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     proto.def("sampleSurface", 2, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.sampleSurface: not a Mesh instance");
-        ArgReader r(a);
         size_t count = 100;
         if (!countArg(a, 0, "Mesh.sampleSurface: count", 0, kMaxElements, count)) return ev::undefined();
-        uint32_t seed = r.getUint(1, 0);
+        uint32_t seed = 0;
+        if (!seedArg(a, 1, "Mesh.sampleSurface: seed", kMaxUint32, seed)) return ev::undefined();
         return wrapMesh(bromesh::sampleSurface(m->mesh, count, seed));
     });
 
@@ -629,7 +630,7 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
 
     // ---- Static Isosurfaces & Compression ----------------------------------
     auto bindStatic = [&](const char* name, uint32_t arity, ev::NativeFn fn) {
-        cls.setStatic(name, ev::makeFunction(std::move(fn), arity, name));
+        cls.setStatic(name, hostFunction(std::move(fn), arity, name));
     };
 
     bindStatic("stripify", 3, [](Value, std::span<const Value> a) -> Value {
@@ -978,7 +979,7 @@ void initProgressiveMesh(HostClass& cls) {
         });
     });
 
-    cls.setStatic("deserialize", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
+    cls.setStatic("deserialize", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("ProgressiveMesh.deserialize: bytes required");
         std::vector<uint8_t> bytes = toUint8Vector(a[0]);
         auto pm = bromesh::deserializeProgressiveMesh(bytes.data(), bytes.size());
