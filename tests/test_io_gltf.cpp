@@ -181,6 +181,180 @@ TEST(gltf_animation_roundtrip_ground_truth) {
     std::remove(path.c_str());
 }
 
+// A CUBICSPLINE sampler's output accessor counts every element, 3 per
+// keyframe (in-tangent, value, out-tangent). The saver used to write a third
+// of that, and the loader multiplied by 3 again, reading past the accessor.
+TEST(gltf_cubicspline_output_count_is_in_elements) {
+    auto mesh = bromesh::box(1.0f, 1.0f, 1.0f);
+    bromesh::Skeleton skeleton;
+    bromesh::Bone b0;
+    b0.name = "root";
+    b0.parent = -1;
+    skeleton.bones.push_back(b0);
+
+    bromesh::SkinData skin;
+    skin.boneCount = 1;
+    skin.boneIndices.assign(mesh.vertexCount() * 4, 0u);
+    skin.boneWeights.assign(mesh.vertexCount() * 4, 0.0f);
+    for (size_t v = 0; v < mesh.vertexCount(); ++v) skin.boneWeights[v * 4] = 1.0f;
+    skin.inverseBindMatrices = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+
+    bromesh::Animation anim;
+    anim.name = "Cubic";
+    anim.duration = 1.0f;
+    bromesh::AnimChannel ch;
+    ch.boneIndex = 0;
+    ch.path = bromesh::AnimChannel::Path::Translation;
+    ch.interp = bromesh::AnimChannel::Interp::CubicSpline;
+    ch.times = { 0.0f, 1.0f };
+    ch.values = {
+        0, 0, 0,   1, 2, 3,   0, 0, 0,   // key 0: in, value, out
+        0, 0, 0,   4, 5, 6,   0, 0, 0,   // key 1
+    };
+    anim.channels.push_back(ch);
+
+    std::string path = testDir + "rt_anim_cubic.glb";
+    ASSERT(bromesh::saveGLTF(mesh, &skin, &skeleton, {anim}, path), "saveGLTF cubic");
+
+    tinygltf::Model model;
+    tinygltf::TinyGLTF reader;
+    std::string err, warn;
+    ASSERT(reader.LoadBinaryFromFile(&model, &err, &warn, path), "tinygltf reads the saved glb");
+    ASSERT(model.animations.size() == 1 && model.animations[0].samplers.size() == 1, "one sampler");
+    const auto& s = model.animations[0].samplers[0];
+    ASSERT(s.interpolation == "CUBICSPLINE", "sampler is CUBICSPLINE");
+    ASSERT(model.accessors[s.input].count == 2, "input count = keyframes");
+    ASSERT(model.accessors[s.output].count == 6, "output count = 3 elements per keyframe");
+
+    auto scene = bromesh::loadGLTF(path);
+    ASSERT(scene.animations.size() == 1 && scene.animations[0].channels.size() == 1, "loaded channel");
+    const auto& lch = scene.animations[0].channels[0];
+    ASSERT(lch.values.size() == ch.values.size(), "cubic values not over-read");
+    for (size_t i = 0; i < ch.values.size(); ++i)
+        ASSERT(std::fabs(lch.values[i] - ch.values[i]) < 1e-6f, "cubic value matches");
+    std::remove(path.c_str());
+}
+
+namespace {
+template <typename T>
+void putBytes(std::vector<uint8_t>& buf, size_t at, const T& v) {
+    std::memcpy(buf.data() + at, &v, sizeof(T));
+}
+}
+
+// Every JOINTS_n/WEIGHTS_n set is read and folded into SkinData's 4
+// influences: the heaviest 4, duplicate joints summed, renormalized. The
+// attributes are stored the awkward ways the spec allows: set 0 interleaved
+// with POSITION (bufferView byteStride), set 1 as uint16 joints plus
+// normalized uint8 weights.
+TEST(gltf_multi_influence_sets_interleaved) {
+    const size_t V = 3;
+    const size_t stride = 12 + 4 + 16;              // pos f32x3, joints u8x4, weights f32x4
+    const size_t interleavedBytes = stride * V;
+    const size_t j1Off = interleavedBytes;           // u16x4
+    const size_t w1Off = j1Off + 8 * V;              // u8x4 normalized
+    std::vector<uint8_t> bytes(w1Off + 4 * V, 0);
+
+    const float pos[V][3] = { {0, 0, 0}, {1, 0, 0}, {0, 0, 1} };
+    const uint8_t j0[V][4] = { {0, 1, 2, 3}, {0, 0, 0, 0}, {2, 3, 1, 0} };
+    const float w0[V][4] = { {0.3f, 0.1f, 0.05f, 0.05f}, {1, 0, 0, 0}, {0.25f, 0.25f, 0.25f, 0} };
+    const uint16_t j1[V][4] = { {4, 5, 6, 7}, {0, 0, 0, 0}, {2, 9, 0, 0} };
+    const uint8_t w1[V][4] = { {51, 102, 0, 0}, {0, 0, 0, 0}, {51, 13, 0, 0} };
+    for (size_t v = 0; v < V; ++v) {
+        for (int c = 0; c < 3; ++c) putBytes(bytes, v * stride + c * 4, pos[v][c]);
+        for (int c = 0; c < 4; ++c) bytes[v * stride + 12 + c] = j0[v][c];
+        for (int c = 0; c < 4; ++c) putBytes(bytes, v * stride + 16 + c * 4, w0[v][c]);
+        for (int c = 0; c < 4; ++c) putBytes(bytes, j1Off + v * 8 + c * 2, j1[v][c]);
+        for (int c = 0; c < 4; ++c) bytes[w1Off + v * 4 + c] = w1[v][c];
+    }
+
+    tinygltf::Model model;
+    model.asset.version = "2.0";
+    tinygltf::Buffer buffer;
+    buffer.data = bytes;
+    model.buffers.push_back(buffer);
+
+    auto addView = [&](size_t off, size_t len, int byteStride) {
+        tinygltf::BufferView bv;
+        bv.buffer = 0;
+        bv.byteOffset = off;
+        bv.byteLength = len;
+        bv.byteStride = byteStride;
+        bv.target = TINYGLTF_TARGET_ARRAY_BUFFER;
+        model.bufferViews.push_back(bv);
+        return static_cast<int>(model.bufferViews.size()) - 1;
+    };
+    auto addAcc = [&](int view, size_t off, int compType, int type, bool normalized) {
+        tinygltf::Accessor a;
+        a.bufferView = view;
+        a.byteOffset = off;
+        a.componentType = compType;
+        a.type = type;
+        a.count = V;
+        a.normalized = normalized;
+        if (type == TINYGLTF_TYPE_VEC3) { a.minValues = {0, 0, 0}; a.maxValues = {1, 0, 1}; }
+        model.accessors.push_back(a);
+        return static_cast<int>(model.accessors.size()) - 1;
+    };
+    const int vInter = addView(0, interleavedBytes, static_cast<int>(stride));
+    const int vJ1 = addView(j1Off, 8 * V, 0);
+    const int vW1 = addView(w1Off, 4 * V, 0);
+
+    tinygltf::Primitive prim;
+    prim.mode = TINYGLTF_MODE_TRIANGLES;
+    prim.attributes["POSITION"]  = addAcc(vInter, 0,  TINYGLTF_COMPONENT_TYPE_FLOAT, TINYGLTF_TYPE_VEC3, false);
+    prim.attributes["JOINTS_0"]  = addAcc(vInter, 12, TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE, TINYGLTF_TYPE_VEC4, false);
+    prim.attributes["WEIGHTS_0"] = addAcc(vInter, 16, TINYGLTF_COMPONENT_TYPE_FLOAT, TINYGLTF_TYPE_VEC4, false);
+    prim.attributes["JOINTS_1"]  = addAcc(vJ1, 0, TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT, TINYGLTF_TYPE_VEC4, false);
+    prim.attributes["WEIGHTS_1"] = addAcc(vW1, 0, TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE, TINYGLTF_TYPE_VEC4, true);
+    tinygltf::Mesh gm;
+    gm.primitives.push_back(prim);
+    model.meshes.push_back(gm);
+    tinygltf::Node node;
+    node.mesh = 0;
+    model.nodes.push_back(node);
+    tinygltf::Scene sc;
+    sc.nodes.push_back(0);
+    model.scenes.push_back(sc);
+    model.defaultScene = 0;
+
+    std::string path = testDir + "multi_influence.glb";
+    tinygltf::TinyGLTF writer;
+    ASSERT(writer.WriteGltfSceneToFile(&model, path, true, true, true, true), "wrote glb");
+
+    auto scene = bromesh::loadGLTF(path);
+    ASSERT(scene.meshes.size() == 1 && scene.skins.size() == 1, "one mesh + skin");
+    const auto& m = scene.meshes[0];
+    ASSERT(m.vertexCount() == V, "vertex count");
+    // Interleaved POSITION reads each vertex, not a tight run of floats.
+    for (size_t v = 0; v < V; ++v)
+        for (int c = 0; c < 3; ++c)
+            ASSERT(m.positions[v * 3 + c] == pos[v][c], "interleaved position");
+
+    const auto& sk = scene.skins[0];
+    ASSERT(sk.boneIndices.size() == V * 4 && sk.boneWeights.size() == V * 4, "4 influences per vertex");
+    ASSERT(sk.validate(), "skin validates");
+
+    // v0: heaviest four of {j0 .3, j1 .1, j2 .05, j3 .05, j4 .2, j5 .4}.
+    const uint32_t e0j[4] = { 5, 0, 4, 1 };
+    const float e0w[4] = { 0.4f, 0.3f, 0.2f, 0.1f };
+    for (int k = 0; k < 4; ++k) {
+        ASSERT(sk.boneIndices[k] == e0j[k], "v0 joint order");
+        ASSERT(std::fabs(sk.boneWeights[k] - e0w[k]) < 1e-3f, "v0 weight");
+    }
+    // v1: a single joint, still weight 1.
+    ASSERT(sk.boneIndices[4] == 0 && std::fabs(sk.boneWeights[4] - 1.0f) < 1e-6f, "v1 joint 0 = 1");
+    for (int k = 1; k < 4; ++k) ASSERT(sk.boneWeights[4 + k] == 0.0f, "v1 other weights 0");
+    // v2: joint 2 appears in both sets and is summed (.25 + .2).
+    ASSERT(sk.boneIndices[8] == 2, "v2 duplicate joint summed to the top");
+    float sum = 0.0f;
+    for (int k = 0; k < 4; ++k) sum += sk.boneWeights[8 + k];
+    ASSERT(std::fabs(sum - 1.0f) < 1e-5f, "v2 renormalized");
+    ASSERT(std::fabs(sk.boneWeights[8] - 0.45f / (0.45f + 0.5f + 13.0f / 255.0f)) < 1e-4f, "v2 top weight");
+
+    std::remove(path.c_str());
+}
+
 TEST(gltf_rt_box_with_all_uv_types) {
     // Box -> each UV projection type -> glTF roundtrip
     bromesh::ProjectionType types[] = {

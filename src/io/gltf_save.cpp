@@ -386,8 +386,9 @@ bool saveGLTF(const GltfScene& scene, const std::string& path) {
             int outType = (ch.path == AnimChannel::Path::Rotation)
                               ? TINYGLTF_TYPE_VEC4 : TINYGLTF_TYPE_VEC3;
             int stride = (ch.path == AnimChannel::Path::Rotation) ? 4 : 3;
-            int packing = (ch.interp == AnimChannel::Interp::CubicSpline) ? 3 : 1;
-            size_t outCount = (stride == 0) ? 0 : (ch.values.size() / (stride * packing));
+            // Count is in elements; a CUBICSPLINE sampler's output holds 3
+            // elements per keyframe and the glTF count includes all three.
+            size_t outCount = ch.values.size() / stride;
             int aOut = ctx.addAccessor(vOut, TINYGLTF_COMPONENT_TYPE_FLOAT,
                                        outType, outCount);
 

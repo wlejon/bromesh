@@ -309,17 +309,22 @@ GltfScene loadGLTF(const std::string& path) {
                                         md.colors = std::move(decoded.mesh.colors);
                                     }
 
-                                    // Skinning: JOINTS_0 and WEIGHTS_0
-                                    if (attrs.IsObject() && attrs.Has("JOINTS_0") && attrs.Has("WEIGHTS_0")) {
-                                        uint32_t jId = static_cast<uint32_t>(attrs.Get("JOINTS_0").GetNumberAsInt());
-                                        uint32_t wId = static_cast<uint32_t>(attrs.Get("WEIGHTS_0").GetNumberAsInt());
-                                        const auto* jAttr = findAttr(jId);
-                                        const auto* wAttr = findAttr(wId);
-                                        if (jAttr && wAttr) {
-                                            extractDracoUints(*jAttr, 4, skin.boneIndices);
-                                            extractDracoFloats(*wAttr, 4, skin.boneWeights);
-                                        }
+                                    // Skinning: every JOINTS_n/WEIGHTS_n set,
+                                    // folded into 4 influences.
+                                    std::vector<std::pair<std::vector<uint32_t>, std::vector<float>>> sets;
+                                    for (int n = 0; attrs.IsObject(); ++n) {
+                                        const std::string jn = "JOINTS_" + std::to_string(n);
+                                        const std::string wn = "WEIGHTS_" + std::to_string(n);
+                                        if (!attrs.Has(jn) || !attrs.Has(wn)) break;
+                                        const auto* jAttr = findAttr(static_cast<uint32_t>(attrs.Get(jn).GetNumberAsInt()));
+                                        const auto* wAttr = findAttr(static_cast<uint32_t>(attrs.Get(wn).GetNumberAsInt()));
+                                        if (!jAttr || !wAttr) break;
+                                        std::pair<std::vector<uint32_t>, std::vector<float>> s;
+                                        extractDracoUints(*jAttr, 4, s.first);
+                                        extractDracoFloats(*wAttr, 4, s.second);
+                                        sets.push_back(std::move(s));
                                     }
+                                    mergeInfluenceSets(sets, skin.boneIndices, skin.boneWeights);
                                 }
                             }
                         }
@@ -348,12 +353,13 @@ GltfScene loadGLTF(const std::string& path) {
                     }
                 }
 
+                // Stride-aware: interleaved vertex buffers (bufferView
+                // byteStride) and quantized/normalized integer storage
+                // (KHR_mesh_quantization, unorm UVs) read correctly.
                 auto readVec = [&](const char* attrName, std::vector<float>& dst, int components) {
                     auto it = prim.attributes.find(attrName);
                     if (it == prim.attributes.end()) return;
-                    const auto& accessor = model.accessors[it->second];
-                    const auto* src = reinterpret_cast<const float*>(accessorData(model, it->second));
-                    if (src) dst.assign(src, src + accessor.count * components);
+                    readAccessorFloats(model, it->second, components, dst);
                 };
 
                 readVec("POSITION", md.positions, 3);
@@ -372,49 +378,27 @@ GltfScene loadGLTF(const std::string& path) {
                     auto it = prim.attributes.find("COLOR_0");
                     if (it != prim.attributes.end()) {
                         const auto& accessor = model.accessors[it->second];
-                        if (accessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
-                            int comps = (accessor.type == TINYGLTF_TYPE_VEC4) ? 4 : 3;
-                            const auto* src = reinterpret_cast<const float*>(accessorData(model, it->second));
-                            if (src) {
-                                md.colors.resize(accessor.count * 4);
-                                for (size_t i = 0; i < accessor.count; ++i) {
-                                    md.colors[i*4 + 0] = src[i*comps + 0];
-                                    md.colors[i*4 + 1] = src[i*comps + 1];
-                                    md.colors[i*4 + 2] = src[i*comps + 2];
-                                    md.colors[i*4 + 3] = (comps == 4) ? src[i*comps + 3] : 1.0f;
-                                }
-                            }
+                        const bool rgb = accessor.type == TINYGLTF_TYPE_VEC3;
+                        if (readAccessorFloats(model, it->second, 4, md.colors) && rgb) {
+                            for (size_t i = 3; i < md.colors.size(); i += 4) md.colors[i] = 1.0f;
                         }
                     }
                 }
 
-                // Joints/weights
+                // Joints/weights: every JOINTS_n/WEIGHTS_n set, folded into
+                // SkinData's 4 influences (heaviest 4, renormalized).
                 {
-                    auto itJ = prim.attributes.find("JOINTS_0");
-                    auto itW = prim.attributes.find("WEIGHTS_0");
-                    if (itJ != prim.attributes.end() && itW != prim.attributes.end()) {
-                        const auto& accJ = model.accessors[itJ->second];
-                        const auto& accW = model.accessors[itW->second];
-                        skin.boneIndices.resize(accJ.count * 4);
-                        skin.boneWeights.resize(accW.count * 4);
-
-                        const uint8_t* jbase = accessorData(model, itJ->second);
-                        if (jbase) {
-                            if (accJ.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
-                                const auto* src = reinterpret_cast<const uint16_t*>(jbase);
-                                for (size_t i = 0; i < accJ.count * 4; ++i) skin.boneIndices[i] = src[i];
-                            } else {
-                                for (size_t i = 0; i < accJ.count * 4; ++i) skin.boneIndices[i] = jbase[i];
-                            }
-                        }
-
-                        if (accW.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
-                            const auto* src = reinterpret_cast<const float*>(accessorData(model, itW->second));
-                            if (src) {
-                                std::memcpy(skin.boneWeights.data(), src, accW.count * 4 * sizeof(float));
-                            }
-                        }
+                    std::vector<std::pair<std::vector<uint32_t>, std::vector<float>>> sets;
+                    for (int n = 0;; ++n) {
+                        auto itJ = prim.attributes.find("JOINTS_" + std::to_string(n));
+                        auto itW = prim.attributes.find("WEIGHTS_" + std::to_string(n));
+                        if (itJ == prim.attributes.end() || itW == prim.attributes.end()) break;
+                        std::pair<std::vector<uint32_t>, std::vector<float>> s;
+                        if (!readAccessorUints(model, itJ->second, 4, s.first)) break;
+                        if (!readAccessorFloats(model, itW->second, 4, s.second)) break;
+                        sets.push_back(std::move(s));
                     }
+                    mergeInfluenceSets(sets, skin.boneIndices, skin.boneWeights);
                 }
             }
 
@@ -540,22 +524,16 @@ GltfScene loadGLTF(const std::string& path) {
             else if (gs.interpolation == "CUBICSPLINE") ch.interp = AnimChannel::Interp::CubicSpline;
             else ch.interp = AnimChannel::Interp::Linear;
 
-            const auto& accIn = model.accessors[gs.input];
-            const auto* tsrc = reinterpret_cast<const float*>(accessorData(model, gs.input));
-            if (tsrc) {
-                ch.times.assign(tsrc, tsrc + accIn.count);
-                if (!ch.times.empty()) {
-                    anim.duration = std::max(anim.duration, ch.times.back());
-                }
+            if (readAccessorFloats(model, gs.input, 1, ch.times) && !ch.times.empty()) {
+                anim.duration = std::max(anim.duration, ch.times.back());
             }
 
-            const auto& accOut = model.accessors[gs.output];
-            const auto* vsrc = reinterpret_cast<const float*>(accessorData(model, gs.output));
+            // The output accessor's count is already in elements: for
+            // CUBICSPLINE that is 3 per keyframe (in-tangent, value,
+            // out-tangent), so it is not multiplied again. Normalized
+            // integer rotations (KHR_mesh_quantization) read as floats.
             int stride = (ch.path == AnimChannel::Path::Rotation) ? 4 : 3;
-            int packing = (ch.interp == AnimChannel::Interp::CubicSpline) ? 3 : 1;
-            if (vsrc) {
-                ch.values.assign(vsrc, vsrc + accOut.count * stride * packing);
-            }
+            readAccessorFloats(model, gs.output, stride, ch.values);
 
             anim.channels.push_back(std::move(ch));
         }
