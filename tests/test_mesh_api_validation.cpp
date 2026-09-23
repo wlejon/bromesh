@@ -83,6 +83,31 @@ void bromeshTestValidation() {
         expectThrow("RangeError", "decode 4e9 vertices",
                     () => Mesh.decode(Object.assign({}, enc, { vertexCount: 4e9 })));
 
+        // ── a Mesh never holds an index past its vertices ────────────────────
+        // (the constructor used to take any, and computeNormals then wrote
+        // through positions[idx * 3] with no check)
+        const tri = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+        expectThrow("RangeError", "Mesh({indices: [0, 1, 99999]})",
+                    () => new Mesh({ positions: tri, indices: new Uint32Array([0, 1, 99999]) }));
+        expectThrow("RangeError", "Mesh(positional, index 3)",
+                    () => new Mesh(tri, undefined, undefined, undefined, new Uint32Array([0, 1, 3])));
+        expectThrow("TypeError", "Mesh indices length 2",
+                    () => new Mesh({ positions: tri, indices: new Uint32Array([0, 1]) }));
+        // Shrinking positions under the triangles drops the stale index list
+        // (a reused Mesh is rebuilt as "positions, then indices").
+        const shrink = new Mesh({ positions: tri, indices: new Uint32Array([0, 1, 2]) });
+        shrink.positions = new Float32Array([0, 0, 0]);
+        if (shrink.vertexCount !== 1 || shrink.triangleCount !== 0)
+            throw new Error("shrunk positions should drop the stale triangles");
+        shrink.computeNormals();
+        const keep = new Mesh({ positions: tri, indices: new Uint32Array([0, 1, 2]) });
+        keep.positions = new Float32Array([0, 0, 1, 1, 0, 1, 0, 1, 1]);
+        if (keep.triangleCount !== 1) throw new Error("positions of the same count should keep the triangles");
+        const grow = new Mesh({ positions: tri, indices: new Uint32Array([0, 1, 2]) });
+        grow.positions = new Float32Array(12);
+        grow.indices = new Uint32Array([0, 1, 3]);
+        grow.computeNormals();
+
         // ── plants ──────────────────────────────────────────────────────────
         expectThrow("RangeError", "tube sides 2", () => Mesh.tube([[0, 0, 0], [0, 1, 0]], 0.1, 2));
         expectThrow("RangeError", "leafCard widthSegments 0", () => Mesh.leafCard("oval", { widthSegments: 0 }));

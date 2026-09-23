@@ -31,7 +31,8 @@ struct MeshData {
     bool hasBoneIndices() const { return !boneIndices.empty() && boneIndices.size() / 4 == vertexCount(); }
     bool empty() const { return positions.empty(); }
 
-    /// Enforces size invariants across attribute streams and index buffer.
+    /// Enforces size invariants across attribute streams and index buffer,
+    /// and that every index names an existing vertex.
     bool validate() const {
         if (positions.size() % 3 != 0) return false;
         size_t vc = vertexCount();
@@ -42,6 +43,9 @@ struct MeshData {
         if (!boneWeights.empty() && boneWeights.size() != vc * 4) return false;
         if (!boneIndices.empty() && boneIndices.size() != vc * 4) return false;
         if (indices.size() % 3 != 0) return false;
+        for (uint32_t i : indices) {
+            if (i >= vc) return false;
+        }
         return true;
     }
 

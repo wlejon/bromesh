@@ -175,6 +175,25 @@ inline HostMesh* unwrapMesh(Value v) {
     return (h && h->tag == kHostMeshTag) ? h : nullptr;
 }
 
+// Every library routine indexes positions (and the attribute streams) with
+// each triangle index unchecked, so a script-supplied index list must name
+// only existing vertices before it reaches one. Throws a RangeError and
+// returns false otherwise.
+inline bool triangleIndicesOk(const std::vector<uint32_t>& indices, size_t vertexCount, const char* what) {
+    if (indices.size() % 3 != 0) {
+        ev::throwTypeError(std::string(what) + ": indices length must be a multiple of 3");
+        return false;
+    }
+    for (uint32_t idx : indices) {
+        if (idx >= vertexCount) {
+            ev::throwRangeError(std::string(what) + ": index " + std::to_string(idx) +
+                                " is out of range for " + std::to_string(vertexCount) + " vertices");
+            return false;
+        }
+    }
+    return true;
+}
+
 inline HostMeshBVH* unwrapBVH(Value v) {
     void* ptr = g_meshBvhClass.unwrap(v);
     if (!ptr) return nullptr;

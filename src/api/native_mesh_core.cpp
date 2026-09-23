@@ -57,9 +57,7 @@ Value meshConstructor(Value, std::span<const Value> args) {
     if (!hm->mesh.colors.empty() && hm->mesh.colors.size() != verts * 4) {
         return ev::throwTypeError("Mesh: colors must hold one rgba per vertex");
     }
-    if (hm->mesh.indices.size() % 3 != 0) {
-        return ev::throwTypeError("Mesh: indices length must be a multiple of 3");
-    }
+    if (!triangleIndicesOk(hm->mesh.indices, verts, "Mesh")) return ev::undefined();
 
     return g_meshClass.createInstance(std::move(hm));
 }
@@ -79,6 +77,14 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
             if (!m || a.empty()) return ev::undefined();
             std::vector<float> v = toFloatVector(a[0]);
             if (v.size() % 3 != 0) return ev::throwTypeError("positions length must be a multiple of 3");
+            // The mesh never holds an index past its vertices. Fewer
+            // positions than the current triangles reference drops the index
+            // list, so the usual "positions, then indices" rebuild of a
+            // reused Mesh works whichever way the vertex count moves.
+            const size_t newVerts = v.size() / 3;
+            for (uint32_t idx : m->mesh.indices) {
+                if (idx >= newVerts) { m->mesh.indices.clear(); break; }
+            }
             m->mesh.positions = std::move(v);
             return ev::undefined();
         });
@@ -144,11 +150,7 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
             auto* m = unwrapMesh(self);
             if (!m || a.empty()) return ev::undefined();
             std::vector<uint32_t> v = toUint32Vector(a[0]);
-            if (v.size() % 3 != 0) return ev::throwTypeError("indices length must be a multiple of 3");
-            const size_t verts = m->mesh.vertexCount();
-            for (uint32_t idx : v) {
-                if (idx >= verts) return ev::throwRangeError("Mesh.indices: index " + std::to_string(idx) + " is out of range");
-            }
+            if (!triangleIndicesOk(v, m->mesh.vertexCount(), "Mesh.indices")) return ev::undefined();
             m->mesh.indices = std::move(v);
             return ev::undefined();
         });
