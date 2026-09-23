@@ -98,9 +98,10 @@ bool objBool(Value o, const char* key, bool def) {
 }
 
 // [x,y,z] or {x,y,z}; anything else reads as the zero vector.
-bromath::Vec3 readVec3(Value v) {
+bromath::Vec3 readVec3(Value in) {
     bromath::Vec3 r{};
-    if (!ev::isObject(v)) return r;
+    if (!ev::isObject(in)) return r;
+    Rooted v(in);  // every read below may allocate
     Value x = ev::getProperty(v, "x");
     if (ev::isNumber(x)) {
         r.x = static_cast<float>(ev::toDouble(x));
@@ -108,12 +109,10 @@ bromath::Vec3 readVec3(Value v) {
         r.z = static_cast<float>(objNum(v, "z", 0.0));
         return r;
     }
-    Value e0 = ev::getElement(v, 0);
-    Value e1 = ev::getElement(v, 1);
-    Value e2 = ev::getElement(v, 2);
-    if (ev::isNumber(e0)) r.x = static_cast<float>(ev::toDouble(e0));
-    if (ev::isNumber(e1)) r.y = static_cast<float>(ev::toDouble(e1));
-    if (ev::isNumber(e2)) r.z = static_cast<float>(ev::toDouble(e2));
+    // Numbers are immediates: converting each read at once holds nothing.
+    if (Value e = ev::getElement(v, 0); ev::isNumber(e)) r.x = static_cast<float>(ev::toDouble(e));
+    if (Value e = ev::getElement(v, 1); ev::isNumber(e)) r.y = static_cast<float>(ev::toDouble(e));
+    if (Value e = ev::getElement(v, 2); ev::isNumber(e)) r.z = static_cast<float>(ev::toDouble(e));
     return r;
 }
 
@@ -144,14 +143,15 @@ bool readTypedFloats(Value v, size_t stride, std::vector<float>& out) {
     return false;
 }
 
-bool readVec3List(Value v, std::vector<bromath::Vec3>& out) {
+bool readVec3List(Value in, std::vector<bromath::Vec3>& out) {
     out.clear();
     std::vector<float> flat;
-    if (readTypedFloats(v, 3, flat)) {
+    if (readTypedFloats(in, 3, flat)) {
         out.resize(flat.size() / 3);
         for (size_t i = 0; i < out.size(); ++i) out[i] = {flat[3 * i], flat[3 * i + 1], flat[3 * i + 2]};
         return true;
     }
+    Rooted v(in);  // the length and element reads allocate
     size_t n = 0;
     if (!arrayLength(v, n)) return false;
     out.reserve(n);
@@ -174,19 +174,20 @@ bool readVec3List(Value v, std::vector<bromath::Vec3>& out) {
     return true;
 }
 
-bool readVec2List(Value v, std::vector<bromath::Vec2>& out) {
+bool readVec2List(Value in, std::vector<bromath::Vec2>& out) {
     out.clear();
     std::vector<float> flat;
-    if (readTypedFloats(v, 2, flat)) {
+    if (readTypedFloats(in, 2, flat)) {
         out.resize(flat.size() / 2);
         for (size_t i = 0; i < out.size(); ++i) out[i] = {flat[2 * i], flat[2 * i + 1]};
         return true;
     }
+    Rooted v(in);  // the length and element reads allocate
     size_t n = 0;
     if (!arrayLength(v, n)) return false;
     out.reserve(n);
     for (size_t i = 0; i < n; ++i) {
-        Value e = ev::getElement(v, static_cast<uint32_t>(i));
+        Rooted e(ev::getElement(v, static_cast<uint32_t>(i)));
         if (ev::isNumber(e)) {
             if (n % 2 != 0) return false;
             out.resize(n / 2);
@@ -203,10 +204,8 @@ bool readVec2List(Value v, std::vector<bromath::Vec2>& out) {
             p.x = static_cast<float>(ev::toDouble(x));
             p.y = static_cast<float>(objNum(e, "y", 0.0));
         } else {
-            Value e0 = ev::getElement(e, 0);
-            Value e1 = ev::getElement(e, 1);
-            if (ev::isNumber(e0)) p.x = static_cast<float>(ev::toDouble(e0));
-            if (ev::isNumber(e1)) p.y = static_cast<float>(ev::toDouble(e1));
+            if (Value c = ev::getElement(e, 0); ev::isNumber(c)) p.x = static_cast<float>(ev::toDouble(c));
+            if (Value c = ev::getElement(e, 1); ev::isNumber(c)) p.y = static_cast<float>(ev::toDouble(c));
         }
         out.push_back(p);
     }
@@ -215,13 +214,14 @@ bool readVec2List(Value v, std::vector<bromath::Vec2>& out) {
 
 // A number, a typed array, or an array of numbers → float list. Used for the
 // per-ring profileScale / twist / radii options.
-bool readFloatLike(Value v, std::vector<float>& out) {
+bool readFloatLike(Value in, std::vector<float>& out) {
     out.clear();
-    if (ev::isNumber(v)) {
-        out.push_back(static_cast<float>(ev::toDouble(v)));
+    if (ev::isNumber(in)) {
+        out.push_back(static_cast<float>(ev::toDouble(in)));
         return true;
     }
-    if (!ev::isObject(v)) return false;
+    if (!ev::isObject(in)) return false;
+    Rooted v(in);  // arrayLength allocates before toFloatVector reads v
     ev::TypedArrayInfo info = ev::typedArrayInfo(v);
     size_t n = 0;
     if (!info && !arrayLength(v, n)) return false;
@@ -237,13 +237,14 @@ void readFloatLikeOpt(Value o, const char* key, std::vector<float>& out) {
     if (readFloatLike(v, tmp)) out = std::move(tmp);
 }
 
-bool readBranchSegments(Value v, std::vector<bromesh::BranchSegment>& out) {
+bool readBranchSegments(Value in, std::vector<bromesh::BranchSegment>& out) {
     out.clear();
+    Rooted v(in);  // the list and each element are rooted across the reads
     size_t n = 0;
     if (!arrayLength(v, n)) return false;
     out.resize(n);
     for (size_t i = 0; i < n; ++i) {
-        Value o = ev::getElement(v, static_cast<uint32_t>(i));
+        Rooted o(ev::getElement(v, static_cast<uint32_t>(i)));
         bromesh::BranchSegment s{};
         s.parent = objInt(o, "parent", -1);
         s.depth  = objInt(o, "depth", 0);
@@ -274,13 +275,14 @@ Value makeBranchSegments(const std::vector<bromesh::BranchSegment>& segs) {
     });
 }
 
-bool readCapsules(Value v, std::vector<bromesh::Capsule>& out) {
+bool readCapsules(Value in, std::vector<bromesh::Capsule>& out) {
     out.clear();
+    Rooted v(in);  // the list and each element are rooted across the reads
     size_t n = 0;
     if (!arrayLength(v, n)) return false;
     out.resize(n);
     for (size_t i = 0; i < n; ++i) {
-        Value o = ev::getElement(v, static_cast<uint32_t>(i));
+        Rooted o(ev::getElement(v, static_cast<uint32_t>(i)));
         bromesh::Capsule c{};
         objVec3(o, "a", c.a);
         objVec3(o, "b", c.b);
@@ -291,13 +293,14 @@ bool readCapsules(Value v, std::vector<bromesh::Capsule>& out) {
     return true;
 }
 
-bool readSpheres(Value v, std::vector<bromesh::Sphere>& out) {
+bool readSpheres(Value in, std::vector<bromesh::Sphere>& out) {
     out.clear();
+    Rooted v(in);  // the list and each element are rooted across the reads
     size_t n = 0;
     if (!arrayLength(v, n)) return false;
     out.resize(n);
     for (size_t i = 0; i < n; ++i) {
-        Value o = ev::getElement(v, static_cast<uint32_t>(i));
+        Rooted o(ev::getElement(v, static_cast<uint32_t>(i)));
         bromesh::Sphere s{};
         objVec3(o, "center", s.center);
         s.radius = static_cast<float>(objNum(o, "radius", 0.0));
@@ -314,13 +317,14 @@ void readSpheresOpt(Value o, const char* key, std::vector<bromesh::Sphere>& out)
     readSpheres(v, out);
 }
 
-bool readModules(Value v, std::vector<bromesh::Module>& out) {
+bool readModules(Value in, std::vector<bromesh::Module>& out) {
     out.clear();
+    Rooted v(in);  // the list and each element are rooted across the reads
     size_t n = 0;
     if (!arrayLength(v, n)) return false;
     out.resize(n);
     for (size_t i = 0; i < n; ++i) {
-        Value o = ev::getElement(v, static_cast<uint32_t>(i));
+        Rooted o(ev::getElement(v, static_cast<uint32_t>(i)));
         bromesh::Module m{};
         if (ev::isObject(o)) {
             Value sv = ev::getProperty(o, "symbol");
@@ -382,8 +386,9 @@ bromesh::LeafShape parseLeafShape(Value v) {
     return bromesh::LeafShape::Oval;
 }
 
-void readLeafPlacementOptions(Value o, bromesh::LeafPlacementOptions& opts) {
-    if (!ev::isObject(o)) return;
+void readLeafPlacementOptions(Value in, bromesh::LeafPlacementOptions& opts) {
+    if (!ev::isObject(in)) return;
+    Rooted o(in);  // re-read at every field: each read allocates
     opts.maxRadius      = static_cast<float>(objNum(o, "maxRadius",      opts.maxRadius));
     opts.minDepth       = objInt(o, "minDepth", opts.minDepth);
     opts.terminalOnly   = objBool(o, "terminalOnly", opts.terminalOnly);
@@ -404,8 +409,9 @@ void readLeafPlacementOptions(Value o, bromesh::LeafPlacementOptions& opts) {
     readSpheresOpt(o, "keepOut", opts.keepOut);
 }
 
-void readColonizeOptions(Value o, bromesh::SpaceColonizationOptions& opts) {
-    if (!ev::isObject(o)) return;
+void readColonizeOptions(Value in, bromesh::SpaceColonizationOptions& opts) {
+    if (!ev::isObject(in)) return;
+    Rooted o(in);  // re-read at every field: each read allocates
     opts.attractionRadius = static_cast<float>(objNum(o, "attractionRadius", opts.attractionRadius));
     opts.killRadius       = static_cast<float>(objNum(o, "killRadius",       opts.killRadius));
     opts.segmentLength    = static_cast<float>(objNum(o, "segmentLength",    opts.segmentLength));
@@ -458,7 +464,7 @@ void initMeshPlants(HostClass& cls) {
         if (!readVec3List(a[1], path)) return ev::throwTypeError("Mesh.sweep: path must be Float32Array(3N) or [[x,y,z],...]");
         bromesh::SweepOptions opts;
         if (a.size() > 2 && ev::isObject(a[2])) {
-            Value o = a[2];
+            Rooted o(a[2]);
             opts.closeProfile = objBool(o, "closeProfile", opts.closeProfile);
             opts.capStart     = objBool(o, "capStart",     opts.capStart);
             opts.capEnd       = objBool(o, "capEnd",       opts.capEnd);
@@ -478,7 +484,7 @@ void initMeshPlants(HostClass& cls) {
         if (!readVec2List(a[1], profile)) return ev::throwTypeError("Mesh.bezierSweep: profile must be a Vec2 list");
         bromesh::BezierSweepOptions o;
         if (a.size() > 2 && ev::isObject(a[2])) {
-            Value ov = a[2];
+            Rooted ov(a[2]);
             o.samples      = objInt(ov, "samples", o.samples);
             o.capStart     = objBool(ov, "capStart", o.capStart);
             o.capEnd       = objBool(ov, "capEnd", o.capEnd);
@@ -525,7 +531,7 @@ void initMeshPlants(HostClass& cls) {
         bromath::Vec3 scale{1.0f, 1.0f, 1.0f};
         bromath::Vec3 center{0.0f, 0.0f, 0.0f};
         if (!a.empty() && ev::isObject(a[0])) {
-            Value o = a[0];
+            Rooted o(a[0]);
             radius = objNum(o, "radius", radius);
             seed   = objInt(o, "seed", seed);
             nsub   = objInt(o, "nsub", nsub);
@@ -555,7 +561,7 @@ void initMeshPlants(HostClass& cls) {
         bromesh::LeafShape shape = parseLeafShape(a[0]);
         bromesh::LeafCardOptions o;
         if (a.size() > 1 && ev::isObject(a[1])) {
-            Value ov = a[1];
+            Rooted ov(a[1]);
             o.width  = static_cast<float>(objNum(ov, "width",  o.width));
             o.length = static_cast<float>(objNum(ov, "length", o.length));
             o.bend   = static_cast<float>(objNum(ov, "bend",   o.bend));
@@ -574,7 +580,7 @@ void initMeshPlants(HostClass& cls) {
     bindStatic("flower", 1, [](Value, std::span<const Value> a) -> Value {
         bromesh::FlowerOptions o;
         if (!a.empty() && ev::isObject(a[0])) {
-            Value ov = a[0];
+            Rooted ov(a[0]);
             o.petalCount = objInt(ov, "petalCount", o.petalCount);
             Value ps = ev::getProperty(ov, "petalShape");
             if (isPresent(ps)) o.petalShape = parseLeafShape(ps);
@@ -609,7 +615,7 @@ void initMeshPlants(HostClass& cls) {
         if (!readVec3List(a[0], path)) return ev::throwTypeError("Mesh.bladeStrip: path must be a Vec3 list");
         bromesh::BladeStripOptions o;
         if (a.size() > 1 && ev::isObject(a[1])) {
-            Value ov = a[1];
+            Rooted ov(a[1]);
             o.width       = static_cast<float>(objNum(ov, "width",     o.width));
             o.thickness   = static_cast<float>(objNum(ov, "thickness", o.thickness));
             o.capStart    = objBool(ov, "capStart",    o.capStart);
@@ -625,7 +631,7 @@ void initMeshPlants(HostClass& cls) {
     bindStatic("bladePath", 1, [](Value, std::span<const Value> a) -> Value {
         bromesh::BladePathOptions o;
         if (!a.empty() && ev::isObject(a[0])) {
-            Value ov = a[0];
+            Rooted ov(a[0]);
             objVec3(ov, "base", o.base);
             objVec3(ov, "tipDir", o.tipDir);
             o.length   = static_cast<float>(objNum(ov, "length", o.length));
@@ -704,7 +710,7 @@ void initMeshPlants(HostClass& cls) {
     bindStatic("tree", 1, [](Value, std::span<const Value> a) -> Value {
         bromesh::TreeOptions o;
         if (!a.empty() && ev::isObject(a[0])) {
-            Value ov = a[0];
+            Rooted ov(a[0]);
             objVec3(ov, "base", o.base);
             objVec3(ov, "canopyCenter", o.canopyCenter);
             o.canopyRadius   = static_cast<float>(objNum(ov, "canopyRadius", o.canopyRadius));
@@ -749,7 +755,7 @@ void initMeshPlants(HostClass& cls) {
         const bromesh::CapsuleField* avoid = nullptr;
         std::vector<bromesh::Sphere> keepOut;
         if (a.size() > 1 && ev::isObject(a[1])) {
-            Value ov = a[1];
+            Rooted ov(a[1]);
             opts.minSpacing          = static_cast<float>(objNum(ov, "minSpacing",          opts.minSpacing));
             opts.minObstacleDistance = static_cast<float>(objNum(ov, "minObstacleDistance", opts.minObstacleDistance));
             opts.maxCount            = objInt(ov, "maxCount", opts.maxCount);
@@ -780,7 +786,7 @@ void initMeshPlants(HostClass& cls) {
         }
         bromesh::TurtleOptions to;
         if (a.size() > 1 && ev::isObject(a[1])) {
-            Value ov = a[1];
+            Rooted ov(a[1]);
             to.stepLength = static_cast<float>(objNum(ov, "stepLength", to.stepLength));
             to.angle      = static_cast<float>(objNum(ov, "angle",      to.angle));
             to.radius     = static_cast<float>(objNum(ov, "radius",     to.radius));

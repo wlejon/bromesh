@@ -105,10 +105,12 @@ void HostClass::setStatic(const char* name, Value v) const {
     if (!s || !s->ctor) return;
     s->ctor->set(ev::setProperty(s->ctor->get(), name, v));
 
-    ev::GlobalValue gt = ev::globalValue("globalThis");
     for (const auto& a : s->aliases) {
         ev::registerGlobal(a.c_str(), s->ctor->get());
-        if (gt.found && !gt.value.isUndefined() && ev::isObject(gt.value)) {
+        // Re-read per alias: registerGlobal/setProperty allocate, so a
+        // globalThis Value from before the loop would be stale here.
+        ev::GlobalValue gt = ev::globalValue("globalThis");
+        if (gt.found && ev::isObject(gt.value)) {
             ev::setProperty(gt.value, a.c_str(), s->ctor->get());
         }
     }

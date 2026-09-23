@@ -15,14 +15,13 @@ Value meshConstructor(Value, std::span<const Value> args) {
 
     // Check if args[0] is options object
     if (ev::isObject(args[0]) && !ev::isTypedArray(args[0])) {
-        Value opts = args[0];
-        Value pVal = ev::getProperty(opts, "positions");
-        Value nVal = ev::getProperty(opts, "normals");
-        Value uVal = ev::getProperty(opts, "uvs");
-        Value cVal = ev::getProperty(opts, "colors");
-        Value iVal = ev::getProperty(opts, "indices");
+        // args[0] is a rooted slot; each field is read right before it is
+        // consumed, since every read (and every conversion) may allocate.
+        auto field = [&](const char* name) { return ev::getProperty(args[0], name); };
+        auto present = [](Value v) { return !ev::isUndefined(v) && !ev::isNull(v); };
 
-        if (!ev::isUndefined(pVal) && !ev::isNull(pVal)) {
+        Value pVal = field("positions");
+        if (present(pVal)) {
             if (!ev::isTypedArray(pVal)) {
                 return ev::throwTypeError("expected a Float32Array, got a non-typed-array object");
             }
@@ -32,10 +31,10 @@ Value meshConstructor(Value, std::span<const Value> args) {
             }
             hm->mesh.positions = toFloatVector(pVal);
         }
-        if (!ev::isUndefined(nVal) && !ev::isNull(nVal)) hm->mesh.normals = toFloatVector(nVal);
-        if (!ev::isUndefined(uVal) && !ev::isNull(uVal)) hm->mesh.uvs = toFloatVector(uVal);
-        if (!ev::isUndefined(cVal) && !ev::isNull(cVal)) hm->mesh.colors = toFloatVector(cVal);
-        if (!ev::isUndefined(iVal) && !ev::isNull(iVal)) hm->mesh.indices = toUint32Vector(iVal);
+        if (Value v = field("normals"); present(v)) hm->mesh.normals = toFloatVector(v);
+        if (Value v = field("uvs"); present(v)) hm->mesh.uvs = toFloatVector(v);
+        if (Value v = field("colors"); present(v)) hm->mesh.colors = toFloatVector(v);
+        if (Value v = field("indices"); present(v)) hm->mesh.indices = toUint32Vector(v);
     } else {
         // Positional arguments: positions, normals, uvs, colors, indices
         if (args.size() > 0 && !ev::isUndefined(args[0])) hm->mesh.positions = toFloatVector(args[0]);
@@ -217,13 +216,13 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
         return out.build();
     });
     proto.def("computeBBox", 0, [](Value self, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(self, "bounds"), self, a).value;
+        return callMethod(self, "bounds", a);
     });
     proto.def("computeVolume", 0, [](Value self, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(self, "volume"), self, a).value;
+        return callMethod(self, "volume", a);
     });
     proto.def("computeSurfaceArea", 0, [](Value self, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(self, "surfaceArea"), self, a).value;
+        return callMethod(self, "surfaceArea", a);
     });
 
     // ---- In-place transforms -----------------------------------------------
@@ -286,12 +285,13 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.transform: not a Mesh instance");
         if (a.empty()) return self;
+        ev::Persistent selfP(self);  // toFloatVector may allocate
         std::vector<float> mat = toFloatVector(a[0]);
         if (mat.size() != 16) {
             return ev::throwTypeError("Mesh.transform: matrix must have 16 elements, got " + std::to_string(mat.size()));
         }
         bromesh::transformMesh(m->mesh, mat.data());
-        return self;
+        return selfP.get();
     });
 
 
@@ -467,10 +467,10 @@ void ensureMeshClassesInstalled() {
 
     auto objVal = ev::globalValue("Object");
     if (objVal.found && ev::isObject(objVal.value)) {
-        Value createFn = ev::getProperty(objVal.value, "create");
+        Rooted createFn(ev::getProperty(objVal.value, "create"));
         if (ev::isFunction(createFn)) {
             Value baseProto = g_meshClass.prototype();
-            Value subProto = ev::call(createFn, ev::undefined(), std::span<const Value>(&baseProto, 1)).value;
+            Value subProto = ev::call(createFn.get(), ev::undefined(), std::span<const Value>(&baseProto, 1)).value;
             if (ev::isObject(subProto)) {
                 g_meshClass.setInstancePrototype(subProto);
             }

@@ -66,9 +66,17 @@ if(BROMESH_ENABLE_API AND TARGET bromesh_api)
         message(STATUS "bromesh: test_mesh_api not registered (brass has no code generator for this target)")
     else()
         add_test(NAME test_mesh_api COMMAND test_mesh_api)
+        # The same suite with bronze's collector flipping at every allocation:
+        # a raw Value held across an allocating embed call in a binding
+        # crashes or misreads here where the normal run happens to pass.
+        add_test(NAME test_mesh_api_gcstress COMMAND test_mesh_api)
         if(WIN32)
             set_tests_properties(test_mesh_api PROPERTIES
                 ENVIRONMENT "PATH=$<TARGET_FILE_DIR:bronze_runtime_shared>;$<TARGET_FILE_DIR:test_mesh_api>;$ENV{PATH}")
+            set_tests_properties(test_mesh_api_gcstress PROPERTIES
+                ENVIRONMENT "BRONZE_GC_STRESS=1;PATH=$<TARGET_FILE_DIR:bronze_runtime_shared>;$<TARGET_FILE_DIR:test_mesh_api>;$ENV{PATH}")
+        else()
+            set_tests_properties(test_mesh_api_gcstress PROPERTIES ENVIRONMENT "BRONZE_GC_STRESS=1")
         endif()
     endif()
 endif()

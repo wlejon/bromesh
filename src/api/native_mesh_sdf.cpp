@@ -15,21 +15,22 @@ HostClass g_sdfGraphClass;
 static bromath::Vec3 readVec3Param(Value v) {
     bromath::Vec3 r{0.0f, 0.0f, 0.0f};
     if (!ev::isObject(v)) return r;
-    Value x = ev::getProperty(v, "x");
+    // Rooted: each read may allocate. Numbers are immediates, so a component
+    // read is converted at once and nothing but the root is held across.
+    ev::Persistent obj(v);
+    auto comp = [](Value c, float& out) {
+        if (ev::isNumber(c)) out = static_cast<float>(ev::toDouble(c));
+    };
+    Value x = ev::getProperty(obj.get(), "x");
     if (ev::isNumber(x)) {
         r.x = static_cast<float>(ev::toDouble(x));
-        Value y = ev::getProperty(v, "y");
-        Value z = ev::getProperty(v, "z");
-        r.y = ev::isNumber(y) ? static_cast<float>(ev::toDouble(y)) : 0.0f;
-        r.z = ev::isNumber(z) ? static_cast<float>(ev::toDouble(z)) : 0.0f;
+        comp(ev::getProperty(obj.get(), "y"), r.y);
+        comp(ev::getProperty(obj.get(), "z"), r.z);
         return r;
     }
-    Value e0 = ev::getElement(v, 0);
-    Value e1 = ev::getElement(v, 1);
-    Value e2 = ev::getElement(v, 2);
-    if (ev::isNumber(e0)) r.x = static_cast<float>(ev::toDouble(e0));
-    if (ev::isNumber(e1)) r.y = static_cast<float>(ev::toDouble(e1));
-    if (ev::isNumber(e2)) r.z = static_cast<float>(ev::toDouble(e2));
+    comp(ev::getElement(obj.get(), 0), r.x);
+    comp(ev::getElement(obj.get(), 1), r.y);
+    comp(ev::getElement(obj.get(), 2), r.z);
     return r;
 }
 
@@ -45,12 +46,15 @@ static bromath::Vec3 parseVec3(std::span<const Value> a, size_t& idx) {
 
 static bromath::AABB3 parseBounds(Value v, bromath::AABB3 def = {{-2.0f, -2.0f, -2.0f}, {2.0f, 2.0f, 2.0f}}) {
     if (ev::isObject(v)) {
-        Value minVal = ev::getProperty(v, "min");
-        Value maxVal = ev::getProperty(v, "max");
-        if (ev::isObject(minVal) && ev::isObject(maxVal)) {
-            return {readVec3Param(minVal), readVec3Param(maxVal)};
+        ev::Persistent obj(v);  // rooted across the allocating reads
+        ev::Persistent minVal(ev::getProperty(obj.get(), "min"));
+        ev::Persistent maxVal(ev::getProperty(obj.get(), "max"));
+        if (ev::isObject(minVal.get()) && ev::isObject(maxVal.get())) {
+            const bromath::Vec3 lo = readVec3Param(minVal.get());
+            const bromath::Vec3 hi = readVec3Param(maxVal.get());
+            return {lo, hi};
         }
-        Value sizeVal = ev::getProperty(v, "size");
+        Value sizeVal = ev::getProperty(obj.get(), "size");
         if (ev::isNumber(sizeVal)) {
             float s = static_cast<float>(ev::toDouble(sizeVal));
             return {{-s, -s, -s}, {s, s, s}};
@@ -74,45 +78,47 @@ static SdfMeshOptions parseMeshOptions(Value optsVal) {
     if (!ev::isObject(optsVal)) {
         return opt;
     }
+    ev::Persistent opts(optsVal);  // rooted: every read below may allocate
 
-    Value dimsVal = ev::getProperty(optsVal, "dims");
-    if (ev::isObject(dimsVal)) {
-        Value d0 = ev::getElement(dimsVal, 0);
-        Value d1 = ev::getElement(dimsVal, 1);
-        Value d2 = ev::getElement(dimsVal, 2);
-        if (ev::isNumber(d0)) opt.dimX = static_cast<int>(ev::toDouble(d0));
-        if (ev::isNumber(d1)) opt.dimY = static_cast<int>(ev::toDouble(d1));
-        if (ev::isNumber(d2)) opt.dimZ = static_cast<int>(ev::toDouble(d2));
-    } else if (ev::isNumber(dimsVal)) {
-        int d = static_cast<int>(ev::toDouble(dimsVal));
-        opt.dimX = opt.dimY = opt.dimZ = d;
+    {
+        ev::Persistent dims(ev::getProperty(opts.get(), "dims"));
+        if (ev::isObject(dims.get())) {
+            int* out[3] = {&opt.dimX, &opt.dimY, &opt.dimZ};
+            for (uint32_t i = 0; i < 3; ++i) {
+                Value d = ev::getElement(dims.get(), i);
+                if (ev::isNumber(d)) *out[i] = static_cast<int>(ev::toDouble(d));
+            }
+        } else if (ev::isNumber(dims.get())) {
+            int d = static_cast<int>(ev::toDouble(dims.get()));
+            opt.dimX = opt.dimY = opt.dimZ = d;
+        }
     }
 
-    Value resVal = ev::getProperty(optsVal, "resolution");
+    Value resVal = ev::getProperty(opts.get(), "resolution");
     if (ev::isNumber(resVal)) {
         int d = static_cast<int>(ev::toDouble(resVal));
         opt.dimX = opt.dimY = opt.dimZ = d;
     }
 
-    Value dx = ev::getProperty(optsVal, "dimX");
+    Value dx = ev::getProperty(opts.get(), "dimX");
     if (ev::isNumber(dx)) opt.dimX = static_cast<int>(ev::toDouble(dx));
-    Value dy = ev::getProperty(optsVal, "dimY");
+    Value dy = ev::getProperty(opts.get(), "dimY");
     if (ev::isNumber(dy)) opt.dimY = static_cast<int>(ev::toDouble(dy));
-    Value dz = ev::getProperty(optsVal, "dimZ");
+    Value dz = ev::getProperty(opts.get(), "dimZ");
     if (ev::isNumber(dz)) opt.dimZ = static_cast<int>(ev::toDouble(dz));
 
-    Value boundsVal = ev::getProperty(optsVal, "bounds");
+    Value boundsVal = ev::getProperty(opts.get(), "bounds");
     if (!ev::isUndefined(boundsVal)) {
         opt.bounds = parseBounds(boundsVal, opt.bounds);
     }
 
-    Value isoVal = ev::getProperty(optsVal, "isoLevel");
+    Value isoVal = ev::getProperty(opts.get(), "isoLevel");
     if (ev::isNumber(isoVal)) opt.isoLevel = static_cast<float>(ev::toDouble(isoVal));
 
-    Value cbVal = ev::getProperty(optsVal, "closeBoundary");
+    Value cbVal = ev::getProperty(opts.get(), "closeBoundary");
     if (ev::isBool(cbVal)) opt.closeBoundary = ev::toBool(cbVal);
 
-    Value cgVal = ev::getProperty(optsVal, "computeGradients");
+    Value cgVal = ev::getProperty(opts.get(), "computeGradients");
     if (ev::isBool(cgVal)) opt.computeGradients = ev::toBool(cgVal);
 
     return opt;

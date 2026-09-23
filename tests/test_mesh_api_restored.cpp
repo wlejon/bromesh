@@ -149,3 +149,86 @@ void bromeshTestRestoredSurface() {
     }
     std::cout << "  restored Mesh/Skeleton members OK." << std::endl;
 }
+
+// Bindings fixed during the GC-rooting audit. Every path here reads several
+// properties or calls back into JS, so under BRONZE_GC_STRESS=1 a raw Value
+// held across one of those allocations would crash or misread.
+void bromeshTestBindingFixes() {
+    std::cout << "[fixes] Exercising the bindings fixed in the GC audit..." << std::endl;
+
+    const char* script = R"JS(
+        // ── SkinData weights/indices aliases return the arrays ─────────────
+        const sd = new SkinData({ weights: [1, 0, 0, 0, 0.5, 0.5, 0, 0], indices: [0, 0, 0, 0, 0, 1, 0, 0], boneCount: 2 });
+        if (!(sd.weights instanceof Float32Array)) throw new Error("SkinData.weights is not a Float32Array: " + sd.weights);
+        if (sd.weights.length !== 8 || sd.weights[4] !== 0.5) throw new Error("SkinData.weights has the wrong contents");
+        if (!(sd.indices instanceof Uint32Array)) throw new Error("SkinData.indices is not a Uint32Array: " + sd.indices);
+        if (sd.indices[5] !== 1) throw new Error("SkinData.indices has the wrong contents");
+
+        // ── alias methods forward to their targets and propagate throws ────
+        const box = Mesh.box(1, 1, 1);  // half-extents: a 2x2x2 cube
+        const bb = box.computeBBox();
+        if (!bb || Math.abs(bb.max[0] - bb.min[0] - 2) > 1e-4) throw new Error("computeBBox did not forward to bounds()");
+        if (Math.abs(box.computeVolume() - 8) > 1e-3) throw new Error("computeVolume did not forward to volume()");
+        let threw = false;
+        try { box.union(42); } catch (e) { threw = true; }
+        if (!threw) throw new Error("union(non-mesh) should throw, not return the error");
+
+        // ── transvoxel honours neighborLods ────────────────────────────────
+        // The plane y = 4.3 crosses the +X face. A coarser +X neighbour
+        // (LOD 1, 2-cell grid) snaps that face's vertices onto its grid, so
+        // they drop to y = 4 while the no-neighbour chunk stays flat at 4.3.
+        const G = 9;
+        const field = new Float32Array(G * G * G);
+        for (let z = 0; z < G; z++) for (let y = 0; y < G; y++) for (let x = 0; x < G; x++)
+            field[(z * G + y) * G + x] = y - 4.3;
+        const plain = Mesh.transvoxel(field, G, 0, [-1, -1, -1, -1, -1, -1], 0, 1);
+        const seam = Mesh.transvoxel(field, G, 0, [1, -1, -1, -1, -1, -1], 0, 1);
+        if (plain.triangleCount === 0) throw new Error("transvoxel produced no surface");
+        if (Math.abs(plain.bounds().min[1] - 4.3) > 1e-3) throw new Error("transvoxel plane is not at y=4.3");
+        if (Math.abs(seam.bounds().min[1] - 4.0) > 1e-3)
+            throw new Error("transvoxel ignored neighborLods (minY " + seam.bounds().min[1] + ")");
+        threw = false;
+        try { Mesh.transvoxel(new Float32Array(8), G); } catch (e) { threw = true; }
+        if (!threw) throw new Error("transvoxel should reject a field smaller than gridSize^3");
+
+        // ── IK option-object wrappers reach the positional solvers ─────────
+        const skel = new Skeleton({ bones: [
+            { name: "root", parent: -1, localT: [0, 0, 0] },
+            { name: "mid",  parent: 0,  localT: [0, 1, 0] },
+            { name: "end",  parent: 1,  localT: [0, 1, 0] }
+        ]});
+        const pose = skel.bindPose();
+        const r1 = IK.solveTwoBone({ skel, pose, root: 0, mid: 1, end: 2, targetPos: [1, 1, 0], poleVector: [0, 0, 1] });
+        if (typeof r1 !== "boolean") throw new Error("solveTwoBone should return a boolean");
+        const r2 = IK.solveFabrik({ skel, pose, chain: [0, 1, 2], targetPos: [0.5, 1.5, 0], maxIterations: 20, tolerance: 1e-4 });
+        if (typeof r2 !== "boolean") throw new Error("solveFabrik should return a boolean");
+        const r3 = IK.solveLookAt({ skel, pose, bone: 0, targetPos: [1, 0, 0], forward: [0, 1, 0], up: [0, 0, 1] });
+        if (typeof r3 !== "boolean") throw new Error("solveLookAt should return a boolean");
+        threw = false;
+        try { IK.solveTwoBone({ skel, pose, root: 0, mid: 1, end: 2 }); } catch (e) { threw = true; }
+        if (!threw) throw new Error("solveTwoBone without targetPos should throw");
+
+        // ── applyMorphTarget object form returns this and moves vertices ───
+        const mm = Mesh.box(1, 1, 1);
+        const n = mm.vertexCount;
+        const dp = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) dp[i * 3 + 1] = 1;
+        const y0 = mm.bounds().max[1];
+        if (mm.applyMorphTarget({ name: "up", deltaPositions: dp, weight: 0.5 }) !== mm)
+            throw new Error("applyMorphTarget should return this");
+        if (Math.abs(mm.bounds().max[1] - (y0 + 0.5)) > 1e-4) throw new Error("applyMorphTarget weight not applied");
+
+        "SUCCESS";
+    )JS";
+
+    auto res = bronze::eval::evalScript(script);
+    if (res.thrown) {
+        std::cerr << "  binding-fixes script threw: " << ev::toUtf8(res.value) << std::endl;
+        std::exit(1);
+    }
+    if (ev::toUtf8(res.value) != "SUCCESS") {
+        std::cerr << "  binding-fixes script returned: " << ev::toUtf8(res.value) << std::endl;
+        std::exit(1);
+    }
+    std::cout << "  binding fixes OK." << std::endl;
+}

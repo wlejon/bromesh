@@ -364,32 +364,34 @@ inline std::vector<float> toFloatVector(Value val) {
     }
     std::vector<float> result;
     if (ev::isObject(val)) {
-        Value lenVal = ev::getProperty(val, "length");
+        // Property/element reads may allocate (getters, lazy shapes), so the
+        // array and each element are rooted; the component reads are
+        // converted to doubles at once, since a number is an immediate.
+        ev::Persistent arr(val);
+        Value lenVal = ev::getProperty(arr.get(), "length");
         if (ev::isNumber(lenVal)) {
             size_t n = static_cast<size_t>(ev::toDouble(lenVal));
             result.reserve(n);
+            auto num = [](Value v, double& out) {
+                if (ev::isUndefined(v)) return false;
+                out = ev::toDouble(v);
+                return true;
+            };
             for (size_t i = 0; i < n; ++i) {
-                Value elem = ev::getElement(val, static_cast<uint32_t>(i));
-                if (ev::isNumber(elem)) {
-                    result.push_back(static_cast<float>(ev::toDouble(elem)));
-                } else if (ev::isObject(elem)) {
-                    // Possible [x, y, z] or {x, y, z}
-                    Value x = ev::getProperty(elem, "x");
-                    Value y = ev::getProperty(elem, "y");
-                    Value z = ev::getProperty(elem, "z");
-                    if (!ev::isUndefined(x) && !ev::isUndefined(y) && !ev::isUndefined(z)) {
-                        result.push_back(static_cast<float>(ev::toDouble(x)));
-                        result.push_back(static_cast<float>(ev::toDouble(y)));
-                        result.push_back(static_cast<float>(ev::toDouble(z)));
-                    } else {
-                        Value e0 = ev::getElement(elem, 0);
-                        Value e1 = ev::getElement(elem, 1);
-                        Value e2 = ev::getElement(elem, 2);
-                        if (!ev::isUndefined(e0) && !ev::isUndefined(e1) && !ev::isUndefined(e2)) {
-                            result.push_back(static_cast<float>(ev::toDouble(e0)));
-                            result.push_back(static_cast<float>(ev::toDouble(e1)));
-                            result.push_back(static_cast<float>(ev::toDouble(e2)));
-                        }
+                ev::Persistent elem(ev::getElement(arr.get(), static_cast<uint32_t>(i)));
+                if (ev::isNumber(elem.get())) {
+                    result.push_back(static_cast<float>(ev::toDouble(elem.get())));
+                } else if (ev::isObject(elem.get())) {
+                    // Possible {x, y, z} or [x, y, z]
+                    double c[3];
+                    if (num(ev::getProperty(elem.get(), "x"), c[0]) &&
+                        num(ev::getProperty(elem.get(), "y"), c[1]) &&
+                        num(ev::getProperty(elem.get(), "z"), c[2])) {
+                        for (double d : c) result.push_back(static_cast<float>(d));
+                    } else if (num(ev::getElement(elem.get(), 0), c[0]) &&
+                               num(ev::getElement(elem.get(), 1), c[1]) &&
+                               num(ev::getElement(elem.get(), 2), c[2])) {
+                        for (double d : c) result.push_back(static_cast<float>(d));
                     }
                 }
             }
@@ -406,12 +408,13 @@ inline std::vector<uint32_t> toUint32Vector(Value val) {
     }
     std::vector<uint32_t> result;
     if (ev::isObject(val)) {
-        Value lenVal = ev::getProperty(val, "length");
+        ev::Persistent arr(val);  // rooted across the allocating reads
+        Value lenVal = ev::getProperty(arr.get(), "length");
         if (ev::isNumber(lenVal)) {
             size_t n = static_cast<size_t>(ev::toDouble(lenVal));
             result.reserve(n);
             for (size_t i = 0; i < n; ++i) {
-                Value elem = ev::getElement(val, static_cast<uint32_t>(i));
+                Value elem = ev::getElement(arr.get(), static_cast<uint32_t>(i));
                 result.push_back(static_cast<uint32_t>(ev::toDouble(elem)));
             }
         }
@@ -427,12 +430,13 @@ inline std::vector<uint8_t> toUint8Vector(Value val) {
     }
     std::vector<uint8_t> result;
     if (ev::isObject(val)) {
-        Value lenVal = ev::getProperty(val, "length");
+        ev::Persistent arr(val);  // rooted across the allocating reads
+        Value lenVal = ev::getProperty(arr.get(), "length");
         if (ev::isNumber(lenVal)) {
             size_t n = static_cast<size_t>(ev::toDouble(lenVal));
             result.reserve(n);
             for (size_t i = 0; i < n; ++i) {
-                Value elem = ev::getElement(val, static_cast<uint32_t>(i));
+                Value elem = ev::getElement(arr.get(), static_cast<uint32_t>(i));
                 result.push_back(static_cast<uint8_t>(ev::toDouble(elem)));
             }
         }

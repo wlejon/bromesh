@@ -15,12 +15,13 @@ namespace {
 std::vector<std::vector<float>> readContours(Value v) {
     std::vector<std::vector<float>> contours;
     if (!ev::isObject(v)) return contours;
-    Value lenV = ev::getProperty(v, "length");
+    ev::Persistent list(v);  // rooted across the allocating reads below
+    Value lenV = ev::getProperty(list.get(), "length");
     if (!ev::isNumber(lenV)) return contours;
     const size_t len = static_cast<size_t>(ev::toDouble(lenV));
     contours.reserve(len);
     for (size_t i = 0; i < len; ++i) {
-        contours.push_back(toFloatVector(ev::getElement(v, static_cast<uint32_t>(i))));
+        contours.push_back(toFloatVector(ev::getElement(list.get(), static_cast<uint32_t>(i))));
     }
     return contours;
 }
@@ -216,7 +217,7 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     });
 
     proto.def("computeCurvature", 1, [](Value self, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(self, "curvature"), self, a).value;
+        return callMethod(self, "curvature", a);
     });
 
     proto.def("triangleAreas", 0, [](Value self, std::span<const Value>) -> Value {
@@ -309,9 +310,10 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     proto.def("buildBVH", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.buildBVH: not a Mesh instance");
-        Value bvhCtor = g_meshBvhClass.constructor();
+        // No allocation between reading self and the call.
         std::array<Value, 2> args = {self, a.empty() ? ev::fromDouble(8.0) : a[0]};
-        return ev::call(bvhCtor, ev::undefined(), args).value;
+        ev::CallResult r = ev::call(g_meshBvhClass.constructor(), ev::undefined(), args);
+        return r.thrown ? ev::throwValue(r.value) : r.value;
     });
 
     // ---- UV Operations -----------------------------------------------------
@@ -357,9 +359,9 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         std::string method = "unwrap";
         if (!a.empty() && ev::isString(a[0])) method = ev::toUtf8(a[0]);
         if (method == "unwrap" || method == "xatlas") {
-            return ev::call(ev::getProperty(self, "unwrapUVs"), self, {}).value;
+            return callMethod(self, "unwrapUVs", {});
         }
-        return ev::call(ev::getProperty(self, "projectUVs"), self, std::array<Value, 2>{a[0], ev::fromDouble(1.0)}).value;
+        return callMethod(self, "projectUVs", std::array<Value, 2>{a[0], ev::fromDouble(1.0)});
     });
 
     proto.def("computeUVDistortion", 0, [](Value self, std::span<const Value>) -> Value {
@@ -399,13 +401,18 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         size_t maxT = 124;
         float coneW = 0.5f;
         if (!a.empty() && ev::isObject(a[0])) {
-            Value opts = a[0];
-            Value mv = ev::getProperty(opts, "maxVertices");
-            Value mt = ev::getProperty(opts, "maxTriangles");
-            Value cw = ev::getProperty(opts, "coneWeight");
-            if (!ev::isUndefined(mv) && !ev::isNull(mv)) maxV = static_cast<size_t>(ev::toDouble(mv));
-            if (!ev::isUndefined(mt) && !ev::isNull(mt)) maxT = static_cast<size_t>(ev::toDouble(mt));
-            if (!ev::isUndefined(cw) && !ev::isNull(cw)) coneW = static_cast<float>(ev::toDouble(cw));
+            // a[0] is the rooted slot; only numbers are kept across reads.
+            auto num = [&](const char* key, double& out) {
+                Value v = ev::getProperty(a[0], key);
+                if (ev::isNumber(v)) out = ev::toDouble(v);
+            };
+            double mv = static_cast<double>(maxV), mt = static_cast<double>(maxT), cw = coneW;
+            num("maxVertices", mv);
+            num("maxTriangles", mt);
+            num("coneWeight", cw);
+            maxV = static_cast<size_t>(mv);
+            maxT = static_cast<size_t>(mt);
+            coneW = static_cast<float>(cw);
         } else {
             ArgReader r(a);
             maxV = static_cast<size_t>(r.getInt(0, 64));
@@ -484,14 +491,15 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
             return mo.build();
         });
 
-        ev::setProperty(arr, "meshletCount", ev::fromDouble(static_cast<double>(meshlets.size())));
-        ev::Persistent vBuf(makeUint32Array(allVertices.data(), allVertices.size()));
-        ev::setProperty(arr, "vertices", vBuf.get());
-        ev::Persistent tBuf(makeUint8Array(allTriangles.data(), allTriangles.size()));
-        ev::setProperty(arr, "triangles", tBuf.get());
-        ev::Persistent rBuf(makeUint8Array(records.data(), records.size()));
-        ev::setProperty(arr, "meshlets", ev::getProperty(rBuf.get(), "buffer"));
-        return arr;
+        ObjectBuilder out(arr);  // rooted: every step below allocates
+        out.set("meshletCount", static_cast<double>(meshlets.size()));
+        out.set("vertices", makeUint32Array(allVertices.data(), allVertices.size()));
+        out.set("triangles", makeUint8Array(allTriangles.data(), allTriangles.size()));
+        {
+            ev::Persistent rBuf(makeUint8Array(records.data(), records.size()));
+            out.set("meshlets", ev::getProperty(rBuf.get(), "buffer"));
+        }
+        return out.build();
     });
 
 
@@ -621,26 +629,26 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
 
     bindStatic("decode", 1, [](Value, std::span<const Value> a) -> Value {
         if (a.empty() || !ev::isObject(a[0])) return ev::throwTypeError("Mesh.decode: encoded object required");
-        Value encVal = a[0];
+        // a[0] is the rooted slot, re-read for every field; numbers and
+        // bools are immediates, so those reads may be held.
         bromesh::EncodedMesh enc;
-        enc.vertexData = toUint8Vector(ev::getProperty(encVal, "vertexData"));
-        enc.indexData = toUint8Vector(ev::getProperty(encVal, "indexData"));
-        Value vc = ev::getProperty(encVal, "vertexCount");
-        Value vs = ev::getProperty(encVal, "vertexSize");
-        Value ic = ev::getProperty(encVal, "indexCount");
-        enc.vertexCount = ev::isNumber(vc) ? static_cast<size_t>(ev::toDouble(vc)) : 0;
-        enc.vertexSize = ev::isNumber(vs) ? static_cast<size_t>(ev::toDouble(vs)) : 0;
-        enc.indexCount = ev::isNumber(ic) ? static_cast<size_t>(ev::toDouble(ic)) : 0;
+        enc.vertexData = toUint8Vector(ev::getProperty(a[0], "vertexData"));
+        enc.indexData = toUint8Vector(ev::getProperty(a[0], "indexData"));
+        auto count = [&](const char* key) -> size_t {
+            Value v = ev::getProperty(a[0], key);
+            return ev::isNumber(v) ? static_cast<size_t>(ev::toDouble(v)) : 0;
+        };
+        enc.vertexCount = count("vertexCount");
+        enc.vertexSize = count("vertexSize");
+        enc.indexCount = count("indexCount");
 
-        bool hasNormals = true;
-        bool hasUVs = true;
-        bool hasColors = false;
-        Value hn = ev::getProperty(encVal, "hasNormals");
-        Value hu = ev::getProperty(encVal, "hasUVs");
-        Value hc = ev::getProperty(encVal, "hasColors");
-        if (ev::isBool(hn)) hasNormals = ev::toBool(hn);
-        if (ev::isBool(hu)) hasUVs = ev::toBool(hu);
-        if (ev::isBool(hc)) hasColors = ev::toBool(hc);
+        auto flag = [&](const char* key, bool def) {
+            Value v = ev::getProperty(a[0], key);
+            return ev::isBool(v) ? ev::toBool(v) : def;
+        };
+        const bool hasNormals = flag("hasNormals", true);
+        const bool hasUVs = flag("hasUVs", true);
+        const bool hasColors = flag("hasColors", false);
 
         bromesh::MeshData mesh = bromesh::decodeMesh(enc, hasNormals, hasUVs, hasColors);
         return wrapMesh(std::move(mesh));
@@ -714,7 +722,7 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         return wrapMesh(bromesh::dualContour(field.data(), gx, gy, gz, iso));
     });
     bindStatic("dualContour", 5, [](Value, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(g_meshClass.constructor(), "dualContouring"), ev::undefined(), a).value;
+        return callMethod(g_meshClass.constructor(), "dualContouring", a);
     });
 
     bindStatic("transvoxel", 6, [](Value, std::span<const Value> a) -> Value {
@@ -723,9 +731,20 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         ArgReader r(a);
         int gSize = r.getInt(1, 16);
         int lod = r.getInt(2, 0);
-        int nlods[6] = {0, 0, 0, 0, 0, 0};
+        // Neighbour LODs [+X, -X, +Y, -Y, +Z, -Z]; -1 = no neighbour (world
+        // edge). A neighbour at a coarser LOD gets transition cells.
+        int nlods[6] = {-1, -1, -1, -1, -1, -1};
+        if (a.size() > 3 && ev::isObject(a[3])) {
+            for (uint32_t i = 0; i < 6; ++i) {
+                Value e = ev::getElement(a[3], i);
+                if (ev::isNumber(e)) nlods[i] = static_cast<int>(ev::toDouble(e));
+            }
+        }
         float iso = static_cast<float>(r.getDouble(4, 0.0));
         float cell = static_cast<float>(r.getDouble(5, 1.0));
+        if (gSize < 2 || field.size() < static_cast<size_t>(gSize) * gSize * gSize) {
+            return ev::throwTypeError("Mesh.transvoxel: values must hold gridSize^3 samples");
+        }
         return wrapMesh(bromesh::transvoxel(field.data(), gSize, lod, nlods, iso, cell));
     });
 

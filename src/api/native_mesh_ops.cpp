@@ -248,6 +248,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (a.empty()) return ev::throwTypeError("Mesh.shrinkwrap: target mesh required");
         auto* target = unwrapMesh(a[0]);
         if (!target) return ev::throwTypeError("Mesh.shrinkwrap: target must be a Mesh");
+        ev::Persistent selfP(self);  // the axis read below may allocate
         int mode = 0;
         if (a.size() > 1) {
             if (ev::isString(a[1])) {
@@ -272,7 +273,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
             }
         }
         bromesh::shrinkwrap(m->mesh, target->mesh, static_cast<bromesh::ShrinkwrapMode>(mode), maxDist, offset, axisPtr);
-        return self;
+        return selfP.get();
     });
 
 
@@ -374,13 +375,13 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
 
     // Aliases
     proto.def("union", 1, [](Value self, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(self, "booleanUnion"), self, a).value;
+        return callMethod(self, "booleanUnion", a);
     });
     proto.def("subtract", 1, [](Value self, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(self, "booleanDifference"), self, a).value;
+        return callMethod(self, "booleanDifference", a);
     });
     proto.def("intersect", 1, [](Value self, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(self, "booleanIntersection"), self, a).value;
+        return callMethod(self, "booleanIntersection", a);
     });
 
     // ---- Baking ------------------------------------------------------------
@@ -544,7 +545,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         return wrapMesh(bromesh::booleanUnion(ma->mesh, mb->mesh));
     });
     bindStatic("union", 2, [](Value, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(g_meshClass.constructor(), "booleanUnion"), ev::undefined(), a).value;
+        return callMethod(g_meshClass.constructor(), "booleanUnion", a);
     });
 
     bindStatic("booleanDifference", 2, [](Value, std::span<const Value> a) -> Value {
@@ -555,7 +556,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         return wrapMesh(bromesh::booleanDifference(ma->mesh, mb->mesh));
     });
     bindStatic("subtract", 2, [](Value, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(g_meshClass.constructor(), "booleanDifference"), ev::undefined(), a).value;
+        return callMethod(g_meshClass.constructor(), "booleanDifference", a);
     });
 
     bindStatic("booleanIntersection", 2, [](Value, std::span<const Value> a) -> Value {
@@ -566,7 +567,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         return wrapMesh(bromesh::booleanIntersection(ma->mesh, mb->mesh));
     });
     bindStatic("intersect", 2, [](Value, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(g_meshClass.constructor(), "booleanIntersection"), ev::undefined(), a).value;
+        return callMethod(g_meshClass.constructor(), "booleanIntersection", a);
     });
 
     bindStatic("convexHull", 1, [](Value, std::span<const Value> a) -> Value {
@@ -634,16 +635,13 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (m) {
             mesh = m->mesh;
         } else if (ev::isObject(a[0])) {
-            Value posVal = ev::getProperty(a[0], "positions");
-            Value idxVal = ev::getProperty(a[0], "indices");
-            Value normVal = ev::getProperty(a[0], "normals");
-            Value uvVal = ev::getProperty(a[0], "uvs");
-            Value colVal = ev::getProperty(a[0], "colors");
-            mesh.positions = toFloatVector(posVal);
-            mesh.indices = toUint32Vector(idxVal);
-            if (!ev::isUndefined(normVal)) mesh.normals = toFloatVector(normVal);
-            if (!ev::isUndefined(uvVal)) mesh.uvs = toFloatVector(uvVal);
-            if (!ev::isUndefined(colVal)) mesh.colors = toFloatVector(colVal);
+            // Each field is read right before it is converted: a read (and a
+            // conversion) may allocate, which would stale an earlier read.
+            mesh.positions = toFloatVector(ev::getProperty(a[0], "positions"));
+            mesh.indices = toUint32Vector(ev::getProperty(a[0], "indices"));
+            if (Value v = ev::getProperty(a[0], "normals"); !ev::isUndefined(v)) mesh.normals = toFloatVector(v);
+            if (Value v = ev::getProperty(a[0], "uvs"); !ev::isUndefined(v)) mesh.uvs = toFloatVector(v);
+            if (Value v = ev::getProperty(a[0], "colors"); !ev::isUndefined(v)) mesh.colors = toFloatVector(v);
         } else {
             return ev::throwTypeError("Mesh.encodeDraco: first argument must be a Mesh or object");
         }

@@ -104,17 +104,19 @@ std::vector<int32_t> toInt32Vector(Value val) {
 void readVec3Into(Value v, float out[3]) {
     out[0] = out[1] = out[2] = 0.0f;
     if (!ev::isObject(v)) return;
-    Value x = ev::getProperty(v, "x");
+    ev::Persistent obj(v);  // rooted across the allocating reads
+    Value x = ev::getProperty(obj.get(), "x");
     if (ev::isNumber(x)) {
-        Value y = ev::getProperty(v, "y");
-        Value z = ev::getProperty(v, "z");
+        // Numbers are immediates: x/y stay valid across the later reads.
+        Value y = ev::getProperty(obj.get(), "y");
+        Value z = ev::getProperty(obj.get(), "z");
         out[0] = static_cast<float>(ev::toDouble(x));
         if (ev::isNumber(y)) out[1] = static_cast<float>(ev::toDouble(y));
         if (ev::isNumber(z)) out[2] = static_cast<float>(ev::toDouble(z));
         return;
     }
     for (uint32_t i = 0; i < 3; ++i) {
-        Value e = ev::getElement(v, i);
+        Value e = ev::getElement(obj.get(), i);
         if (ev::isNumber(e)) out[i] = static_cast<float>(ev::toDouble(e));
     }
 }
@@ -137,12 +139,13 @@ Value makeSplatCloud(const bromesh::GaussianSplatCloud& c) {
 
 bool readSplatCloud(Value obj, bromesh::GaussianSplatCloud& cloud, std::string& err) {
     if (!ev::isObject(obj)) { err = "cloud must be an object"; return false; }
-    cloud.positions = toFloatVector(ev::getProperty(obj, "positions"));
-    cloud.scales = toFloatVector(ev::getProperty(obj, "scales"));
-    cloud.rotations = toFloatVector(ev::getProperty(obj, "rotations"));
-    cloud.opacities = toFloatVector(ev::getProperty(obj, "opacities"));
-    cloud.sh = toFloatVector(ev::getProperty(obj, "sh"));
-    Value shd = ev::getProperty(obj, "shDegree");
+    ev::Persistent o(obj);  // rooted across the allocating reads
+    cloud.positions = toFloatVector(ev::getProperty(o.get(), "positions"));
+    cloud.scales = toFloatVector(ev::getProperty(o.get(), "scales"));
+    cloud.rotations = toFloatVector(ev::getProperty(o.get(), "rotations"));
+    cloud.opacities = toFloatVector(ev::getProperty(o.get(), "opacities"));
+    cloud.sh = toFloatVector(ev::getProperty(o.get(), "sh"));
+    Value shd = ev::getProperty(o.get(), "shDegree");
     cloud.shDegree = ev::isNumber(shd) ? static_cast<int>(ev::toDouble(shd)) : 0;
     if (cloud.positions.empty()) { err = "cloud has no positions"; return false; }
     if (!cloud.validate()) { err = "attribute array lengths disagree with the point count"; return false; }

@@ -3,6 +3,40 @@
 
 namespace bromesh::api {
 
+namespace {
+
+// globalThis (undefined when the realm has none), rooted: every step of an
+// install allocates, and a raw Value is only good until the next allocation.
+ev::Persistent rootedGlobalThis() {
+    ev::GlobalValue gt = ev::globalValue("globalThis");
+    return ev::Persistent(gt.found && ev::isObject(gt.value) ? gt.value : ev::undefined());
+}
+
+// The realm's `bro` object, created (and published on globalThis) when no
+// earlier installer made it.
+ev::Persistent rootedBro(const ev::Persistent& globalThis) {
+    {
+        ev::GlobalValue g = ev::globalValue("bro");
+        if (g.found && ev::isObject(g.value)) return ev::Persistent(g.value);
+    }
+    if (ev::isObject(globalThis.get())) {
+        Value candidate = ev::getProperty(globalThis.get(), "bro");
+        if (ev::isObject(candidate)) return ev::Persistent(candidate);
+    }
+    ev::Persistent bro(ev::createObject());
+    ev::registerGlobal("bro", bro.get());
+    if (ev::isObject(globalThis.get())) ev::setProperty(globalThis.get(), "bro", bro.get());
+    return bro;
+}
+
+// Publish a constructor as a global binding and on globalThis.
+void publishGlobal(const ev::Persistent& globalThis, const char* name, const HostClass& cls) {
+    if (ev::isObject(globalThis.get())) ev::setProperty(globalThis.get(), name, cls.constructor());
+    ev::registerGlobal(name, cls.constructor());
+}
+
+}  // namespace
+
 Value makeMeshNamespace() {
     ObjectBuilder ns;
     ns.set("Mesh", g_meshClass.constructor());
@@ -68,13 +102,13 @@ Value makeRiggingNamespace() {
         ns.set("IK", ikGlobal.value);
     }
 
-    Value rigCtor = g_skeletonRigClass.constructor();
     const char* rigMethods[] = {
         "specFromFile", "detectHumanoid", "detectLandmarks", "detectQuadruped",
         "missingLandmarks", "fitSkeleton", "autoRig", "transferWeights"
     };
     for (const char* m : rigMethods) {
-        Value fn = ev::getProperty(rigCtor, m);
+        // Re-read the constructor from its root each round (ns.set allocates).
+        Value fn = ev::getProperty(g_skeletonRigClass.constructor(), m);
         if (ev::isFunction(fn)) {
             ns.set(m, fn);
         }
@@ -85,51 +119,20 @@ Value makeRiggingNamespace() {
 void installMesh() {
     ensureMeshClassesInstalled();
 
-    Value globalThisVal = ev::undefined();
-    auto gt = ev::globalValue("globalThis");
-    if (gt.found && ev::isObject(gt.value)) {
-        globalThisVal = gt.value;
-    }
-
-    Value broVal = ev::globalValue("bro").found ? ev::globalValue("bro").value : ev::undefined();
-    if (!ev::isObject(broVal)) {
-        if (!ev::isUndefined(globalThisVal)) {
-            Value candidate = ev::getProperty(globalThisVal, "bro");
-            if (ev::isObject(candidate)) {
-                broVal = candidate;
-            }
-        }
-    }
-    if (!ev::isObject(broVal)) {
-        broVal = ev::createObject();
-        ev::registerGlobal("bro", broVal);
-        if (!ev::isUndefined(globalThisVal)) {
-            ev::setProperty(globalThisVal, "bro", broVal);
-        }
-    }
-
-    ev::Persistent broP(broVal);
+    ev::Persistent globalThis = rootedGlobalThis();
+    ev::Persistent bro = rootedBro(globalThis);
 
     // Mount bro.mesh
     Value meshVal = makeMeshNamespace();
-    broP.set(ev::setProperty(broP.get(), "mesh", meshVal));
+    bro.set(ev::setProperty(bro.get(), "mesh", meshVal));
 
-    if (!ev::isUndefined(globalThisVal)) {
-        ev::setProperty(globalThisVal, "Mesh", g_meshClass.constructor());
-        ev::setProperty(globalThisVal, "MeshBVH", g_meshBvhClass.constructor());
-        ev::setProperty(globalThisVal, "ProgressiveMesh", g_progressiveMeshClass.constructor());
-        ev::setProperty(globalThisVal, "CapsuleField", g_capsuleFieldClass.constructor());
-        ev::setProperty(globalThisVal, "LSystem", g_lsystemClass.constructor());
-        ev::setProperty(globalThisVal, "PolyMesh", g_polyMeshClass.constructor());
-        ev::setProperty(globalThisVal, "SDFGraph", g_sdfGraphClass.constructor());
-    }
-    ev::registerGlobal("Mesh", g_meshClass.constructor());
-    ev::registerGlobal("MeshBVH", g_meshBvhClass.constructor());
-    ev::registerGlobal("ProgressiveMesh", g_progressiveMeshClass.constructor());
-    ev::registerGlobal("CapsuleField", g_capsuleFieldClass.constructor());
-    ev::registerGlobal("LSystem", g_lsystemClass.constructor());
-    ev::registerGlobal("PolyMesh", g_polyMeshClass.constructor());
-    ev::registerGlobal("SDFGraph", g_sdfGraphClass.constructor());
+    publishGlobal(globalThis, "Mesh", g_meshClass);
+    publishGlobal(globalThis, "MeshBVH", g_meshBvhClass);
+    publishGlobal(globalThis, "ProgressiveMesh", g_progressiveMeshClass);
+    publishGlobal(globalThis, "CapsuleField", g_capsuleFieldClass);
+    publishGlobal(globalThis, "LSystem", g_lsystemClass);
+    publishGlobal(globalThis, "PolyMesh", g_polyMeshClass);
+    publishGlobal(globalThis, "SDFGraph", g_sdfGraphClass);
 }
 
 bool isMeshValue(Value v) {
@@ -177,30 +180,8 @@ const bromesh::Animation* animationOf(Value v) {
 void installRigging() {
     ensureRiggingClassesInstalled();
 
-    Value globalThisVal = ev::undefined();
-    auto gt = ev::globalValue("globalThis");
-    if (gt.found && ev::isObject(gt.value)) {
-        globalThisVal = gt.value;
-    }
-
-    Value broVal = ev::globalValue("bro").found ? ev::globalValue("bro").value : ev::undefined();
-    if (!ev::isObject(broVal)) {
-        if (!ev::isUndefined(globalThisVal)) {
-            Value candidate = ev::getProperty(globalThisVal, "bro");
-            if (ev::isObject(candidate)) {
-                broVal = candidate;
-            }
-        }
-    }
-    if (!ev::isObject(broVal)) {
-        broVal = ev::createObject();
-        ev::registerGlobal("bro", broVal);
-        if (!ev::isUndefined(globalThisVal)) {
-            ev::setProperty(globalThisVal, "bro", broVal);
-        }
-    }
-
-    ev::Persistent broP(broVal);
+    ev::Persistent globalThis = rootedGlobalThis();
+    ev::Persistent broP = rootedBro(globalThis);
 
     // Mount bro.rigging
     Value rigVal = makeRiggingNamespace();
@@ -220,30 +201,17 @@ void installRigging() {
     }
 #endif
 
-    if (!ev::isUndefined(globalThisVal)) {
-        ev::setProperty(globalThisVal, "SkinData", g_skinDataClass.constructor());
-        ev::setProperty(globalThisVal, "Skeleton", g_skeletonClass.constructor());
-        ev::setProperty(globalThisVal, "Joint", g_jointClass.constructor());
-        ev::setProperty(globalThisVal, "SkeletonRig", g_skeletonRigClass.constructor());
-        ev::setProperty(globalThisVal, "RigSpec", g_skeletonRigClass.constructor());
-        ev::setProperty(globalThisVal, "Rig", g_skeletonRigClass.constructor());
-        ev::setProperty(globalThisVal, "Pose", g_poseClass.constructor());
-        ev::setProperty(globalThisVal, "AnimationClip", g_animationClass.constructor());
-        ev::setProperty(globalThisVal, "Animation", g_animationClass.constructor());
-        ev::setProperty(globalThisVal, "SkeletalAnimation", g_animationClass.constructor());
-        ev::setProperty(globalThisVal, "VoxelChunk", g_voxelChunkClass.constructor());
-    }
-    ev::registerGlobal("SkinData", g_skinDataClass.constructor());
-    ev::registerGlobal("Skeleton", g_skeletonClass.constructor());
-    ev::registerGlobal("Joint", g_jointClass.constructor());
-    ev::registerGlobal("SkeletonRig", g_skeletonRigClass.constructor());
-    ev::registerGlobal("RigSpec", g_skeletonRigClass.constructor());
-    ev::registerGlobal("Rig", g_skeletonRigClass.constructor());
-    ev::registerGlobal("Pose", g_poseClass.constructor());
-    ev::registerGlobal("AnimationClip", g_animationClass.constructor());
-    ev::registerGlobal("Animation", g_animationClass.constructor());
-    ev::registerGlobal("SkeletalAnimation", g_animationClass.constructor());
-    ev::registerGlobal("VoxelChunk", g_voxelChunkClass.constructor());
+    publishGlobal(globalThis, "SkinData", g_skinDataClass);
+    publishGlobal(globalThis, "Skeleton", g_skeletonClass);
+    publishGlobal(globalThis, "Joint", g_jointClass);
+    publishGlobal(globalThis, "SkeletonRig", g_skeletonRigClass);
+    publishGlobal(globalThis, "RigSpec", g_skeletonRigClass);
+    publishGlobal(globalThis, "Rig", g_skeletonRigClass);
+    publishGlobal(globalThis, "Pose", g_poseClass);
+    publishGlobal(globalThis, "AnimationClip", g_animationClass);
+    publishGlobal(globalThis, "Animation", g_animationClass);
+    publishGlobal(globalThis, "SkeletalAnimation", g_animationClass);
+    publishGlobal(globalThis, "VoxelChunk", g_voxelChunkClass);
 }
 
 } // namespace bromesh::api

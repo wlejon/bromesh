@@ -10,9 +10,20 @@
 namespace ev = bronze::embed;
 using bronze::Value;
 
+// assert() is compiled out of the Release build this test runs in.
+#define CHECK(cond)                                                              \
+    do {                                                                         \
+        if (!(cond)) {                                                           \
+            std::cerr << "FAIL: " #cond " (" __FILE__ ":" << __LINE__ << ")\n"; \
+            return 1;                                                            \
+        }                                                                        \
+    } while (0)
+
 // tests/test_mesh_api_restored.cpp — the Mesh / Skeleton members the bronze
 // port dropped (bro docs/transition-drift.md row H7).
 void bromeshTestRestoredSurface();
+// Same file: the bindings fixed in the GC-rooting audit.
+void bromeshTestBindingFixes();
 
 int main() {
     std::cout << "========================================" << std::endl;
@@ -26,81 +37,65 @@ int main() {
 
     // 2. Verify global mountings
     std::cout << "[2/4] Verifying global mountings..." << std::endl;
-    auto gBro = ev::globalValue("bro");
-    assert(gBro.found);
-    assert(ev::isObject(gBro.value));
+    // Every Value that outlives an allocating call is held in a Persistent
+    // (embed.h's GC contract), so the test is itself clean under
+    // BRONZE_GC_STRESS=1.
+    ev::Persistent bro(ev::globalValue("bro").value);
+    CHECK(ev::isObject(bro.get()));
+    {
+        Value v = ev::getProperty(bro.get(), "mesh");
+        CHECK(ev::isObject(v));
+        v = ev::getProperty(bro.get(), "rigging");
+        CHECK(ev::isObject(v));
+    }
 
-    auto meshNs = ev::getProperty(gBro.value, "mesh");
-    assert(ev::isObject(meshNs));
-
-    auto rigNs = ev::getProperty(gBro.value, "rigging");
-    assert(ev::isObject(rigNs));
-
-    // Verify global constructors
-    auto gMesh = ev::globalValue("Mesh");
-    assert(gMesh.found && ev::isFunction(gMesh.value));
-
-    auto gBVH = ev::globalValue("MeshBVH");
-    assert(gBVH.found && ev::isFunction(gBVH.value));
-
-    auto gPM = ev::globalValue("ProgressiveMesh");
-    assert(gPM.found && ev::isFunction(gPM.value));
-
-    auto gSkel = ev::globalValue("Skeleton");
-    assert(gSkel.found && ev::isFunction(gSkel.value));
-
-    auto gJoint = ev::globalValue("Joint");
-    assert(gJoint.found && ev::isFunction(gJoint.value));
-
-    auto gRig = ev::globalValue("SkeletonRig");
-    assert(gRig.found && ev::isFunction(gRig.value));
-
-    auto gPose = ev::globalValue("Pose");
-    assert(gPose.found && ev::isFunction(gPose.value));
-
-    auto gAnim = ev::globalValue("AnimationClip");
-    assert(gAnim.found && ev::isFunction(gAnim.value));
-
-    auto gSkin = ev::globalValue("SkinData");
-    assert(gSkin.found && ev::isFunction(gSkin.value));
-
-    auto gIK = ev::globalValue("IK");
-    assert(gIK.found && ev::isObject(gIK.value));
+    // Global constructors (IK is a namespace object, not a constructor).
+    for (const char* name : {"Mesh", "MeshBVH", "ProgressiveMesh", "Skeleton", "Joint",
+                             "SkeletonRig", "Pose", "AnimationClip", "SkinData"}) {
+        auto g = ev::globalValue(name);
+        if (!g.found || !ev::isFunction(g.value)) {
+            std::cerr << "FAIL: global " << name << " is not a constructor" << std::endl;
+            return 1;
+        }
+    }
+    {
+        auto g = ev::globalValue("IK");
+        CHECK(g.found && ev::isObject(g.value));
+    }
 
     std::cout << "  Mounting verification passed." << std::endl;
 
     // 3. Direct embed API calls
     std::cout << "[3/4] Testing direct embed API calls..." << std::endl;
-    // Call Mesh.box(1, 1, 1)
-    auto boxFn = ev::getProperty(gMesh.value, "box");
-    assert(ev::isFunction(boxFn));
+    ev::Persistent meshCtor(ev::globalValue("Mesh").value);
+    ev::Persistent boxFn(ev::getProperty(meshCtor.get(), "box"));
+    CHECK(ev::isFunction(boxFn.get()));
 
     const Value boxArgs[3] = {ev::fromDouble(1.0), ev::fromDouble(1.0), ev::fromDouble(1.0)};
-    auto boxRes = ev::call(boxFn, gMesh.value, std::span<const Value>(boxArgs, 3));
-    assert(!boxRes.thrown);
-    assert(ev::isObject(boxRes.value));
+    auto boxRes = ev::call(boxFn.get(), meshCtor.get(), std::span<const Value>(boxArgs, 3));
+    CHECK(!boxRes.thrown);
+    CHECK(ev::isObject(boxRes.value));
+    ev::Persistent boxMesh(boxRes.value);
 
-    Value boxMesh = boxRes.value;
-    Value vCount = ev::getProperty(boxMesh, "vertexCount");
-    assert(ev::isNumber(vCount));
-    assert(ev::toDouble(vCount) == 24.0);
+    Value vCount = ev::getProperty(boxMesh.get(), "vertexCount");
+    CHECK(ev::isNumber(vCount) && ev::toDouble(vCount) == 24.0);
 
-    Value tCount = ev::getProperty(boxMesh, "triangleCount");
-    assert(ev::isNumber(tCount));
-    assert(ev::toDouble(tCount) == 12.0);
+    Value tCount = ev::getProperty(boxMesh.get(), "triangleCount");
+    CHECK(ev::isNumber(tCount) && ev::toDouble(tCount) == 12.0);
 
-    Value isManifold = ev::getProperty(boxMesh, "isManifold");
-    assert(ev::isFunction(isManifold));
-    auto maniRes = ev::call(isManifold, boxMesh, {});
-    assert(!maniRes.thrown && ev::toBool(maniRes.value));
+    ev::Persistent isManifold(ev::getProperty(boxMesh.get(), "isManifold"));
+    CHECK(ev::isFunction(isManifold.get()));
+    auto maniRes = ev::call(isManifold.get(), boxMesh.get(), {});
+    CHECK(!maniRes.thrown && ev::toBool(maniRes.value));
 
-    Value volFn = ev::getProperty(boxMesh, "volume");
-    assert(ev::isFunction(volFn));
-    auto volRes = ev::call(volFn, boxMesh, {});
-    assert(!volRes.thrown && ev::isNumber(volRes.value));
-    assert(std::fabs(ev::toDouble(volRes.value) - 8.0) < 1e-2);
+    ev::Persistent volFn(ev::getProperty(boxMesh.get(), "volume"));
+    CHECK(ev::isFunction(volFn.get()));
+    auto volRes = ev::call(volFn.get(), boxMesh.get(), {});
+    CHECK(!volRes.thrown && ev::isNumber(volRes.value));
+    const double vol = ev::toDouble(volRes.value);
+    CHECK(std::fabs(vol - 8.0) < 1e-2);
 
-    std::cout << "  Direct embed calls passed (box volume: " << ev::toDouble(volRes.value) << ")." << std::endl;
+    std::cout << "  Direct embed calls passed (box volume: " << vol << ")." << std::endl;
 
     // 4. Test Bronze evalScript
     std::cout << "[4/4] Testing JS execution via Bronze eval..." << std::endl;
@@ -190,10 +185,12 @@ int main() {
         std::cerr << "Eval threw error: " << ev::toUtf8(evalRes.value) << std::endl;
         return 1;
     }
-    std::cout << "  Bronze eval returned: " << ev::toUtf8(evalRes.value) << std::endl;
-    assert(ev::toUtf8(evalRes.value) == "SUCCESS");
+    const std::string evalOut = ev::toUtf8(evalRes.value);
+    std::cout << "  Bronze eval returned: " << evalOut << std::endl;
+    CHECK(evalOut == "SUCCESS");
 
     bromeshTestRestoredSurface();
+    bromeshTestBindingFixes();
 
     std::cout << "========================================" << std::endl;
     std::cout << "All bromesh Bronze API tests PASSED!" << std::endl;

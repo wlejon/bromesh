@@ -4,7 +4,9 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <span>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -91,21 +93,53 @@ private:
     std::span<const Value> args_;
 };
 
+/// A GC root that reads as its CURRENT Value wherever a Value is expected.
+/// For an option object read field by field: `Rooted o(a[1]);
+/// objNum(o, "x", 0)` re-reads the root at every use, where `Value o = a[1]`
+/// would go stale at the first allocating read.
+struct Rooted {
+    ev::Persistent p;
+    explicit Rooted(Value v) : p(v) {}
+    operator Value() const { return p.get(); }
+    Value get() const { return p.get(); }
+};
+
+/// `self[name](...args)` for alias methods (computeBBox -> bounds, ...).
+/// `self` is a plain copy current only at entry and the method lookup
+/// allocates, so the receiver and every argument are rooted first; a throw
+/// from the target propagates instead of coming back as a return value.
+inline Value callMethod(Value self, std::string_view name, std::span<const Value> args) {
+    ev::Persistent recv(self);
+    std::vector<ev::Persistent> rooted;
+    rooted.reserve(args.size());
+    for (Value v : args) rooted.emplace_back(v);
+    ev::Persistent fn(ev::getProperty(recv.get(), name));
+    if (!ev::isFunction(fn.get())) {
+        return ev::throwTypeError(std::string(name) + " is not a function");
+    }
+    std::vector<Value> argv;
+    argv.reserve(rooted.size());
+    for (const auto& p : rooted) argv.push_back(p.get());
+    ev::CallResult r = ev::call(fn.get(), recv.get(), argv);
+    return r.thrown ? ev::throwValue(r.value) : r.value;
+}
+
+/// Build an array from `make(i)`. The array is rooted across each make()
+/// call, which usually allocates (a wrapped mesh, a nested array, a string).
 inline Value hostArrayOf(size_t count, const std::function<Value(size_t)>& make) {
-    Value arr = ev::parseJson("[]").value;
+    ev::Persistent arr(ev::parseJson("[]").value);
     for (size_t i = 0; i < count; ++i) {
         ev::Persistent item(make(i));
-        arr = ev::setElement(arr, static_cast<uint32_t>(i), item.get());
+        arr.set(ev::setElement(arr.get(), static_cast<uint32_t>(i), item.get()));
     }
-    return arr;
+    return arr.get();
 }
 
+/// Only for immediates (numbers, bools, undefined) or an empty span: a heap
+/// Value in `items` goes stale at the first setElement, since the span is not
+/// a GC root. Build heap elements inside a make() callback instead.
 inline Value hostArrayOf(std::span<const Value> items) {
     return hostArrayOf(items.size(), [&](size_t i) { return items[i]; });
-}
-
-inline Value hostArrayOf(const std::vector<Value>& items) {
-    return hostArrayOf(std::span<const Value>(items.data(), items.size()));
 }
 
 } // namespace bromesh::api

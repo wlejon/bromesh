@@ -27,21 +27,28 @@ Value makeSkinValidationObject(const bromesh::SkinValidation& sv) {
 bromesh::Landmarks landmarksFromObject(Value v) {
     bromesh::Landmarks lm;
     if (!ev::isObject(v)) return lm;
-    Value pts = ev::getProperty(v, "points");
-    Value root = ev::isObject(pts) ? pts : v;
+    // Every step allocates (the reads, Object.keys, the conversions), so the
+    // source object, the key list and Object.keys itself are all rooted.
+    Rooted src(v);
+    Rooted root(src.get());
+    {
+        Value pts = ev::getProperty(src, "points");
+        if (ev::isObject(pts)) root.p.set(pts);
+    }
 
-    Value keysVal = ev::getProperty(ev::globalValue("Object").value, "keys");
-    if (ev::isFunction(keysVal)) {
-        const Value args[1] = {root};
-        auto res = ev::call(keysVal, ev::undefined(), std::span<const Value>(args, 1));
+    ev::GlobalValue objectCtor = ev::globalValue("Object");
+    if (!objectCtor.found || !ev::isObject(objectCtor.value)) return lm;
+    Rooted keysFn(ev::getProperty(objectCtor.value, "keys"));
+    if (ev::isFunction(keysFn)) {
+        const Value args[1] = {root.get()};
+        auto res = ev::call(keysFn, ev::undefined(), std::span<const Value>(args, 1));
         if (!res.thrown && ev::isObject(res.value)) {
-            Value lenVal = ev::getProperty(res.value, "length");
+            Rooted keys(res.value);
+            Value lenVal = ev::getProperty(keys, "length");
             size_t n = ev::isNumber(lenVal) ? static_cast<size_t>(ev::toDouble(lenVal)) : 0;
             for (size_t i = 0; i < n; ++i) {
-                Value key = ev::getElement(res.value, static_cast<uint32_t>(i));
-                std::string k = ev::toUtf8(key);
-                Value ptVal = ev::getProperty(root, k);
-                std::vector<float> pt = toFloatVector(ptVal);
+                std::string k = ev::toUtf8(ev::getElement(keys, static_cast<uint32_t>(i)));
+                std::vector<float> pt = toFloatVector(ev::getProperty(root, k));
                 if (pt.size() >= 3) {
                     lm.set(k, pt[0], pt[1], pt[2]);
                 }
@@ -73,16 +80,17 @@ void readNum(Value obj, const char* key, T& out) {
 // Rig.autoRig's options bag: method + the shared smoothing / pruning keys,
 // then the per-method blocks { voxel, boneHeat, bbw }. Each block is read
 // independently so a caller can set all three and switch `method`.
-bromesh::WeightingOptions weightingOptionsFromObject(Value opts) {
+bromesh::WeightingOptions weightingOptionsFromObject(Value in) {
     bromesh::WeightingOptions wo;
-    if (!ev::isObject(opts)) return wo;
+    if (!ev::isObject(in)) return wo;
+    Rooted opts(in);  // re-read at every field: each read allocates
     Value mVal = ev::getProperty(opts, "method");
     if (ev::isString(mVal)) wo.method = bromesh::parseWeightingMethod(ev::toUtf8(mVal).c_str());
     readNum(opts, "smoothIterations", wo.smoothIterations);
     readNum(opts, "smoothAlpha", wo.smoothAlpha);
     readNum(opts, "minWeight", wo.minWeight);
 
-    Value v = ev::getProperty(opts, "voxel");
+    Rooted v(ev::getProperty(opts, "voxel"));
     if (ev::isObject(v)) {
         readNum(v, "maxResolution", wo.voxel.maxResolution);
         readNum(v, "maxInfluences", wo.voxel.maxInfluences);
@@ -91,7 +99,7 @@ bromesh::WeightingOptions weightingOptionsFromObject(Value opts) {
         readNum(v, "smoothIterations", wo.voxel.smoothIterations);
         readNum(v, "smoothAlpha", wo.voxel.smoothAlpha);
     }
-    v = ev::getProperty(opts, "boneHeat");
+    v.p.set(ev::getProperty(opts, "boneHeat"));
     if (ev::isObject(v)) {
         readNum(v, "maxInfluences", wo.boneHeat.maxInfluences);
         readNum(v, "minWeight", wo.boneHeat.minWeight);
@@ -99,7 +107,7 @@ bromesh::WeightingOptions weightingOptionsFromObject(Value opts) {
         readNum(v, "solverTol", wo.boneHeat.solverTol);
         readNum(v, "solverMaxIter", wo.boneHeat.solverMaxIter);
     }
-    v = ev::getProperty(opts, "bbw");
+    v.p.set(ev::getProperty(opts, "bbw"));
     if (ev::isObject(v)) {
         readNum(v, "maxInfluences", wo.bbw.maxInfluences);
         readNum(v, "minWeight", wo.bbw.minWeight);
@@ -114,13 +122,14 @@ bromesh::WeightingOptions weightingOptionsFromObject(Value opts) {
 // { strideLength, cycleDuration, footLiftHeight, keyframesPerCycle,
 //   bodyBobAmplitude, armSwingAmplitude, forwardAxis, upAxis,
 //   gait: string | { name, phases, dutyFactor } }.
-bromesh::LocomotionParams locomotionParamsFromValue(Value v) {
+bromesh::LocomotionParams locomotionParamsFromValue(Value in) {
     bromesh::LocomotionParams p;
-    if (ev::isString(v)) {
-        p.gait.name = ev::toUtf8(v);
+    if (ev::isString(in)) {
+        p.gait.name = ev::toUtf8(in);
         return p;
     }
-    if (!ev::isObject(v)) return p;
+    if (!ev::isObject(in)) return p;
+    Rooted v(in);  // re-read at every field: each read allocates
     readNum(v, "strideLength", p.strideLength);
     readNum(v, "cycleDuration", p.cycleDuration);
     readNum(v, "footLiftHeight", p.footLiftHeight);
@@ -132,17 +141,39 @@ bromesh::LocomotionParams locomotionParamsFromValue(Value v) {
         std::vector<float> axis = toFloatVector(ev::getProperty(v, key));
         if (axis.size() >= 3) { dst[0] = axis[0]; dst[1] = axis[1]; dst[2] = axis[2]; }
     }
-    Value g = ev::getProperty(v, "gait");
+    Rooted g(ev::getProperty(v, "gait"));
     if (ev::isString(g)) {
         p.gait.name = ev::toUtf8(g);
     } else if (ev::isObject(g)) {
-        Value n = ev::getProperty(g, "name");
-        if (ev::isString(n)) p.gait.name = ev::toUtf8(n);
+        if (Value n = ev::getProperty(g, "name"); ev::isString(n)) p.gait.name = ev::toUtf8(n);
         Value ph = ev::getProperty(g, "phases");
         if (ev::isObject(ph)) p.gait.phases = toFloatVector(ph);
         readNum(g, "dutyFactor", p.gait.dutyFactor);
     }
     return p;
+}
+
+// A bone given as a plain object: name, parent, localT|translation,
+// localR|rotation, localS|scale, inverseBind|inverseBindMatrix. Every field is
+// read right before it is converted, with the object rooted across them.
+void readBoneObject(Value in, bromesh::Bone& b) {
+    Rooted o(in);
+    auto either = [&](const char* k1, const char* k2) {
+        Value v = ev::getProperty(o, k1);
+        return ev::isUndefined(v) ? ev::getProperty(o, k2) : v;
+    };
+    auto floats = [&](const char* k1, const char* k2, float* dst, size_t n) {
+        Value v = either(k1, k2);
+        if (ev::isUndefined(v)) return;
+        std::vector<float> f = toFloatVector(v);
+        if (f.size() >= n) std::copy(f.begin(), f.begin() + n, dst);
+    };
+    if (Value v = ev::getProperty(o, "name"); ev::isString(v)) b.name = ev::toUtf8(v);
+    if (Value v = ev::getProperty(o, "parent"); ev::isNumber(v)) b.parent = static_cast<int>(ev::toDouble(v));
+    floats("localT", "translation", b.localT, 3);
+    floats("localR", "rotation", b.localR, 4);
+    floats("localS", "scale", b.localS, 3);
+    floats("inverseBind", "inverseBindMatrix", b.inverseBind, 16);
 }
 
 } // namespace
@@ -155,20 +186,23 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
     skinCls.install("SkinData", 1, [](Value, std::span<const Value> a) -> Value {
         auto h = std::make_unique<HostSkinData>();
         if (!a.empty() && ev::isObject(a[0])) {
-            Value opts = a[0];
-            Value bwVal = ev::getProperty(opts, "boneWeights");
-            if (ev::isUndefined(bwVal)) bwVal = ev::getProperty(opts, "weights");
-            Value biVal = ev::getProperty(opts, "boneIndices");
-            if (ev::isUndefined(biVal)) biVal = ev::getProperty(opts, "indices");
-            Value ibmVal = ev::getProperty(opts, "inverseBindMatrices");
-            Value bcVal = ev::getProperty(opts, "boneCount");
-
-            if (!ev::isUndefined(bwVal)) h->skin.boneWeights = toFloatVector(bwVal);
-            if (!ev::isUndefined(biVal)) {
-                std::vector<uint32_t> idx32 = toUint32Vector(biVal);
-                h->skin.boneIndices.assign(idx32.begin(), idx32.end());
+            // Each field is read right before it is converted: a read (and a
+            // conversion) allocates, which would stale an earlier read.
+            Rooted opts(a[0]);
+            auto either = [&](const char* k1, const char* k2) {
+                Value v = ev::getProperty(opts, k1);
+                return ev::isUndefined(v) ? ev::getProperty(opts, k2) : v;
+            };
+            if (Value v = either("boneWeights", "weights"); !ev::isUndefined(v)) {
+                h->skin.boneWeights = toFloatVector(v);
             }
-            if (!ev::isUndefined(ibmVal)) h->skin.inverseBindMatrices = toFloatVector(ibmVal);
+            if (Value v = either("boneIndices", "indices"); !ev::isUndefined(v)) {
+                h->skin.boneIndices = toUint32Vector(v);
+            }
+            if (Value v = ev::getProperty(opts, "inverseBindMatrices"); !ev::isUndefined(v)) {
+                h->skin.inverseBindMatrices = toFloatVector(v);
+            }
+            Value bcVal = ev::getProperty(opts, "boneCount");
             if (ev::isNumber(bcVal)) {
                 h->skin.boneCount = static_cast<size_t>(ev::toDouble(bcVal));
             } else if (!h->skin.inverseBindMatrices.empty()) {
@@ -182,8 +216,11 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             if (!s) return ev::undefined();
             return makeFloat32Array(s->skin.boneWeights.data(), s->skin.boneWeights.size());
         });
-        proto.accessor("weights", [](Value self, std::span<const Value> a) -> Value {
-            return ev::call(ev::getProperty(self, "boneWeights"), self, a).value;
+        // Alias getters. They used to ev::call the VALUE of boneWeights (a
+        // Float32Array, not a function), which threw and handed the error
+        // object back as the property's value.
+        proto.accessor("weights", [](Value self, std::span<const Value>) -> Value {
+            return ev::getProperty(self, "boneWeights");
         });
 
         proto.accessor("boneIndices", [](Value self, std::span<const Value>) -> Value {
@@ -192,8 +229,8 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             std::vector<uint32_t> idx32(s->skin.boneIndices.begin(), s->skin.boneIndices.end());
             return makeUint32Array(idx32.data(), idx32.size());
         });
-        proto.accessor("indices", [](Value self, std::span<const Value> a) -> Value {
-            return ev::call(ev::getProperty(self, "boneIndices"), self, a).value;
+        proto.accessor("indices", [](Value self, std::span<const Value>) -> Value {
+            return ev::getProperty(self, "boneIndices");
         });
 
         proto.accessor("inverseBindMatrices", [](Value self, std::span<const Value>) -> Value {
@@ -286,43 +323,9 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
     jointCls.install("Joint", 1, [](Value, std::span<const Value> a) -> Value {
         auto h = std::make_unique<HostJoint>();
         if (!a.empty() && ev::isObject(a[0])) {
-            Value opts = a[0];
-            Value nameVal = ev::getProperty(opts, "name");
-            if (ev::isString(nameVal)) h->bone.name = ev::toUtf8(nameVal);
-            Value parentVal = ev::getProperty(opts, "parent");
-            if (ev::isNumber(parentVal)) h->bone.parent = static_cast<int>(ev::toDouble(parentVal));
-            Value idxVal = ev::getProperty(opts, "index");
+            readBoneObject(a[0], h->bone);
+            Value idxVal = ev::getProperty(a[0], "index");  // a[0]: rooted slot
             if (ev::isNumber(idxVal)) h->index = static_cast<int>(ev::toDouble(idxVal));
-
-            Value tVal = ev::getProperty(opts, "localT");
-            if (ev::isUndefined(tVal)) tVal = ev::getProperty(opts, "translation");
-            if (!ev::isUndefined(tVal)) {
-                auto t = toFloatVector(tVal);
-                if (t.size() >= 3) { h->bone.localT[0] = t[0]; h->bone.localT[1] = t[1]; h->bone.localT[2] = t[2]; }
-            }
-
-            Value rVal = ev::getProperty(opts, "localR");
-            if (ev::isUndefined(rVal)) rVal = ev::getProperty(opts, "rotation");
-            if (!ev::isUndefined(rVal)) {
-                auto r = toFloatVector(rVal);
-                if (r.size() >= 4) { h->bone.localR[0] = r[0]; h->bone.localR[1] = r[1]; h->bone.localR[2] = r[2]; h->bone.localR[3] = r[3]; }
-            }
-
-            Value sVal = ev::getProperty(opts, "localS");
-            if (ev::isUndefined(sVal)) sVal = ev::getProperty(opts, "scale");
-            if (!ev::isUndefined(sVal)) {
-                auto s = toFloatVector(sVal);
-                if (s.size() >= 3) { h->bone.localS[0] = s[0]; h->bone.localS[1] = s[1]; h->bone.localS[2] = s[2]; }
-            }
-
-            Value ibmVal = ev::getProperty(opts, "inverseBind");
-            if (ev::isUndefined(ibmVal)) ibmVal = ev::getProperty(opts, "inverseBindMatrix");
-            if (!ev::isUndefined(ibmVal)) {
-                auto ibm = toFloatVector(ibmVal);
-                if (ibm.size() >= 16) {
-                    for (int i = 0; i < 16; ++i) h->bone.inverseBind[i] = ibm[i];
-                }
-            }
         }
         return g_jointClass.createInstance(std::move(h));
     }, [](ObjectBuilder& proto) {
@@ -390,77 +393,44 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
     skelCls.install("Skeleton", 1, [](Value, std::span<const Value> a) -> Value {
         auto h = std::make_unique<HostSkeleton>();
         if (!a.empty() && ev::isObject(a[0])) {
-            Value opts = a[0];
-            Value bonesVal = ev::getProperty(opts, "bones");
-            if (ev::isObject(bonesVal)) {
-                Value lenVal = ev::getProperty(bonesVal, "length");
+            // a[0] is the rooted slot; the lists and their elements are
+            // rooted here, since every read allocates.
+            Rooted bones(ev::getProperty(a[0], "bones"));
+            if (ev::isObject(bones)) {
+                Value lenVal = ev::getProperty(bones, "length");
                 size_t n = ev::isNumber(lenVal) ? static_cast<size_t>(ev::toDouble(lenVal)) : 0;
                 h->skeleton.bones.reserve(n);
                 for (size_t i = 0; i < n; ++i) {
-                    Value bVal = ev::getElement(bonesVal, static_cast<uint32_t>(i));
+                    Value bVal = ev::getElement(bones, static_cast<uint32_t>(i));
                     bromesh::Bone b;
-                    auto* j = unwrapJoint(bVal);
-                    if (j) {
+                    if (auto* j = unwrapJoint(bVal)) {
                         b = j->bone;
                     } else if (ev::isObject(bVal)) {
-                        Value nameVal = ev::getProperty(bVal, "name");
-                        if (ev::isString(nameVal)) b.name = ev::toUtf8(nameVal);
-                        Value pVal = ev::getProperty(bVal, "parent");
-                        if (ev::isNumber(pVal)) b.parent = static_cast<int>(ev::toDouble(pVal));
-
-                        Value tVal = ev::getProperty(bVal, "localT");
-                        if (ev::isUndefined(tVal)) tVal = ev::getProperty(bVal, "translation");
-                        if (!ev::isUndefined(tVal)) {
-                            auto t = toFloatVector(tVal);
-                            if (t.size() >= 3) { b.localT[0] = t[0]; b.localT[1] = t[1]; b.localT[2] = t[2]; }
-                        }
-                        Value rVal = ev::getProperty(bVal, "localR");
-                        if (ev::isUndefined(rVal)) rVal = ev::getProperty(bVal, "rotation");
-                        if (!ev::isUndefined(rVal)) {
-                            auto r = toFloatVector(rVal);
-                            if (r.size() >= 4) { b.localR[0] = r[0]; b.localR[1] = r[1]; b.localR[2] = r[2]; b.localR[3] = r[3]; }
-                        }
-                        Value sVal = ev::getProperty(bVal, "localS");
-                        if (ev::isUndefined(sVal)) sVal = ev::getProperty(bVal, "scale");
-                        if (!ev::isUndefined(sVal)) {
-                            auto s = toFloatVector(sVal);
-                            if (s.size() >= 3) { b.localS[0] = s[0]; b.localS[1] = s[1]; b.localS[2] = s[2]; }
-                        }
-                        Value ibmVal = ev::getProperty(bVal, "inverseBind");
-                        if (ev::isUndefined(ibmVal)) ibmVal = ev::getProperty(bVal, "inverseBindMatrix");
-                        if (!ev::isUndefined(ibmVal)) {
-                            auto ibm = toFloatVector(ibmVal);
-                            if (ibm.size() >= 16) {
-                                for (int k = 0; k < 16; ++k) b.inverseBind[k] = ibm[k];
-                            }
-                        }
+                        readBoneObject(bVal, b);
                     }
                     h->skeleton.bones.push_back(b);
                 }
             }
 
-            Value socketsVal = ev::getProperty(opts, "sockets");
-            if (ev::isObject(socketsVal)) {
-                Value lenVal = ev::getProperty(socketsVal, "length");
+            Rooted sockets(ev::getProperty(a[0], "sockets"));
+            if (ev::isObject(sockets)) {
+                Value lenVal = ev::getProperty(sockets, "length");
                 size_t n = ev::isNumber(lenVal) ? static_cast<size_t>(ev::toDouble(lenVal)) : 0;
                 for (size_t i = 0; i < n; ++i) {
-                    Value sVal = ev::getElement(socketsVal, static_cast<uint32_t>(i));
-                    if (ev::isObject(sVal)) {
-                        bromesh::Socket sock;
-                        Value nameVal = ev::getProperty(sVal, "name");
-                        if (ev::isString(nameVal)) sock.name = ev::toUtf8(nameVal);
-                        Value boneVal = ev::getProperty(sVal, "boneIndex");
-                        if (ev::isUndefined(boneVal)) boneVal = ev::getProperty(sVal, "bone");
-                        if (ev::isNumber(boneVal)) sock.bone = static_cast<int>(ev::toDouble(boneVal));
-                        Value offVal = ev::getProperty(sVal, "offset");
-                        if (!ev::isUndefined(offVal)) {
-                            auto off = toFloatVector(offVal);
-                            if (off.size() >= 16) {
-                                for (int k = 0; k < 16; ++k) sock.offset[k] = off[k];
-                            }
+                    Rooted s(ev::getElement(sockets, static_cast<uint32_t>(i)));
+                    if (!ev::isObject(s)) continue;
+                    bromesh::Socket sock;
+                    if (Value v = ev::getProperty(s, "name"); ev::isString(v)) sock.name = ev::toUtf8(v);
+                    Value boneVal = ev::getProperty(s, "boneIndex");
+                    if (ev::isUndefined(boneVal)) boneVal = ev::getProperty(s, "bone");
+                    if (ev::isNumber(boneVal)) sock.bone = static_cast<int>(ev::toDouble(boneVal));
+                    if (Value v = ev::getProperty(s, "offset"); !ev::isUndefined(v)) {
+                        auto off = toFloatVector(v);
+                        if (off.size() >= 16) {
+                            for (int k = 0; k < 16; ++k) sock.offset[k] = off[k];
                         }
-                        h->skeleton.sockets.push_back(sock);
                     }
+                    h->skeleton.sockets.push_back(sock);
                 }
             }
         }
@@ -535,13 +505,12 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             if (!s || a.empty()) return ev::fromDouble(-1.0);
             bromesh::Socket sock;
             if (ev::isObject(a[0]) && a.size() == 1) {
-                Value nameVal = ev::getProperty(a[0], "name");
+                // Each read is consumed before the next allocating one.
+                sock.name = ev::toUtf8(ev::getProperty(a[0], "name"));
                 Value bVal = ev::getProperty(a[0], "bone");
                 if (ev::isUndefined(bVal)) bVal = ev::getProperty(a[0], "boneIndex");
-                Value offVal = ev::getProperty(a[0], "offset");
-                sock.name = ev::toUtf8(nameVal);
                 sock.bone = ev::isNumber(bVal) ? static_cast<int>(ev::toDouble(bVal)) : 0;
-                auto off = toFloatVector(offVal);
+                auto off = toFloatVector(ev::getProperty(a[0], "offset"));
                 if (off.size() >= 16) for (int i = 0; i < 16; ++i) sock.offset[i] = off[i];
             } else {
                 sock.name = ev::toUtf8(a[0]);
@@ -584,7 +553,8 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         ObjectBuilder opts;
         opts.set("bones", a[0]);
         const Value args[1] = {opts.build()};
-        return ev::call(g_skeletonClass.constructor(), ev::undefined(), std::span<const Value>(args, 1)).value;
+        ev::CallResult r = ev::call(g_skeletonClass.constructor(), ev::undefined(), std::span<const Value>(args, 1));
+        return r.thrown ? ev::throwValue(r.value) : r.value;
     }, 1, "fromBones"));
 
     // =========================================================================
@@ -737,7 +707,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         bromesh::RigSpec spec = bromesh::builtinHumanoidSpec();
         bromesh::Landmarks lm;
         bool hasLandmarks = false;
-        Value opts = ev::undefined();
+        Rooted opts(ev::undefined());  // read field by field below
 
         if (a.size() >= 3 && unwrapSkeletonRig(a[1])) {
             spec = unwrapSkeletonRig(a[1])->spec;
@@ -745,9 +715,9 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
                 lm = landmarksFromObject(a[2]);
                 hasLandmarks = true;
             }
-            if (a.size() > 3 && ev::isObject(a[3])) opts = a[3];
+            if (a.size() > 3 && ev::isObject(a[3])) opts.p.set(a[3]);
         } else if (a.size() > 1 && ev::isObject(a[1])) {
-            opts = a[1];
+            opts.p.set(a[1]);
             Value specVal = ev::getProperty(opts, "spec");
             if (auto* r = unwrapSkeletonRig(specVal)) spec = r->spec;
             else {
@@ -801,7 +771,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
     });
 
     bindRigStatic("transferWeights", 3, [](Value, std::span<const Value> a) -> Value {
-        return ev::call(ev::getProperty(g_skinDataClass.constructor(), "transfer"), ev::undefined(), a).value;
+        return callMethod(g_skinDataClass.constructor(), "transfer", a);
     });
 
     // =========================================================================
@@ -866,7 +836,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             return self;
         });
         proto.def("setVoxel", 4, [](Value self, std::span<const Value> a) -> Value {
-            return ev::call(ev::getProperty(self, "set"), self, a).value;
+            return callMethod(self, "set", a);
         });
 
         proto.def("get", 3, [](Value self, std::span<const Value> a) -> Value {
@@ -876,7 +846,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             return ev::fromDouble(static_cast<double>(v->chunk->getVoxel(r.getInt(0, 0), r.getInt(1, 0), r.getInt(2, 0))));
         });
         proto.def("getVoxel", 3, [](Value self, std::span<const Value> a) -> Value {
-            return ev::call(ev::getProperty(self, "get"), self, a).value;
+            return callMethod(self, "get", a);
         });
 
         proto.def("fill", 1, [](Value self, std::span<const Value> a) -> Value {
@@ -907,11 +877,12 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         proto.def("setData", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* v = unwrapVoxelChunk(self);
             if (!v || !v->chunk || a.empty()) return ev::throwTypeError("VoxelChunk.setData: not an instance or empty");
+            Rooted selfP(self);  // a plain-array argument's reads allocate
             std::vector<uint8_t> d = toUint8Vector(a[0]);
             size_t sz = static_cast<size_t>(v->chunk->sizeX()) * v->chunk->sizeY() * v->chunk->sizeZ();
             std::memcpy(v->chunk->data(), d.data(), std::min(sz, d.size()));
             v->chunk->markDirty();
-            return self;
+            return selfP.get();
         });
 
         proto.def("buildMesh", 2, [](Value self, std::span<const Value> a) -> Value {
@@ -930,7 +901,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             return wrapMesh(v->chunk->buildMesh(pal, count));
         });
         proto.def("toMesh", 0, [](Value self, std::span<const Value> a) -> Value {
-            return ev::call(ev::getProperty(self, "buildMesh"), self, a).value;
+            return callMethod(self, "buildMesh", a);
         });
     });
 }
