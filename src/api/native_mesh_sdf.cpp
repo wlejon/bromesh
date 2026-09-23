@@ -73,39 +73,66 @@ struct SdfMeshOptions {
     bool computeGradients = true;
 };
 
-static SdfMeshOptions parseMeshOptions(Value optsVal) {
-    SdfMeshOptions opt;
+// A node id argument: an existing node of `g`, [0, size). A node can only
+// name nodes built before it, which is also what keeps the graph acyclic —
+// a combinator given its own (not yet allocated) id would recurse forever
+// when evaluated.
+static bool nodeArg(const SdfGraph& g, std::span<const Value> a, size_t i, const char* what, int& out) {
+    if (g.size() == 0) {
+        ev::throwRangeError(std::string(what) + ": the graph has no nodes yet");
+        return false;
+    }
+    if (i >= a.size()) {
+        ev::throwTypeError(std::string(what) + " must be a number");
+        return false;
+    }
+    int64_t v = 0;
+    if (!intValue(a[i], what, 0, static_cast<double>(g.size() - 1), v)) return false;
+    out = static_cast<int>(v);
+    return true;
+}
+
+// Returns false once it has thrown (a bad grid dimension).
+static bool parseMeshOptions(Value optsVal, SdfMeshOptions& opt) {
     if (!ev::isObject(optsVal)) {
-        return opt;
+        return true;
     }
     ev::Persistent opts(optsVal);  // rooted: every read below may allocate
 
+    // Each axis is [2, kMaxVolumeAxis] samples (a grid needs two to hold a
+    // cell) and the grid at most kMaxVolumeCells.
     {
         ev::Persistent dims(ev::getProperty(opts.get(), "dims"));
         if (ev::isObject(dims.get())) {
             int* out[3] = {&opt.dimX, &opt.dimY, &opt.dimZ};
             for (uint32_t i = 0; i < 3; ++i) {
                 Value d = ev::getElement(dims.get(), i);
-                if (ev::isNumber(d)) *out[i] = static_cast<int>(ev::toDouble(d));
+                if (ev::isUndefined(d)) continue;
+                int64_t n = 0;
+                if (!intValue(d, "SDF mesh options: dims", 2, kMaxVolumeAxis, n)) return false;
+                *out[i] = static_cast<int>(n);
             }
-        } else if (ev::isNumber(dims.get())) {
-            int d = static_cast<int>(ev::toDouble(dims.get()));
-            opt.dimX = opt.dimY = opt.dimZ = d;
+        } else if (!ev::isUndefined(dims.get())) {
+            int64_t n = 0;
+            if (!intValue(dims.get(), "SDF mesh options: dims", 2, kMaxVolumeAxis, n)) return false;
+            opt.dimX = opt.dimY = opt.dimZ = static_cast<int>(n);
         }
     }
 
-    Value resVal = ev::getProperty(opts.get(), "resolution");
-    if (ev::isNumber(resVal)) {
-        int d = static_cast<int>(ev::toDouble(resVal));
-        opt.dimX = opt.dimY = opt.dimZ = d;
+    {
+        int res = 0;
+        if (!countField(opts.get(), "resolution", "SDF mesh options: resolution", 2, kMaxVolumeAxis, res)) {
+            return false;
+        }
+        if (res > 0) opt.dimX = opt.dimY = opt.dimZ = res;
     }
 
-    Value dx = ev::getProperty(opts.get(), "dimX");
-    if (ev::isNumber(dx)) opt.dimX = static_cast<int>(ev::toDouble(dx));
-    Value dy = ev::getProperty(opts.get(), "dimY");
-    if (ev::isNumber(dy)) opt.dimY = static_cast<int>(ev::toDouble(dy));
-    Value dz = ev::getProperty(opts.get(), "dimZ");
-    if (ev::isNumber(dz)) opt.dimZ = static_cast<int>(ev::toDouble(dz));
+    if (!countField(opts.get(), "dimX", "SDF mesh options: dimX", 2, kMaxVolumeAxis, opt.dimX) ||
+        !countField(opts.get(), "dimY", "SDF mesh options: dimY", 2, kMaxVolumeAxis, opt.dimY) ||
+        !countField(opts.get(), "dimZ", "SDF mesh options: dimZ", 2, kMaxVolumeAxis, opt.dimZ) ||
+        !volumeCellsOk("SDF mesh options", opt.dimX, opt.dimY, opt.dimZ)) {
+        return false;
+    }
 
     Value boundsVal = ev::getProperty(opts.get(), "bounds");
     if (!ev::isUndefined(boundsVal)) {
@@ -121,7 +148,7 @@ static SdfMeshOptions parseMeshOptions(Value optsVal) {
     Value cgVal = ev::getProperty(opts.get(), "computeGradients");
     if (ev::isBool(cgVal)) opt.computeGradients = ev::toBool(cgVal);
 
-    return opt;
+    return true;
 }
 
 void initSdfGraph(HostClass& cls) {
@@ -193,8 +220,11 @@ void initSdfGraph(HostClass& cls) {
             proto.def(name, 2, [fn](Value self, std::span<const Value> a) -> Value {
                 auto* h = unwrapSdfGraph(self);
                 if (!h) return ev::throwTypeError("SDFGraph method: invalid instance");
-                int n1 = i32At(a, 0);
-                int n2 = i32At(a, 1);
+                int n1 = 0, n2 = 0;
+                if (!nodeArg(h->graph, a, 0, "SDFGraph: node a", n1) ||
+                    !nodeArg(h->graph, a, 1, "SDFGraph: node b", n2)) {
+                    return ev::undefined();
+                }
                 return ev::fromDouble((h->graph.*fn)(n1, n2));
             });
         };
@@ -209,8 +239,11 @@ void initSdfGraph(HostClass& cls) {
             proto.def(name, 3, [fn](Value self, std::span<const Value> a) -> Value {
                 auto* h = unwrapSdfGraph(self);
                 if (!h) return ev::throwTypeError("SDFGraph method: invalid instance");
-                int n1 = i32At(a, 0);
-                int n2 = i32At(a, 1);
+                int n1 = 0, n2 = 0;
+                if (!nodeArg(h->graph, a, 0, "SDFGraph: node a", n1) ||
+                    !nodeArg(h->graph, a, 1, "SDFGraph: node b", n2)) {
+                    return ev::undefined();
+                }
                 float k = static_cast<float>(numAt(a, 2));
                 return ev::fromDouble((h->graph.*fn)(n1, n2, k));
             });
@@ -226,7 +259,8 @@ void initSdfGraph(HostClass& cls) {
         proto.def("translate", 2, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapSdfGraph(self);
             if (!h) return ev::throwTypeError("SDFGraph.translate: invalid instance");
-            int child = i32At(a, 0);
+            int child = 0;
+            if (!nodeArg(h->graph, a, 0, "SDFGraph.translate: child", child)) return ev::undefined();
             size_t idx = 1;
             bromath::Vec3 offset = parseVec3(a, idx);
             return ev::fromDouble(h->graph.translate(child, offset));
@@ -235,7 +269,8 @@ void initSdfGraph(HostClass& cls) {
         proto.def("rotateY", 2, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapSdfGraph(self);
             if (!h) return ev::throwTypeError("SDFGraph.rotateY: invalid instance");
-            int child = i32At(a, 0);
+            int child = 0;
+            if (!nodeArg(h->graph, a, 0, "SDFGraph.rotateY: child", child)) return ev::undefined();
             float angle = static_cast<float>(numAt(a, 1));
             return ev::fromDouble(h->graph.rotateY(child, angle));
         });
@@ -243,7 +278,8 @@ void initSdfGraph(HostClass& cls) {
         proto.def("scaleUniform", 2, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapSdfGraph(self);
             if (!h) return ev::throwTypeError("SDFGraph.scaleUniform: invalid instance");
-            int child = i32At(a, 0);
+            int child = 0;
+            if (!nodeArg(h->graph, a, 0, "SDFGraph.scaleUniform: child", child)) return ev::undefined();
             float s = static_cast<float>(numAt(a, 1));
             return ev::fromDouble(h->graph.scaleUniform(child, s));
         });
@@ -260,15 +296,20 @@ void initSdfGraph(HostClass& cls) {
         proto.def("displace", 2, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapSdfGraph(self);
             if (!h) return ev::throwTypeError("SDFGraph.displace: invalid instance");
-            int child = i32At(a, 0);
-            int noise = i32At(a, 1);
+            int child = 0, noise = 0;
+            if (!nodeArg(h->graph, a, 0, "SDFGraph.displace: child", child) ||
+                !nodeArg(h->graph, a, 1, "SDFGraph.displace: noise", noise)) {
+                return ev::undefined();
+            }
             return ev::fromDouble(h->graph.displace(child, noise));
         });
 
         proto.def("setRoot", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapSdfGraph(self);
             if (!h) return ev::throwTypeError("SDFGraph.setRoot: invalid instance");
-            h->graph.setRoot(i32At(a, 0));
+            int root = 0;
+            if (!nodeArg(h->graph, a, 0, "SDFGraph.setRoot: node", root)) return ev::undefined();
+            h->graph.setRoot(root);
             return self;
         });
 
@@ -292,7 +333,8 @@ void initSdfGraph(HostClass& cls) {
         proto.def("marchingCubes", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapSdfGraph(self);
             if (!h) return ev::throwTypeError("SDFGraph.marchingCubes: invalid instance");
-            SdfMeshOptions opt = parseMeshOptions(!a.empty() ? a[0] : ev::undefined());
+            SdfMeshOptions opt;
+            if (!parseMeshOptions(!a.empty() ? a[0] : ev::undefined(), opt)) return ev::undefined();
             MeshData m = marchingCubesFromSDF(h->graph, opt.dimX, opt.dimY, opt.dimZ,
                                               opt.bounds, opt.isoLevel,
                                               opt.closeBoundary, opt.computeGradients);
@@ -302,7 +344,8 @@ void initSdfGraph(HostClass& cls) {
         proto.def("surfaceNets", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapSdfGraph(self);
             if (!h) return ev::throwTypeError("SDFGraph.surfaceNets: invalid instance");
-            SdfMeshOptions opt = parseMeshOptions(!a.empty() ? a[0] : ev::undefined());
+            SdfMeshOptions opt;
+            if (!parseMeshOptions(!a.empty() ? a[0] : ev::undefined(), opt)) return ev::undefined();
             MeshData m = surfaceNetsFromSDF(h->graph, opt.dimX, opt.dimY, opt.dimZ,
                                            opt.bounds, opt.isoLevel);
             return wrapMesh(std::move(m));
@@ -319,19 +362,20 @@ void initMeshSdf(ObjectBuilder&, HostClass& meshCls) {
         return g_sdfGraphClass.createInstance(std::make_unique<HostSdfGraph>());
     });
 
-    auto extractGraphAndOptions = [](std::span<const Value> a, SdfGraph& outGraph, SdfMeshOptions& outOpt) -> bool {
-        if (a.empty()) return false;
+    // NoGraph: nothing usable was passed. Threw: an option was bad and the
+    // exception is pending.
+    enum class Extract { Ok, NoGraph, Threw };
+    auto extractGraphAndOptions = [](std::span<const Value> a, SdfGraph& outGraph, SdfMeshOptions& outOpt) -> Extract {
+        if (a.empty()) return Extract::NoGraph;
         if (auto* h = unwrapSdfGraph(a[0])) {
             outGraph = h->graph;
-            outOpt = parseMeshOptions(a.size() > 1 ? a[1] : ev::undefined());
-            return true;
+            return parseMeshOptions(a.size() > 1 ? a[1] : ev::undefined(), outOpt) ? Extract::Ok : Extract::Threw;
         }
         if (ev::isObject(a[0])) {
             Value gVal = ev::getProperty(a[0], "graph");
             if (auto* h = unwrapSdfGraph(gVal)) {
                 outGraph = h->graph;
-                outOpt = parseMeshOptions(a[0]);
-                return true;
+                return parseMeshOptions(a[0], outOpt) ? Extract::Ok : Extract::Threw;
             }
             // Declarative shorthand: e.g. { type: "sphere", radius: 1.0 }
             Value typeVal = ev::getProperty(a[0], "type");
@@ -355,18 +399,20 @@ void initMeshSdf(ObjectBuilder&, HostClass& meshCls) {
                     float hh = static_cast<float>(ev::toDouble(ev::getProperty(a[0], "halfHeight")));
                     outGraph.cylinder(r > 0 ? r : 0.5f, hh > 0 ? hh : 1.0f);
                 }
-                outOpt = parseMeshOptions(a[0]);
-                return true;
+                return parseMeshOptions(a[0], outOpt) ? Extract::Ok : Extract::Threw;
             }
         }
-        return false;
+        return Extract::NoGraph;
     };
 
     bindStatic("marchingCubesSDF", 2, [extractGraphAndOptions](Value, std::span<const Value> a) -> Value {
         SdfGraph graph;
         SdfMeshOptions opt;
-        if (!extractGraphAndOptions(a, graph, opt)) {
-            return ev::throwTypeError("Mesh.marchingCubesSDF: valid SDFGraph or options required");
+        switch (extractGraphAndOptions(a, graph, opt)) {
+            case Extract::Ok: break;
+            case Extract::Threw: return ev::undefined();
+            case Extract::NoGraph:
+                return ev::throwTypeError("Mesh.marchingCubesSDF: valid SDFGraph or options required");
         }
         MeshData m = marchingCubesFromSDF(graph, opt.dimX, opt.dimY, opt.dimZ,
                                           opt.bounds, opt.isoLevel,
@@ -377,8 +423,11 @@ void initMeshSdf(ObjectBuilder&, HostClass& meshCls) {
     bindStatic("surfaceNetsSDF", 2, [extractGraphAndOptions](Value, std::span<const Value> a) -> Value {
         SdfGraph graph;
         SdfMeshOptions opt;
-        if (!extractGraphAndOptions(a, graph, opt)) {
-            return ev::throwTypeError("Mesh.surfaceNetsSDF: valid SDFGraph or options required");
+        switch (extractGraphAndOptions(a, graph, opt)) {
+            case Extract::Ok: break;
+            case Extract::Threw: return ev::undefined();
+            case Extract::NoGraph:
+                return ev::throwTypeError("Mesh.surfaceNetsSDF: valid SDFGraph or options required");
         }
         MeshData m = surfaceNetsFromSDF(graph, opt.dimX, opt.dimY, opt.dimZ,
                                        opt.bounds, opt.isoLevel);

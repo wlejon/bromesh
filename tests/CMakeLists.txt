@@ -41,7 +41,7 @@ target_compile_definitions(bromesh_test PRIVATE
 add_test(NAME bromesh_test COMMAND bromesh_test)
 
 if(BROMESH_ENABLE_API AND TARGET bromesh_api)
-    add_executable(test_mesh_api test_mesh_api.cpp test_mesh_api_restored.cpp)
+    add_executable(test_mesh_api test_mesh_api.cpp test_mesh_api_restored.cpp test_mesh_api_validation.cpp)
     target_link_libraries(test_mesh_api PRIVATE bromesh_api bromesh bromath::bromath bronze_runtime_shared)
     # bronze's shared runtime is built into BRONZE_SHARED_RUNTIME_DIR, not
     # beside this executable, and the PE loader only looks beside the .exe

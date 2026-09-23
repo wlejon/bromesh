@@ -18,12 +18,34 @@ std::vector<std::vector<float>> readContours(Value v) {
     ev::Persistent list(v);  // rooted across the allocating reads below
     Value lenV = ev::getProperty(list.get(), "length");
     if (!ev::isNumber(lenV)) return contours;
-    const size_t len = static_cast<size_t>(ev::toDouble(lenV));
-    contours.reserve(len);
+    const size_t len = lengthValue(lenV);
+    contours.reserve(std::min<size_t>(len, kReserveCap));
     for (size_t i = 0; i < len; ++i) {
         contours.push_back(toFloatVector(ev::getElement(list.get(), static_cast<uint32_t>(i))));
     }
     return contours;
+}
+
+// The dimX/dimY/dimZ of a sampled scalar field at args[first..first+2]:
+// integer counts (RangeError otherwise, rather than a negative wrapping in
+// the size check), and the field must hold dimX*dimY*dimZ samples (the
+// product taken in double, since in int it overflows). A missing dimension
+// stays 0 and fails the size check with the long-standing TypeError.
+bool fieldDims(std::span<const Value> a, size_t first, std::string_view fn, size_t samples,
+               int& gx, int& gy, int& gz) {
+    gx = gy = gz = 0;
+    const std::string f(fn);
+    if (!countArg(a, first, f + ": dimX", 1, kMaxInt32, gx) ||
+        !countArg(a, first + 1, f + ": dimY", 1, kMaxInt32, gy) ||
+        !countArg(a, first + 2, f + ": dimZ", 1, kMaxInt32, gz)) {
+        return false;
+    }
+    if (gx <= 0 || gy <= 0 || gz <= 0 ||
+        static_cast<double>(samples) < static_cast<double>(gx) * gy * gz) {
+        ev::throwTypeError(f + ": invalid dimensions");
+        return false;
+    }
+    return true;
 }
 
 inline std::string triple(const float* v) {
@@ -231,7 +253,8 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.sampleSurface: not a Mesh instance");
         ArgReader r(a);
-        size_t count = static_cast<size_t>(r.getInt(0, 100));
+        size_t count = 100;
+        if (!countArg(a, 0, "Mesh.sampleSurface: count", 0, kMaxElements, count)) return ev::undefined();
         uint32_t seed = r.getUint(1, 0);
         return wrapMesh(bromesh::sampleSurface(m->mesh, count, seed));
     });
@@ -345,7 +368,7 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
                 else if (s == "spherical") type = 5;
                 else return ev::throwTypeError(("Mesh.projectUVs: unknown projection '" + s + "'").c_str());
             } else if (ev::isNumber(a[0])) {
-                type = static_cast<int>(ev::toDouble(a[0]));
+                if (!countArg(a, 0, "Mesh.projectUVs: projection", 0, 5, type)) return ev::undefined();
             }
         }
         float scale = a.size() > 1 && ev::isNumber(a[1]) ? static_cast<float>(ev::toDouble(a[1])) : 1.0f;
@@ -397,31 +420,28 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     proto.def("buildMeshlets", 3, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.buildMeshlets: not a Mesh instance");
+        // meshoptimizer's limits: 3-256 vertices, 1-512 triangles per meshlet.
+        // Its range checks are asserts, compiled out of a Release build.
+        constexpr std::string_view kV = "Mesh.buildMeshlets: maxVertices";
+        constexpr std::string_view kT = "Mesh.buildMeshlets: maxTriangles";
         size_t maxV = 64;
         size_t maxT = 124;
         float coneW = 0.5f;
         if (!a.empty() && ev::isObject(a[0])) {
             // a[0] is the rooted slot; only numbers are kept across reads.
-            auto num = [&](const char* key, double& out) {
-                Value v = ev::getProperty(a[0], key);
-                if (ev::isNumber(v)) out = ev::toDouble(v);
-            };
-            double mv = static_cast<double>(maxV), mt = static_cast<double>(maxT), cw = coneW;
-            num("maxVertices", mv);
-            num("maxTriangles", mt);
-            num("coneWeight", cw);
-            maxV = static_cast<size_t>(mv);
-            maxT = static_cast<size_t>(mt);
-            coneW = static_cast<float>(cw);
+            if (!countField(a[0], "maxVertices", kV, 3, 256, maxV)) return ev::undefined();
+            if (!countField(a[0], "maxTriangles", kT, 1, 512, maxT)) return ev::undefined();
+            Value v = ev::getProperty(a[0], "coneWeight");
+            if (ev::isNumber(v)) coneW = static_cast<float>(ev::toDouble(v));
         } else {
             ArgReader r(a);
-            maxV = static_cast<size_t>(r.getInt(0, 64));
-            maxT = static_cast<size_t>(r.getInt(1, 124));
+            if (!countArg(a, 0, kV, 3, 256, maxV)) return ev::undefined();
+            if (!countArg(a, 1, kT, 1, 512, maxT)) return ev::undefined();
             coneW = static_cast<float>(r.getDouble(2, 0.5));
         }
         bromesh::MeshletParams opts;
-        opts.maxVertices = maxV > 0 ? maxV : 64;
-        opts.maxTriangles = maxT > 0 ? maxT : 124;
+        opts.maxVertices = maxV;
+        opts.maxTriangles = maxT;
         opts.coneWeight = coneW >= 0.0f ? coneW : 0.5f;
         auto meshlets = bromesh::buildMeshlets(m->mesh, opts);
 
@@ -514,8 +534,9 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     proto.def("analyzeVertexCache", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.analyzeVertexCache: not a Mesh instance");
-        unsigned int cacheSize = !a.empty() && ev::isNumber(a[0]) ? static_cast<unsigned int>(ev::toDouble(a[0])) : 16u;
-        auto st = bromesh::analyzeVertexCache(m->mesh, cacheSize > 0 ? cacheSize : 16u);
+        unsigned int cacheSize = 16;  // meshoptimizer asserts >= 3
+        if (!countArg(a, 0, "Mesh.analyzeVertexCache: cacheSize", 3, 65536, cacheSize)) return ev::undefined();
+        auto st = bromesh::analyzeVertexCache(m->mesh, cacheSize);
         ObjectBuilder out;
         out.set("verticesTransformed", static_cast<double>(st.verticesTransformed));
         out.set("warpsExecuted", static_cast<double>(st.warpsExecuted));
@@ -527,8 +548,9 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     proto.def("analyzeVertexFetch", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.analyzeVertexFetch: not a Mesh instance");
-        size_t vertexSize = !a.empty() && ev::isNumber(a[0]) ? static_cast<size_t>(ev::toDouble(a[0])) : 32u;
-        auto st = bromesh::analyzeVertexFetch(m->mesh, vertexSize > 0 ? vertexSize : 32u);
+        size_t vertexSize = 32;  // meshoptimizer: 1-256 bytes, a multiple of 4
+        if (!countArg(a, 0, "Mesh.analyzeVertexFetch: vertexSize", 1, 256, vertexSize)) return ev::undefined();
+        auto st = bromesh::analyzeVertexFetch(m->mesh, vertexSize);
         ObjectBuilder out;
         out.set("bytesFetched", static_cast<double>(st.bytesFetched));
         out.set("overfetch", static_cast<double>(st.overfetch));
@@ -613,8 +635,20 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     bindStatic("stripify", 3, [](Value, std::span<const Value> a) -> Value {
         if (a.size() < 2) return ev::throwTypeError("Mesh.stripify(indices, vertexCount): required arguments");
         std::vector<uint32_t> indices = toUint32Vector(a[0]);
-        size_t vertexCount = static_cast<size_t>(ev::toDouble(a[1]));
-        uint32_t restartIndex = a.size() > 2 && ev::isNumber(a[2]) ? static_cast<uint32_t>(ev::toDouble(a[2])) : 0xFFFFFFFF;
+        int64_t vc = 0;
+        if (!intValue(a[1], "Mesh.stripify: vertexCount", 0, kMaxUint32, vc)) return ev::undefined();
+        const size_t vertexCount = static_cast<size_t>(vc);
+        uint32_t restartIndex = 0xFFFFFFFF;
+        if (!countArg(a, 2, "Mesh.stripify: restartIndex", 0, kMaxUint32, restartIndex)) return ev::undefined();
+        // meshoptimizer indexes a vertexCount-sized table with every index,
+        // checked only by an assert.
+        if (indices.size() % 3 != 0) return ev::throwRangeError("Mesh.stripify: indices must be whole triangles");
+        for (uint32_t idx : indices) {
+            if (idx >= vertexCount) {
+                return ev::throwRangeError("Mesh.stripify: index " + std::to_string(idx) +
+                                           " is not below vertexCount " + std::to_string(vertexCount));
+            }
+        }
         auto strip = bromesh::stripify(indices, vertexCount, restartIndex);
         return makeUint32Array(strip.data(), strip.size());
     });
@@ -622,7 +656,8 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     bindStatic("unstripify", 2, [](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Mesh.unstripify(strip): strip required");
         std::vector<uint32_t> strip = toUint32Vector(a[0]);
-        uint32_t restartIndex = a.size() > 1 && ev::isNumber(a[1]) ? static_cast<uint32_t>(ev::toDouble(a[1])) : 0xFFFFFFFF;
+        uint32_t restartIndex = 0xFFFFFFFF;
+        if (!countArg(a, 1, "Mesh.unstripify: restartIndex", 0, kMaxUint32, restartIndex)) return ev::undefined();
         auto indices = bromesh::unstripify(strip, restartIndex);
         return makeUint32Array(indices.data(), indices.size());
     });
@@ -634,13 +669,23 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         bromesh::EncodedMesh enc;
         enc.vertexData = toUint8Vector(ev::getProperty(a[0], "vertexData"));
         enc.indexData = toUint8Vector(ev::getProperty(a[0], "indexData"));
-        auto count = [&](const char* key) -> size_t {
-            Value v = ev::getProperty(a[0], key);
-            return ev::isNumber(v) ? static_cast<size_t>(ev::toDouble(v)) : 0;
-        };
-        enc.vertexCount = count("vertexCount");
-        enc.vertexSize = count("vertexSize");
-        enc.indexCount = count("indexCount");
+        if (!countField(a[0], "vertexCount", "Mesh.decode: vertexCount", 0, kMaxUint32, enc.vertexCount) ||
+            !countField(a[0], "vertexSize", "Mesh.decode: vertexSize", 4, 256, enc.vertexSize) ||
+            !countField(a[0], "indexCount", "Mesh.decode: indexCount", 0, kMaxUint32, enc.indexCount)) {
+            return ev::undefined();
+        }
+        if (enc.vertexSize % 4 != 0) return ev::throwRangeError("Mesh.decode: vertexSize must be a multiple of 4");
+        if (enc.indexCount % 3 != 0) return ev::throwRangeError("Mesh.decode: indexCount must be a multiple of 3");
+        // The decoder allocates vertexCount * vertexSize and indexCount * 4
+        // bytes before it reads a byte of the streams: 1 GiB each at most, so
+        // a bogus count is a RangeError rather than a failed allocation.
+        constexpr double kMaxDecodeBytes = 1073741824.0;
+        if (static_cast<double>(enc.vertexCount) * static_cast<double>(enc.vertexSize) > kMaxDecodeBytes ||
+            static_cast<double>(enc.indexCount) * 4.0 > kMaxDecodeBytes) {
+            return ev::throwRangeError("Mesh.decode: vertexCount " + std::to_string(enc.vertexCount) +
+                                       " x vertexSize " + std::to_string(enc.vertexSize) + " or indexCount " +
+                                       std::to_string(enc.indexCount) + " decodes to more than 1 GiB");
+        }
 
         auto flag = [&](const char* key, bool def) {
             Value v = ev::getProperty(a[0], key);
@@ -676,8 +721,11 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         if (!cloud) return ev::throwTypeError("Mesh.reconstruct: a Mesh point cloud (positions + normals) required");
         bromesh::ReconstructParams params;
         if (a.size() > 1 && ev::isObject(a[1])) {
-            Value gr = ev::getProperty(a[1], "gridResolution");
-            if (ev::isNumber(gr)) params.gridResolution = static_cast<int>(ev::toDouble(gr));
+            // A cube of gridResolution^3 voxels (at least 8 per axis).
+            if (!countField(a[1], "gridResolution", "Mesh.reconstruct: opts.gridResolution", 1, kMaxVolumeAxis,
+                            params.gridResolution)) {
+                return ev::undefined();
+            }
             Value sr = ev::getProperty(a[1], "supportRadius");
             if (ev::isNumber(sr)) params.supportRadius = static_cast<float>(ev::toDouble(sr));
             Value il = ev::getProperty(a[1], "isoLevel");
@@ -690,11 +738,9 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         if (a.empty()) return ev::throwTypeError("Mesh.marchingCubes: field required");
         std::vector<float> field = toFloatVector(a[0]);
         ArgReader r(a);
-        int gx = r.getInt(1, 0), gy = r.getInt(2, 0), gz = r.getInt(3, 0);
+        int gx, gy, gz;
+        if (!fieldDims(a, 1, "Mesh.marchingCubes", field.size(), gx, gy, gz)) return ev::undefined();
         float iso = static_cast<float>(r.getDouble(4, 0.0));
-        if (gx <= 0 || gy <= 0 || gz <= 0 || field.size() < static_cast<size_t>(gx * gy * gz)) {
-            return ev::throwTypeError("Mesh.marchingCubes: invalid dimensions");
-        }
         return wrapMesh(bromesh::marchingCubes(field.data(), gx, gy, gz, iso));
     });
 
@@ -702,11 +748,9 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         if (a.empty()) return ev::throwTypeError("Mesh.surfaceNets: field required");
         std::vector<float> field = toFloatVector(a[0]);
         ArgReader r(a);
-        int gx = r.getInt(1, 0), gy = r.getInt(2, 0), gz = r.getInt(3, 0);
+        int gx, gy, gz;
+        if (!fieldDims(a, 1, "Mesh.surfaceNets", field.size(), gx, gy, gz)) return ev::undefined();
         float iso = static_cast<float>(r.getDouble(4, 0.0));
-        if (gx <= 0 || gy <= 0 || gz <= 0 || field.size() < static_cast<size_t>(gx * gy * gz)) {
-            return ev::throwTypeError("Mesh.surfaceNets: invalid dimensions");
-        }
         return wrapMesh(bromesh::surfaceNets(field.data(), gx, gy, gz, iso));
     });
 
@@ -714,11 +758,9 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         if (a.empty()) return ev::throwTypeError("Mesh.dualContouring: field required");
         std::vector<float> field = toFloatVector(a[0]);
         ArgReader r(a);
-        int gx = r.getInt(1, 0), gy = r.getInt(2, 0), gz = r.getInt(3, 0);
+        int gx, gy, gz;
+        if (!fieldDims(a, 1, "Mesh.dualContouring", field.size(), gx, gy, gz)) return ev::undefined();
         float iso = static_cast<float>(r.getDouble(4, 0.0));
-        if (gx <= 0 || gy <= 0 || gz <= 0 || field.size() < static_cast<size_t>(gx * gy * gz)) {
-            return ev::throwTypeError("Mesh.dualContouring: invalid dimensions");
-        }
         return wrapMesh(bromesh::dualContour(field.data(), gx, gy, gz, iso));
     });
     bindStatic("dualContour", 5, [](Value, std::span<const Value> a) -> Value {
@@ -729,22 +771,38 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         if (a.empty()) return ev::throwTypeError("Mesh.transvoxel: field required");
         std::vector<float> field = toFloatVector(a[0]);
         ArgReader r(a);
-        int gSize = r.getInt(1, 16);
-        int lod = r.getInt(2, 0);
+        int gSize = 16;
+        if (!countArg(a, 1, "Mesh.transvoxel: gridSize", 0, kMaxInt32, gSize)) return ev::undefined();
+        if (gSize < 2 || static_cast<double>(field.size()) < static_cast<double>(gSize) * gSize * gSize) {
+            return ev::throwTypeError("Mesh.transvoxel: values must hold gridSize^3 samples");
+        }
+        // The chunk is sampled every 2^lod samples, so at least one cell
+        // needs 2^lod <= gridSize - 1.
+        int maxLod = 0;
+        while (maxLod < bromesh::kTransvoxelMaxLod && (2LL << maxLod) <= gSize - 1) ++maxLod;
+        int lod = 0;
+        if (!countArg(a, 2, "Mesh.transvoxel: lod", 0, maxLod, lod)) {
+            return ev::undefined();
+        }
         // Neighbour LODs [+X, -X, +Y, -Y, +Z, -Z]; -1 = no neighbour (world
-        // edge). A neighbour at a coarser LOD gets transition cells.
+        // edge). There are no transition cells: across a face whose neighbour
+        // is coarser, the boundary vertices are snapped to that neighbour's
+        // grid. A missing or non-number entry is -1.
         int nlods[6] = {-1, -1, -1, -1, -1, -1};
         if (a.size() > 3 && ev::isObject(a[3])) {
             for (uint32_t i = 0; i < 6; ++i) {
                 Value e = ev::getElement(a[3], i);
-                if (ev::isNumber(e)) nlods[i] = static_cast<int>(ev::toDouble(e));
+                if (!ev::isNumber(e)) continue;
+                int64_t n = 0;
+                if (!intValue(e, "Mesh.transvoxel: neighborLods[" + std::to_string(i) + "]", -1,
+                              bromesh::kTransvoxelMaxLod, n)) {
+                    return ev::undefined();
+                }
+                nlods[i] = static_cast<int>(n);
             }
         }
         float iso = static_cast<float>(r.getDouble(4, 0.0));
         float cell = static_cast<float>(r.getDouble(5, 1.0));
-        if (gSize < 2 || field.size() < static_cast<size_t>(gSize) * gSize * gSize) {
-            return ev::throwTypeError("Mesh.transvoxel: values must hold gridSize^3 samples");
-        }
         return wrapMesh(bromesh::transvoxel(field.data(), gSize, lod, nlods, iso, cell));
     });
 
@@ -752,9 +810,14 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
         if (a.empty()) return ev::throwTypeError("Mesh.greedyMesh: voxels required");
         std::vector<uint8_t> voxels = toUint8Vector(a[0]);
         ArgReader r(a);
-        int sx = r.getInt(1, 16), sy = r.getInt(2, 16), sz = r.getInt(3, 16);
+        int sx = 16, sy = 16, sz = 16;
+        if (!countArg(a, 1, "Mesh.greedyMesh: sizeX", 1, kMaxInt32, sx) ||
+            !countArg(a, 2, "Mesh.greedyMesh: sizeY", 1, kMaxInt32, sy) ||
+            !countArg(a, 3, "Mesh.greedyMesh: sizeZ", 1, kMaxInt32, sz)) {
+            return ev::undefined();
+        }
         double scale = r.getDouble(4, 1.0);
-        if (sx <= 0 || sy <= 0 || sz <= 0 || voxels.size() < static_cast<size_t>(sx * sy * sz)) {
+        if (static_cast<double>(voxels.size()) < static_cast<double>(sx) * sy * sz) {
             return ev::throwTypeError("Mesh.greedyMesh: invalid dimensions");
         }
         return wrapMesh(bromesh::greedyMesh(voxels.data(), sx, sy, sz, static_cast<float>(scale)));
@@ -773,10 +836,11 @@ void initMeshBvh(HostClass& cls) {
             if (b) return ev::throwTypeError("expected a __bro_native.mesh.Mesh handle, got a __bro_native.mesh.MeshBVH handle");
             return ev::throwTypeError("expected a __bro_native.mesh.Mesh handle, got an ordinary object");
         }
-        int leafSize = a.size() > 1 && ev::isNumber(a[1]) ? static_cast<int>(ev::toDouble(a[1])) : 8;
+        int leafSize = 8;
+        if (!countArg(a, 1, "MeshBVH: leafSize", 1, kMaxInt32, leafSize)) return ev::undefined();
         auto h = std::make_unique<HostMeshBVH>();
         h->meshCopy = m->mesh;
-        h->bvh = std::make_unique<bromesh::MeshBVH>(bromesh::MeshBVH::build(h->meshCopy, leafSize > 0 ? leafSize : 8));
+        h->bvh = std::make_unique<bromesh::MeshBVH>(bromesh::MeshBVH::build(h->meshCopy, leafSize));
         return g_meshBvhClass.createInstance(std::move(h));
     }, [](ObjectBuilder& proto) {
         proto.accessor("empty", [](Value self, std::span<const Value>) -> Value {
@@ -902,8 +966,9 @@ void initProgressiveMesh(HostClass& cls) {
         proto.def("atTriangleCount", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* p = unwrapPM(self);
             if (!p || !p->pm) return ev::throwTypeError("ProgressiveMesh.atTriangleCount: not an instance");
-            int c = a.empty() ? 0 : i32At(a, 0);
-            return wrapMesh(bromesh::progressiveMeshAtTriangleCount(*p->pm, c > 0 ? c : 0));
+            size_t c = 0;  // clamped to [minTriangles, maxTriangles] by the core
+            if (!countArg(a, 0, "ProgressiveMesh.atTriangleCount: count", 0, kMaxUint32, c)) return ev::undefined();
+            return wrapMesh(bromesh::progressiveMeshAtTriangleCount(*p->pm, c));
         });
         proto.def("serialize", 0, [](Value self, std::span<const Value>) -> Value {
             auto* p = unwrapPM(self);

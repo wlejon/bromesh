@@ -24,6 +24,39 @@ Value animChannelsToObject(const bromesh::Animation& anim) {
     });
 }
 
+// Most bones a Pose(boneCount) allocates: 10 floats each.
+constexpr double kMaxBones = 1048576.0;
+
+// The skeleton/pose pair the world-matrix and IK walks index unchecked:
+// every parent must name a bone of the skeleton (or be negative, a root), and
+// the pose must carry at least one TRS record per skeleton bone.
+bool rigFits(const bromesh::Skeleton& s, const bromesh::Pose& p, const char* fn) {
+    const size_t bones = s.bones.size();
+    if (p.data.size() < bones * 10) {
+        ev::throwRangeError(std::string(fn) + ": the pose has " + std::to_string(p.data.size() / 10) +
+                            " bones, the skeleton " + std::to_string(bones));
+        return false;
+    }
+    for (size_t i = 0; i < bones; ++i) {
+        const int parent = s.bones[i].parent;
+        if (parent >= 0 && static_cast<size_t>(parent) >= bones) {
+            ev::throwRangeError(std::string(fn) + ": bone " + std::to_string(i) + " has parent " +
+                                std::to_string(parent) + ", out of range for " + std::to_string(bones) +
+                                " bones");
+            return false;
+        }
+    }
+    return true;
+}
+
+// A bone mask is read one byte per bone of the pose.
+bool maskFits(const std::vector<uint8_t>& mask, size_t bones, const char* fn) {
+    if (mask.empty() || mask.size() >= bones) return true;
+    ev::throwRangeError(std::string(fn) + ": the mask has " + std::to_string(mask.size()) +
+                        " entries, the pose " + std::to_string(bones) + " bones");
+    return false;
+}
+
 } // namespace
 
 void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
@@ -37,7 +70,8 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
             if (auto* skel = unwrapSkeleton(a[0])) {
                 h->pose = bromesh::bindPose(skel->skeleton);
             } else if (ev::isNumber(a[0])) {
-                size_t bc = static_cast<size_t>(ev::toDouble(a[0]));
+                size_t bc = 0;
+                if (!countArg(a, 0, "Pose: boneCount", 0, kMaxBones, bc)) return ev::undefined();
                 h->pose.data.assign(bc * 10, 0.0f);
                 for (size_t i = 0; i < bc; ++i) {
                     h->pose.data[i * 10 + 6] = 1.0f; // rw = 1
@@ -47,10 +81,9 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
                 }
             } else {
                 std::vector<float> d = toFloatVector(a[0]);
-                if (a.size() > 1 && ev::isNumber(a[1])) {
-                    size_t bc = static_cast<size_t>(ev::toDouble(a[1]));
-                    if (d.size() < bc * 10) d.resize(bc * 10, 0.0f);
-                }
+                size_t bc = 0;
+                if (!countArg(a, 1, "Pose: boneCount", 0, kMaxBones, bc)) return ev::undefined();
+                if (d.size() < bc * 10) d.resize(bc * 10, 0.0f);
                 h->pose.data = std::move(d);
             }
         }
@@ -80,6 +113,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
             if (a.empty()) return ev::throwTypeError("Pose.computeWorldMatrices: Skeleton required");
             auto* s = unwrapSkeleton(a[0]);
             if (!s) return ev::throwTypeError("Pose.computeWorldMatrices: argument must be a Skeleton");
+            if (!rigFits(s->skeleton, p->pose, "Pose.computeWorldMatrices")) return ev::undefined();
             std::vector<float> outWorld;
             bromesh::computeWorldMatrices(s->skeleton, p->pose, outWorld);
             return makeFloat32Array(outWorld.data(), outWorld.size());
@@ -91,6 +125,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
             if (a.empty()) return ev::throwTypeError("Pose.computeSkinningMatrices: Skeleton required");
             auto* s = unwrapSkeleton(a[0]);
             if (!s) return ev::throwTypeError("Pose.computeSkinningMatrices: argument must be a Skeleton");
+            if (!rigFits(s->skeleton, p->pose, "Pose.computeSkinningMatrices")) return ev::undefined();
             std::vector<float> outSkinning;
             bromesh::computeSkinningMatrices(s->skeleton, p->pose, outSkinning);
             return makeFloat32Array(outSkinning.data(), outSkinning.size());
@@ -102,6 +137,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
             auto* s = unwrapSkeleton(a[0]);
             if (!s) return ev::null();
             std::string name = ev::toUtf8(a[1]);
+            if (!rigFits(s->skeleton, p->pose, "Pose.socketWorld")) return ev::undefined();
             auto res = bromesh::socketWorldMatrix(s->skeleton, p->pose, name);
             if (!res.has_value()) return ev::null();
             return makeFloat32Array(res->data(), 16);
@@ -125,6 +161,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         std::vector<uint8_t> maskVec;
         if (a.size() > 3 && !ev::isUndefined(a[3])) {
             maskVec = toUint8Vector(a[3]);
+            if (!maskFits(maskVec, pa->pose.boneCount(), "Pose.blend")) return ev::undefined();
             if (!maskVec.empty()) mask = maskVec.data();
         }
         bromesh::blendPoses(pa->pose, pb->pose, w, mask);
@@ -135,8 +172,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         if (a.size() < 2) return ev::throwTypeError("Pose.blendN: poses and weights required");
         std::vector<const bromesh::Pose*> posePtrs;
         if (ev::isObject(a[0])) {
-            Value lenVal = ev::getProperty(a[0], "length");
-            size_t n = ev::isNumber(lenVal) ? static_cast<size_t>(ev::toDouble(lenVal)) : 0;
+            size_t n = lengthValue(ev::getProperty(a[0], "length"));
             for (size_t i = 0; i < n; ++i) {
                 Value elem = ev::getElement(a[0], static_cast<uint32_t>(i));
                 auto* p = unwrapPose(elem);
@@ -154,6 +190,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         std::vector<uint8_t> maskVec;
         if (a.size() > 2 && !ev::isUndefined(a[2])) {
             maskVec = toUint8Vector(a[2]);
+            if (!maskFits(maskVec, posePtrs[0]->boneCount(), "Pose.blendN")) return ev::undefined();
             if (!maskVec.empty()) mask = maskVec.data();
         }
 
@@ -177,14 +214,16 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
 
             Rooted chsVal(ev::getProperty(a[0], "channels"));
             if (ev::isObject(chsVal)) {
-                Value lenVal = ev::getProperty(chsVal, "length");
-                size_t n = ev::isNumber(lenVal) ? static_cast<size_t>(ev::toDouble(lenVal)) : 0;
+                size_t n = 0;
+                if (!listLength(ev::getProperty(chsVal, "length"), "AnimationClip: channels", n)) {
+                    return ev::undefined();
+                }
                 for (size_t i = 0; i < n; ++i) {
                     Rooted chVal(ev::getElement(chsVal, static_cast<uint32_t>(i)));
                     if (ev::isObject(chVal)) {
                         bromesh::AnimChannel ch;
                         Value biVal = ev::getProperty(chVal, "boneIndex");
-                        if (ev::isNumber(biVal)) ch.boneIndex = static_cast<int>(ev::toDouble(biVal));
+                        if (ev::isNumber(biVal)) ch.boneIndex = satInt(ev::toDouble(biVal));
                         Value pVal = ev::getProperty(chVal, "path");
                         if (ev::isString(pVal)) {
                             std::string ps = ev::toUtf8(pVal);
@@ -201,6 +240,17 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
                         }
                         if (Value v = ev::getProperty(chVal, "times"); !ev::isUndefined(v)) ch.times = toFloatVector(v);
                         if (Value v = ev::getProperty(chVal, "values"); !ev::isUndefined(v)) ch.values = toFloatVector(v);
+                        // Sampling reads `stride` values per key (three
+                        // stride-runs per key for cubicspline) unchecked.
+                        const size_t stride = ch.path == bromesh::AnimChannel::Path::Rotation ? 4 : 3;
+                        const size_t perKey =
+                            stride * (ch.interp == bromesh::AnimChannel::Interp::CubicSpline ? 3 : 1);
+                        if (ch.values.size() < ch.times.size() * perKey) {
+                            return ev::throwRangeError(
+                                "AnimationClip: channel " + std::to_string(i) + " has " +
+                                std::to_string(ch.times.size()) + " keys but " + std::to_string(ch.values.size()) +
+                                " values; it needs " + std::to_string(perKey) + " per key");
+                        }
                         h->animation.channels.push_back(std::move(ch));
                     }
                 }
@@ -297,9 +347,10 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         auto* skel = unwrapSkeleton(a[0]);
         auto* pose = unwrapPose(a[1]);
         if (!skel || !pose) return ev::throwTypeError("IK.twoBone: skel and pose required");
-        int root = static_cast<int>(ev::toDouble(a[2]));
-        int mid = static_cast<int>(ev::toDouble(a[3]));
-        int end = static_cast<int>(ev::toDouble(a[4]));
+        if (!rigFits(skel->skeleton, pose->pose, "IK.twoBone")) return ev::undefined();
+        int root = satInt(ev::toDouble(a[2]));
+        int mid = satInt(ev::toDouble(a[3]));
+        int end = satInt(ev::toDouble(a[4]));
         auto tVec = toFloatVector(a[5]);
         if (tVec.size() < 3) return ev::throwTypeError("IK.twoBone: target must have [x, y, z]");
         float target[3] = {tVec[0], tVec[1], tVec[2]};
@@ -321,12 +372,19 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         auto* skel = unwrapSkeleton(a[0]);
         auto* pose = unwrapPose(a[1]);
         if (!skel || !pose) return ev::throwTypeError("IK.FABRIK: skel and pose required");
+        if (!rigFits(skel->skeleton, pose->pose, "IK.FABRIK")) return ev::undefined();
         std::vector<int> chain;
         if (ev::isObject(a[2])) {
-            Value lenV = ev::getProperty(a[2], "length");
-            size_t n = ev::isNumber(lenV) ? static_cast<size_t>(ev::toDouble(lenV)) : 0;
+            // A chain is a handful of bone indices; a longer `length` is a
+            // bad argument, not a loop of billions of reads.
+            size_t n = lengthValue(ev::getProperty(a[2], "length"));
+            if (n > skel->skeleton.bones.size()) {
+                return ev::throwRangeError("IK.FABRIK: the chain has " + std::to_string(n) +
+                                           " entries, more than the skeleton's " +
+                                           std::to_string(skel->skeleton.bones.size()) + " bones");
+            }
             for (size_t i = 0; i < n; ++i) {
-                chain.push_back(static_cast<int>(ev::toDouble(ev::getElement(a[2], static_cast<uint32_t>(i)))));
+                chain.push_back(satInt(ev::toDouble(ev::getElement(a[2], static_cast<uint32_t>(i)))));
             }
         }
         auto tVec = toFloatVector(a[3]);
@@ -335,9 +393,10 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         int iters = 10;
         float tol = 1e-3f;
         if (a.size() > 4 && ev::isObject(a[4])) {
-            Value itV = ev::getProperty(a[4], "iterations");
+            if (!countField(a[4], "iterations", "IK.FABRIK: iterations", 0, kMaxIterations, iters)) {
+                return ev::undefined();
+            }
             Value toV = ev::getProperty(a[4], "tolerance");
-            if (ev::isNumber(itV)) iters = static_cast<int>(ev::toDouble(itV));
             if (ev::isNumber(toV)) tol = static_cast<float>(ev::toDouble(toV));
         }
         bool ok = bromesh::solveFABRIK(skel->skeleton, pose->pose, chain, target, iters, tol);
@@ -349,7 +408,8 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         auto* skel = unwrapSkeleton(a[0]);
         auto* pose = unwrapPose(a[1]);
         if (!skel || !pose) return ev::throwTypeError("IK.lookAt: skel and pose required");
-        int bone = static_cast<int>(ev::toDouble(a[2]));
+        if (!rigFits(skel->skeleton, pose->pose, "IK.lookAt")) return ev::undefined();
+        int bone = satInt(ev::toDouble(a[2]));
         auto tVec = toFloatVector(a[3]);
         if (tVec.size() < 3) return ev::throwTypeError("IK.lookAt: target must have [x, y, z]");
         float target[3] = {tVec[0], tVec[1], tVec[2]};
@@ -455,6 +515,13 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         if (mats.size() < s->skin.boneCount * 16) {
             return ev::throwTypeError("Mesh.applySkinning: not enough matrix floats for bones");
         }
+        // Each bone's pose matrix is multiplied by its inverse bind matrix.
+        if (s->skin.inverseBindMatrices.size() < s->skin.boneCount * 16) {
+            return ev::throwRangeError("Mesh.applySkinning: the SkinData has " +
+                                       std::to_string(s->skin.inverseBindMatrices.size() / 16) +
+                                       " inverse bind matrices for " + std::to_string(s->skin.boneCount) +
+                                       " bones");
+        }
         bromesh::applySkinning(m->mesh, s->skin, mats.data());
         return selfP.get();
     });
@@ -512,8 +579,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
             if (auto* k = unwrapSkeleton(ev::getProperty(opts, "skeleton"))) skelPtr = &k->skeleton;
             Rooted anVal(ev::getProperty(opts, "animations"));
             if (ev::isObject(anVal)) {
-                Value lenV = ev::getProperty(anVal, "length");
-                size_t n = ev::isNumber(lenV) ? static_cast<size_t>(ev::toDouble(lenV)) : 0;
+                size_t n = lengthValue(ev::getProperty(anVal, "length"));
                 for (size_t i = 0; i < n; ++i) {
                     Value item = ev::getElement(anVal, static_cast<uint32_t>(i));
                     if (auto* an = unwrapAnimation(item)) anims.push_back(an->animation);

@@ -145,8 +145,10 @@ bool readSplatCloud(Value obj, bromesh::GaussianSplatCloud& cloud, std::string& 
     cloud.rotations = toFloatVector(ev::getProperty(o.get(), "rotations"));
     cloud.opacities = toFloatVector(ev::getProperty(o.get(), "opacities"));
     cloud.sh = toFloatVector(ev::getProperty(o.get(), "sh"));
-    Value shd = ev::getProperty(o.get(), "shDegree");
-    cloud.shDegree = ev::isNumber(shd) ? static_cast<int>(ev::toDouble(shd)) : 0;
+    // shStride() reads shDegree unclamped, so it is held to 0..3 here. An
+    // empty `err` on a false return means the RangeError is already thrown.
+    cloud.shDegree = 0;
+    if (!countField(o.get(), "shDegree", "Mesh.saveSplatPLY: shDegree", 0, 3, cloud.shDegree)) return false;
     if (cloud.positions.empty()) { err = "cloud has no positions"; return false; }
     if (!cloud.validate()) { err = "attribute array lengths disagree with the point count"; return false; }
     return true;
@@ -154,6 +156,23 @@ bool readSplatCloud(Value obj, bromesh::GaussianSplatCloud& cloud, std::string& 
 
 int32_t i32OrAt(std::span<const Value> a, size_t i, int32_t def) {
     return (a.size() > i && ev::isNumber(a[i])) ? i32At(a, i) : def;
+}
+
+// Vertex references the PolyMesh builders index vertices_ with unchecked:
+// each must name an existing vertex. Throws a RangeError and returns false
+// on the first that does not.
+template <typename Int>
+bool vertexRefsOk(const std::vector<Int>& refs, size_t vertexCount, const char* what) {
+    for (size_t i = 0; i < refs.size(); ++i) {
+        const int64_t v = static_cast<int64_t>(refs[i]);
+        if (v < 0 || static_cast<uint64_t>(v) >= vertexCount) {
+            ev::throwRangeError(std::string(what) + ": vertex index " + std::to_string(v) + " at [" +
+                                std::to_string(i) + "] is out of range for " + std::to_string(vertexCount) +
+                                " vertices");
+            return false;
+        }
+    }
+    return true;
 }
 
 bool boolOrAt(std::span<const Value> a, size_t i, bool def) {
@@ -224,7 +243,10 @@ void initMeshIo(ObjectBuilder& proto, HostClass& cls) {
         if (a.size() < 2 || !ev::isString(a[0])) return ev::throwTypeError("Mesh.saveSplatPLY: (path, cloud) required");
         bromesh::GaussianSplatCloud cloud;
         std::string err;
-        if (!readSplatCloud(a[1], cloud, err)) return ev::throwTypeError(("Mesh.saveSplatPLY: " + err).c_str());
+        if (!readSplatCloud(a[1], cloud, err)) {
+            if (err.empty()) return ev::undefined();
+            return ev::throwTypeError(("Mesh.saveSplatPLY: " + err).c_str());
+        }
         return ev::fromBool(bromesh::saveSplatPLY(cloud, resolveWritePath(ev::toUtf8(a[0]))));
     });
 
@@ -393,7 +415,9 @@ void initPolyMesh(HostClass& cls) {
             if (a.empty() || !ev::isObject(a[0])) {
                 return ev::throwTypeError("PolyMesh.addFace: expects an array of vertex indices");
             }
-            return ev::fromDouble(h->pm->addFace(toInt32Vector(a[0]), i32OrAt(a, 1, -1)));
+            std::vector<int32_t> verts = toInt32Vector(a[0]);
+            if (!vertexRefsOk(verts, h->pm->vertexCount(), "PolyMesh.addFace")) return ev::undefined();
+            return ev::fromDouble(h->pm->addFace(verts, i32OrAt(a, 1, -1)));
         });
         proto.def("deleteFace", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapPolyMesh(self);
@@ -494,6 +518,7 @@ void initPolyMesh(HostClass& cls) {
         std::vector<uint32_t> indices = toUint32Vector(a[1]);
         std::vector<int32_t> triToGroup;
         if (a.size() > 2 && ev::isObject(a[2])) triToGroup = toInt32Vector(a[2]);
+        if (!vertexRefsOk(indices, positions.size() / 3, "PolyMesh.fromMeshData")) return ev::undefined();
         return wrapPolyMesh(bromesh::PolyMesh::fromMeshData(positions, indices, triToGroup));
     }, 3, "fromMeshData"));
     cls.setStatic("fromMesh", ev::makeFunction([](Value, std::span<const Value> a) -> Value {
@@ -519,6 +544,17 @@ void initPolyMesh(HostClass& cls) {
         std::vector<uint32_t> polyOffsets = toUint32Vector(a[2]);
         std::vector<int32_t> groups;
         if (a.size() > 3 && ev::isObject(a[3])) groups = toInt32Vector(a[3]);
+        // polyOffsets is a non-decreasing run into polyVerts: face f is
+        // polyVerts[offsets[f], offsets[f + 1]).
+        for (size_t f = 0; f < polyOffsets.size(); ++f) {
+            if (polyOffsets[f] > polyVerts.size() || (f > 0 && polyOffsets[f] < polyOffsets[f - 1])) {
+                return ev::throwRangeError("PolyMesh.fromPolygons: polyOffsets[" + std::to_string(f) + "] = " +
+                                           std::to_string(polyOffsets[f]) +
+                                           " must be non-decreasing and at most polyVerts.length (" +
+                                           std::to_string(polyVerts.size()) + ")");
+            }
+        }
+        if (!vertexRefsOk(polyVerts, positions.size() / 3, "PolyMesh.fromPolygons")) return ev::undefined();
         return wrapPolyMesh(bromesh::PolyMesh::fromPolygons(positions, polyVerts, polyOffsets, groups));
     }, 4, "fromPolygons"));
 }

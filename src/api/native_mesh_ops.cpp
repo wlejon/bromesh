@@ -22,6 +22,19 @@ Value makeTextureResult(const bromesh::TextureBuffer& tb) {
     return res.build();
 }
 
+// A bake texture size (w at args[i], h at args[i + 1]); each axis is
+// [1, kMaxAxis], and the bakers size their buffer as an int product.
+bool texSizeArgs(std::span<const Value> a, size_t i, const char* fn, int& w, int& h) {
+    const std::string name(fn);
+    return countArg(a, i, name + ": width", 1, kMaxAxis, w) &&
+           countArg(a, i + 1, name + ": height", 1, kMaxAxis, h);
+}
+
+// A hemisphere ray count: at least one (the bakers divide by it).
+bool raysArg(std::span<const Value> a, size_t i, const char* fn, int& rays) {
+    return countArg(a, i, std::string(fn) + ": rays", 1, kMaxIterations, rays);
+}
+
 } // namespace
 
 void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
@@ -106,7 +119,8 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
     proto.def("fillHoles", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.fillHoles: not a Mesh instance");
-        int maxEdges = a.empty() ? 32 : i32At(a, 0);
+        int maxEdges = 32;
+        if (!countArg(a, 0, "Mesh.fillHoles: maxEdges", 0, kMaxInt32, maxEdges)) return ev::undefined();
         m->mesh = bromesh::fillHoles(m->mesh, maxEdges);
         return self;
     });
@@ -149,7 +163,8 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.simplifyToTriangleCount: not a Mesh instance");
         ArgReader r(a);
-        size_t count = static_cast<size_t>(r.getInt(0, 100));
+        size_t count = 100;
+        if (!countArg(a, 0, "Mesh.simplifyToTriangleCount: count", 0, kMaxUint32, count)) return ev::undefined();
         float targetError = static_cast<float>(r.getDouble(1, 1e-3));
         m->mesh = bromesh::simplifyToTriangleCount(m->mesh, count, targetError);
         return self;
@@ -170,16 +185,20 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
     proto.def("subdivideLoop", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.subdivideLoop: not a Mesh instance");
-        int iters = a.empty() ? 1 : i32At(a, 0);
-        m->mesh = bromesh::subdivideLoop(m->mesh, iters > 0 ? iters : 1);
+        int iters = 1;  // 0 is a no-op
+        if (!countArg(a, 0, "Mesh.subdivideLoop: iterations", 0, kMaxSubdivisions, iters)) return ev::undefined();
+        m->mesh = bromesh::subdivideLoop(m->mesh, iters);
         return self;
     });
 
     proto.def("subdivideCatmullClark", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.subdivideCatmullClark: not a Mesh instance");
-        int iters = a.empty() ? 1 : i32At(a, 0);
-        m->mesh = bromesh::subdivideCatmullClark(m->mesh, iters > 0 ? iters : 1);
+        int iters = 1;  // 0 is a no-op
+        if (!countArg(a, 0, "Mesh.subdivideCatmullClark: iterations", 0, kMaxSubdivisions, iters)) {
+            return ev::undefined();
+        }
+        m->mesh = bromesh::subdivideCatmullClark(m->mesh, iters);
         return self;
     });
 
@@ -188,8 +207,9 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
     proto.def("subdivideMidpoint", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.subdivideMidpoint: not a Mesh instance");
-        int iters = a.empty() ? 1 : i32At(a, 0);
-        m->mesh = bromesh::subdivideMidpoint(m->mesh, iters > 0 ? iters : 1);
+        int iters = 1;  // 0 is a no-op
+        if (!countArg(a, 0, "Mesh.subdivideMidpoint: iterations", 0, kMaxSubdivisions, iters)) return ev::undefined();
+        m->mesh = bromesh::subdivideMidpoint(m->mesh, iters);
         return self;
     });
 
@@ -198,8 +218,9 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (!m) return ev::throwTypeError("Mesh.smooth: not a Mesh instance");
         ArgReader r(a);
         float lambda = static_cast<float>(r.getDouble(0, 0.5));
-        int iters = r.getInt(1, 1);
-        bromesh::smoothLaplacian(m->mesh, lambda, iters > 0 ? iters : 1);
+        int iters = 1;  // 0 is a no-op
+        if (!countArg(a, 1, "Mesh.smooth: iterations", 0, kMaxIterations, iters)) return ev::undefined();
+        bromesh::smoothLaplacian(m->mesh, lambda, iters);
         return self;
     });
 
@@ -208,8 +229,9 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (!m) return ev::throwTypeError("Mesh.smoothLaplacian: not a Mesh instance");
         ArgReader r(a);
         float lambda = static_cast<float>(r.getDouble(0, 0.5));
-        int iters = r.getInt(1, 1);
-        bromesh::smoothLaplacian(m->mesh, lambda, iters > 0 ? iters : 1);
+        int iters = 1;
+        if (!countArg(a, 1, "Mesh.smoothLaplacian: iterations", 0, kMaxIterations, iters)) return ev::undefined();
+        bromesh::smoothLaplacian(m->mesh, lambda, iters);
         return self;
     });
 
@@ -219,8 +241,9 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         ArgReader r(a);
         float lambda = static_cast<float>(r.getDouble(0, 0.5));
         float mu = static_cast<float>(r.getDouble(1, -0.53));
-        int iters = r.getInt(2, 1);
-        bromesh::smoothTaubin(m->mesh, lambda, mu, iters > 0 ? iters : 1);
+        int iters = 1;
+        if (!countArg(a, 2, "Mesh.smoothTaubin: iterations", 0, kMaxIterations, iters)) return ev::undefined();
+        bromesh::smoothTaubin(m->mesh, lambda, mu, iters);
         return self;
     });
 
@@ -237,8 +260,9 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (!m) return ev::throwTypeError("Mesh.remeshIsotropic: not a Mesh instance");
         ArgReader r(a);
         float len = static_cast<float>(r.getDouble(0, 0.1));
-        int iters = r.getInt(1, 3);
-        m->mesh = bromesh::remeshIsotropic(m->mesh, len, iters > 0 ? iters : 3);
+        int iters = 3;
+        if (!countArg(a, 1, "Mesh.remeshIsotropic: iterations", 0, kMaxIterations, iters)) return ev::undefined();
+        m->mesh = bromesh::remeshIsotropic(m->mesh, len, iters);
         return self;
     });
 
@@ -256,8 +280,8 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
                 if (sm == "normal" || sm == "projectAlongNormal") mode = 1;
                 else if (sm == "axis" || sm == "projectAlongAxis") mode = 2;
                 else mode = 0;
-            } else {
-                mode = i32At(a, 1);
+            } else if (!countArg(a, 1, "Mesh.shrinkwrap: mode", 0, 2, mode)) {
+                return ev::undefined();
             }
         }
         ArgReader r(a);
@@ -314,24 +338,27 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         double minVol = 0.0001;
         if (!a.empty() && ev::isObject(a[0])) {
             ev::Persistent o(a[0]);
-            Value v = ev::getProperty(o.get(), "maxHulls");
-            if (ev::isNumber(v)) maxHulls = static_cast<int>(ev::toDouble(v));
-            v = ev::getProperty(o.get(), "maxVerticesPerHull");
-            if (ev::isNumber(v)) maxVerts = static_cast<int>(ev::toDouble(v));
-            v = ev::getProperty(o.get(), "resolution");
+            if (!countField(o.get(), "maxHulls", "Mesh.convexDecomposition: maxHulls", 1, kMaxAxis, maxHulls) ||
+                !countField(o.get(), "maxVerticesPerHull", "Mesh.convexDecomposition: maxVerticesPerHull", 4,
+                            kMaxIterations, maxVerts)) {
+                return ev::undefined();
+            }
+            Value v = ev::getProperty(o.get(), "resolution");
             if (ev::isNumber(v)) res = ev::toDouble(v);
             v = ev::getProperty(o.get(), "minVolumePerHull");
             if (ev::isNumber(v)) minVol = ev::toDouble(v);
         } else {
             ArgReader r(a);
-            maxHulls = r.getInt(0, 16);
-            maxVerts = r.getInt(1, 32);
+            if (!countArg(a, 0, "Mesh.convexDecomposition: maxHulls", 1, kMaxAxis, maxHulls) ||
+                !countArg(a, 1, "Mesh.convexDecomposition: maxVerticesPerHull", 4, kMaxIterations, maxVerts)) {
+                return ev::undefined();
+            }
             res = r.getDouble(2, 100000.0);
             minVol = r.getDouble(3, 0.0001);
         }
         bromesh::ConvexDecompParams opts;
-        opts.maxHulls = maxHulls > 0 ? maxHulls : 16;
-        opts.maxVerticesPerHull = maxVerts > 3 ? maxVerts : 32;
+        opts.maxHulls = maxHulls;
+        opts.maxVerticesPerHull = maxVerts;
         opts.resolution = static_cast<float>(res > 0 ? res : 100000.0f);
         opts.minVolumePerHull = static_cast<float>(minVol);
         auto hulls = bromesh::convexDecomposition(m->mesh, opts);
@@ -389,7 +416,8 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.bakeAmbientOcclusion: not a Mesh instance");
         ArgReader r(a);
-        int rays = r.getInt(0, 64);
+        int rays = 64;
+        if (!raysArg(a, 0, "Mesh.bakeAmbientOcclusion", rays)) return ev::undefined();
         float dist = static_cast<float>(r.getDouble(1, 0.0));
         bromesh::bakeAmbientOcclusion(m->mesh, rays, dist);
         return self;
@@ -408,7 +436,8 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.bakeThickness: not a Mesh instance");
         ArgReader r(a);
-        int rays = r.getInt(0, 32);
+        int rays = 32;
+        if (!raysArg(a, 0, "Mesh.bakeThickness", rays)) return ev::undefined();
         float dist = static_cast<float>(r.getDouble(1, 0.0));
         bromesh::bakeThickness(m->mesh, rays, dist);
         return self;
@@ -418,7 +447,10 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.bakeAOToTexture: not a Mesh instance");
         ArgReader r(a);
-        int w = r.getInt(0, 512), h = r.getInt(1, 512), rays = r.getInt(2, 64);
+        int w = 512, h = 512, rays = 64;
+        if (!texSizeArgs(a, 0, "Mesh.bakeAOToTexture", w, h) || !raysArg(a, 2, "Mesh.bakeAOToTexture", rays)) {
+            return ev::undefined();
+        }
         float dist = static_cast<float>(r.getDouble(3, 0.0));
         auto tb = bromesh::bakeAmbientOcclusionToTexture(m->mesh, w, h, rays, dist);
         return makeTextureResult(tb);
@@ -428,7 +460,8 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.bakeCurvatureToTexture: not a Mesh instance");
         ArgReader r(a);
-        int w = r.getInt(0, 512), h = r.getInt(1, 512);
+        int w = 512, h = 512;
+        if (!texSizeArgs(a, 0, "Mesh.bakeCurvatureToTexture", w, h)) return ev::undefined();
         float scale = static_cast<float>(r.getDouble(2, 1.0));
         auto tb = bromesh::bakeCurvatureToTexture(m->mesh, w, h, scale);
         return makeTextureResult(tb);
@@ -438,7 +471,11 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.bakeThicknessToTexture: not a Mesh instance");
         ArgReader r(a);
-        int w = r.getInt(0, 512), h = r.getInt(1, 512), rays = r.getInt(2, 32);
+        int w = 512, h = 512, rays = 32;
+        if (!texSizeArgs(a, 0, "Mesh.bakeThicknessToTexture", w, h) ||
+            !raysArg(a, 2, "Mesh.bakeThicknessToTexture", rays)) {
+            return ev::undefined();
+        }
         float dist = static_cast<float>(r.getDouble(3, 0.0));
         auto tb = bromesh::bakeThicknessToTexture(m->mesh, w, h, rays, dist);
         return makeTextureResult(tb);
@@ -447,8 +484,8 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
     proto.def("bakeNormalsToTexture", 2, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.bakeNormalsToTexture: not a Mesh instance");
-        ArgReader r(a);
-        int w = r.getInt(0, 512), h = r.getInt(1, 512);
+        int w = 512, h = 512;
+        if (!texSizeArgs(a, 0, "Mesh.bakeNormalsToTexture", w, h)) return ev::undefined();
         auto tb = bromesh::bakeNormalsToTexture(m->mesh, w, h);
         return makeTextureResult(tb);
     });
@@ -456,8 +493,8 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
     proto.def("bakePositionToTexture", 2, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.bakePositionToTexture: not a Mesh instance");
-        ArgReader r(a);
-        int w = r.getInt(0, 512), h = r.getInt(1, 512);
+        int w = 512, h = 512;
+        if (!texSizeArgs(a, 0, "Mesh.bakePositionToTexture", w, h)) return ev::undefined();
         auto tb = bromesh::bakePositionToTexture(m->mesh, w, h);
         return makeTextureResult(tb);
     });
@@ -469,7 +506,8 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* high = unwrapMesh(a[0]);
         if (!high) return ev::throwTypeError("Mesh.bakeNormalsFromReference: high must be a Mesh");
         ArgReader r(a);
-        int w = r.getInt(1, 512), h = r.getInt(2, 512);
+        int w = 512, h = 512;
+        if (!texSizeArgs(a, 1, "Mesh.bakeNormalsFromReference", w, h)) return ev::undefined();
         float dist = static_cast<float>(r.getDouble(3, 0.0));
         auto tb = bromesh::bakeNormalsFromReference(low->mesh, high->mesh, w, h, dist);
         return makeTextureResult(tb);
@@ -482,7 +520,11 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         auto* high = unwrapMesh(a[0]);
         if (!high) return ev::throwTypeError("Mesh.bakeAOFromReference: high must be a Mesh");
         ArgReader r(a);
-        int w = r.getInt(1, 512), h = r.getInt(2, 512), rays = r.getInt(3, 64);
+        int w = 512, h = 512, rays = 64;
+        if (!texSizeArgs(a, 1, "Mesh.bakeAOFromReference", w, h) ||
+            !raysArg(a, 3, "Mesh.bakeAOFromReference", rays)) {
+            return ev::undefined();
+        }
         float dist = static_cast<float>(r.getDouble(4, 0.0));
         auto tb = bromesh::bakeAOFromReference(low->mesh, high->mesh, w, h, rays, dist);
         return makeTextureResult(tb);
@@ -499,7 +541,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         if (ev::isObject(a[0])) {
             Value lenVal = ev::getProperty(a[0], "length");
             if (ev::isNumber(lenVal)) {
-                size_t n = static_cast<size_t>(ev::toDouble(lenVal));
+                size_t n = lengthValue(lenVal);
                 for (size_t i = 0; i < n; ++i) {
                     Value elem = ev::getElement(a[0], static_cast<uint32_t>(i));
                     auto* m = unwrapMesh(elem);
@@ -648,15 +690,16 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
 
         bromesh::DracoEncodeOptions opts;
         if (a.size() > 1 && ev::isObject(a[1])) {
-            auto getPropInt = [](Value obj, const char* key, int defVal) -> int {
-                Value v = ev::getProperty(obj, key);
-                return ev::isNumber(v) ? static_cast<int>(ev::toDouble(v)) : defVal;
-            };
-            opts.positionBits = getPropInt(a[1], "positionBits", opts.positionBits);
-            opts.normalBits   = getPropInt(a[1], "normalBits", opts.normalBits);
-            opts.uvBits       = getPropInt(a[1], "uvBits", opts.uvBits);
-            opts.colorBits    = getPropInt(a[1], "colorBits", opts.colorBits);
-            opts.speed        = getPropInt(a[1], "speed", getPropInt(a[1], "compressionLevel", opts.speed));
+            // Quantization is 1..30 bits and the speed dial 0..10, Draco's
+            // own ranges; `speed` wins over the `compressionLevel` spelling.
+            if (!countField(a[1], "positionBits", "Mesh.encodeDraco: positionBits", 1, 30, opts.positionBits) ||
+                !countField(a[1], "normalBits", "Mesh.encodeDraco: normalBits", 1, 30, opts.normalBits) ||
+                !countField(a[1], "uvBits", "Mesh.encodeDraco: uvBits", 1, 30, opts.uvBits) ||
+                !countField(a[1], "colorBits", "Mesh.encodeDraco: colorBits", 1, 30, opts.colorBits) ||
+                !countField(a[1], "compressionLevel", "Mesh.encodeDraco: compressionLevel", 0, 10, opts.speed) ||
+                !countField(a[1], "speed", "Mesh.encodeDraco: speed", 0, 10, opts.speed)) {
+                return ev::undefined();
+            }
         }
 
         std::string err;

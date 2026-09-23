@@ -73,9 +73,22 @@ bool arrayLength(Value v, size_t& n) {
     Value lenVal = ev::getProperty(v, "length");
     if (!ev::isNumber(lenVal)) return false;
     double d = ev::toDouble(lenVal);
-    if (!(d >= 0.0)) return false;
+    // A list longer than kMaxElements is not one this binding copies: the
+    // readers size their output by n up front, and a lying `length` would
+    // otherwise be an allocation of that size.
+    if (!(d >= 0.0) || d > kMaxElements) return false;
     n = static_cast<size_t>(d);
     return true;
+}
+
+// A uint64 seed: any finite number, negative ones wrapping as a two's
+// complement int64 would, so -1 and 2^64 - 1 seed alike.
+uint64_t seedValue(double d) {
+    if (!std::isfinite(d)) return 0;
+    if (d >= 18446744073709551615.0) return UINT64_MAX;
+    if (d >= 0) return static_cast<uint64_t>(d);
+    if (d <= -9223372036854775808.0) return static_cast<uint64_t>(INT64_MIN);
+    return static_cast<uint64_t>(static_cast<int64_t>(d));
 }
 
 double objNum(Value o, const char* key, double def) {
@@ -86,8 +99,10 @@ double objNum(Value o, const char* key, double def) {
     return std::isnan(d) ? def : d;
 }
 
+// A non-count int field (tag, parent, depth, seed), saturating. Counts use
+// countField, which throws on a bad value instead.
 int objInt(Value o, const char* key, int def) {
-    return static_cast<int>(objNum(o, key, static_cast<double>(def)));
+    return satInt(objNum(o, key, static_cast<double>(def)));
 }
 
 bool objBool(Value o, const char* key, bool def) {
@@ -372,8 +387,8 @@ const bromesh::CapsuleField* readAvoidField(Value opts, const char* key) {
 
 bromesh::LeafShape parseLeafShape(Value v) {
     if (ev::isNumber(v)) {
-        int i = static_cast<int>(ev::toDouble(v));
-        if (i >= 0 && i <= 5) return static_cast<bromesh::LeafShape>(i);
+        const double d = ev::toDouble(v);
+        if (d >= 0.0 && d < 6.0) return static_cast<bromesh::LeafShape>(static_cast<int>(d));
         return bromesh::LeafShape::Oval;
     }
     if (!ev::isString(v)) return bromesh::LeafShape::Oval;
@@ -401,7 +416,7 @@ void readLeafPlacementOptions(Value in, bromesh::LeafPlacementOptions& opts) {
     opts.scaleJitter    = static_cast<float>(objNum(o, "scaleJitter",    opts.scaleJitter));
     opts.scaleByRadius  = static_cast<float>(objNum(o, "scaleByRadius",  opts.scaleByRadius));
     opts.dedupRadius    = static_cast<float>(objNum(o, "dedupRadius",    opts.dedupRadius));
-    opts.seed           = static_cast<uint64_t>(objNum(o, "seed", static_cast<double>(opts.seed)));
+    opts.seed           = seedValue(objNum(o, "seed", static_cast<double>(opts.seed)));
     readFloatLikeOpt(o, "densityWeight", opts.densityWeight);
     opts.avoid             = readAvoidField(o, "avoid");
     opts.obstacleClearance = static_cast<float>(objNum(o, "obstacleClearance", opts.obstacleClearance));
@@ -409,18 +424,22 @@ void readLeafPlacementOptions(Value in, bromesh::LeafPlacementOptions& opts) {
     readSpheresOpt(o, "keepOut", opts.keepOut);
 }
 
-void readColonizeOptions(Value in, bromesh::SpaceColonizationOptions& opts) {
-    if (!ev::isObject(in)) return;
+// Returns false once it has thrown (a bad maxIterations).
+bool readColonizeOptions(Value in, bromesh::SpaceColonizationOptions& opts) {
+    if (!ev::isObject(in)) return true;
     Rooted o(in);  // re-read at every field: each read allocates
     opts.attractionRadius = static_cast<float>(objNum(o, "attractionRadius", opts.attractionRadius));
     opts.killRadius       = static_cast<float>(objNum(o, "killRadius",       opts.killRadius));
     opts.segmentLength    = static_cast<float>(objNum(o, "segmentLength",    opts.segmentLength));
-    opts.maxIterations    = objInt(o, "maxIterations", opts.maxIterations);
+    if (!countField(o, "maxIterations", "spaceColonize: maxIterations", 0, kMaxIterations, opts.maxIterations)) {
+        return false;
+    }
     opts.tropismWeight    = static_cast<float>(objNum(o, "tropismWeight",    opts.tropismWeight));
     objVec3(o, "tropism", opts.tropism);
     opts.obstacles         = readAvoidField(o, "obstacles");
     opts.obstacleClearance = static_cast<float>(objNum(o, "obstacleClearance", opts.obstacleClearance));
     opts.obstacleSteer     = static_cast<float>(objNum(o, "obstacleSteer",     opts.obstacleSteer));
+    return true;
 }
 
 Value makeCapsuleField(std::vector<bromesh::Capsule> caps, std::vector<bromesh::Sphere> sphs, float cellSize) {
@@ -439,8 +458,13 @@ Value capsuleFieldFromArgs(std::span<const Value> a) {
     return makeCapsuleField(std::move(caps), std::move(sphs), cellSize);
 }
 
+// L-system derivation depth. Typical systems run 3-8; a rule that grows the
+// string doubles it (or more) per pass, so past a few dozen passes any
+// growing system is out of memory.
+constexpr double kMaxLSystemIterations = 64.0;
+
 int excludeTagAt(std::span<const Value> a, size_t i) {
-    return (i < a.size() && ev::isNumber(a[i])) ? static_cast<int>(ev::toDouble(a[i])) : -1;
+    return (i < a.size() && ev::isNumber(a[i])) ? satInt(ev::toDouble(a[i])) : -1;
 }
 
 } // namespace
@@ -485,7 +509,9 @@ void initMeshPlants(HostClass& cls) {
         bromesh::BezierSweepOptions o;
         if (a.size() > 2 && ev::isObject(a[2])) {
             Rooted ov(a[2]);
-            o.samples      = objInt(ov, "samples", o.samples);
+            if (!countField(ov, "samples", "Mesh.bezierSweep: samples", 2, kMaxElements, o.samples)) {
+                return ev::undefined();
+            }
             o.capStart     = objBool(ov, "capStart", o.capStart);
             o.capEnd       = objBool(ov, "capEnd", o.capEnd);
             o.closeProfile = objBool(ov, "closeProfile", o.closeProfile);
@@ -507,9 +533,9 @@ void initMeshPlants(HostClass& cls) {
         }
         if (radii.empty()) radii.push_back(0.1f);
         bromesh::TubeOptions opts;
-        if (a.size() > 2 && ev::isNumber(a[2])) {
-            int s = static_cast<int>(ev::toDouble(a[2]));
-            if (s >= 3) opts.sides = s;
+        if (a.size() > 2 && !ev::isNull(a[2]) &&
+            !countArg(a, 2, "Mesh.tube: sides", 3, kMaxAxis, opts.sides)) {
+            return ev::undefined();
         }
         if (a.size() > 3 && ev::isObject(a[3])) {
             opts.capStart    = objBool(a[3], "capStart",    opts.capStart);
@@ -534,7 +560,7 @@ void initMeshPlants(HostClass& cls) {
             Rooted o(a[0]);
             radius = objNum(o, "radius", radius);
             seed   = objInt(o, "seed", seed);
-            nsub   = objInt(o, "nsub", nsub);
+            if (!countField(o, "nsub", "Mesh.blob: nsub", 0, kMaxSubdivisions, nsub)) return ev::undefined();
             Value sv = ev::getProperty(o, "scale");
             if (ev::isNumber(sv)) {
                 float s = static_cast<float>(ev::toDouble(sv));
@@ -547,9 +573,8 @@ void initMeshPlants(HostClass& cls) {
             ArgReader r(a);
             radius = r.getDouble(0, radius);
             seed   = r.getInt(1, seed);
-            nsub   = r.getInt(2, nsub);
+            if (!countArg(a, 2, "Mesh.blob: nsub", 0, kMaxSubdivisions, nsub)) return ev::undefined();
         }
-        if (nsub < 0) nsub = 0;
         return wrapMesh(bromesh::blob(static_cast<float>(radius), seed, nsub,
                                       scale.x, scale.y, scale.z,
                                       center.x, center.y, center.z));
@@ -568,8 +593,11 @@ void initMeshPlants(HostClass& cls) {
             o.curl   = static_cast<float>(objNum(ov, "curl",   o.curl));
             o.cup    = static_cast<float>(objNum(ov, "cup",    o.cup));
             o.stemOffset       = objBool(ov, "stemOffset", o.stemOffset);
-            o.widthSegments    = objInt(ov, "widthSegments",  o.widthSegments);
-            o.lengthSegments   = objInt(ov, "lengthSegments", o.lengthSegments);
+            if (!countField(ov, "widthSegments", "Mesh.leafCard: widthSegments", 1, kMaxAxis, o.widthSegments) ||
+                !countField(ov, "lengthSegments", "Mesh.leafCard: lengthSegments", 1, kMaxAxis,
+                            o.lengthSegments)) {
+                return ev::undefined();
+            }
             o.fullUV           = objBool(ov, "fullUV", o.fullUV);
             o.shapedSilhouette = objBool(ov, "shapedSilhouette", o.shapedSilhouette);
         }
@@ -581,14 +609,17 @@ void initMeshPlants(HostClass& cls) {
         bromesh::FlowerOptions o;
         if (!a.empty() && ev::isObject(a[0])) {
             Rooted ov(a[0]);
-            o.petalCount = objInt(ov, "petalCount", o.petalCount);
+            // Each petal is a 4x8 card; petalCount * layers of them.
+            if (!countField(ov, "petalCount", "Mesh.flower: petalCount", 1, kMaxAxis, o.petalCount) ||
+                !countField(ov, "layers", "Mesh.flower: layers", 1, 64, o.layers)) {
+                return ev::undefined();
+            }
             Value ps = ev::getProperty(ov, "petalShape");
             if (isPresent(ps)) o.petalShape = parseLeafShape(ps);
             o.petalLength  = static_cast<float>(objNum(ov, "petalLength",  o.petalLength));
             o.petalWidth   = static_cast<float>(objNum(ov, "petalWidth",   o.petalWidth));
             o.petalCurl    = static_cast<float>(objNum(ov, "petalCurl",    o.petalCurl));
             o.petalBend    = static_cast<float>(objNum(ov, "petalBend",    o.petalBend));
-            o.layers       = objInt(ov, "layers", o.layers);
             o.layerTwist   = static_cast<float>(objNum(ov, "layerTwist",   o.layerTwist));
             o.centerRadius = static_cast<float>(objNum(ov, "centerRadius", o.centerRadius));
             o.centerHeight = static_cast<float>(objNum(ov, "centerHeight", o.centerHeight));
@@ -637,7 +668,9 @@ void initMeshPlants(HostClass& cls) {
             o.length   = static_cast<float>(objNum(ov, "length", o.length));
             o.bend     = static_cast<float>(objNum(ov, "bend",   o.bend));
             o.lift     = static_cast<float>(objNum(ov, "lift",   o.lift));
-            o.segments = objInt(ov, "segments", o.segments);
+            if (!countField(ov, "segments", "Mesh.bladePath: segments", 1, kMaxElements, o.segments)) {
+                return ev::undefined();
+            }
         }
         std::vector<bromath::Vec3> pts = bromesh::bladePath(o);
         return hostArrayOf(pts.size(), [&](size_t i) { return makeVec3Array(pts[i]); });
@@ -652,7 +685,7 @@ void initMeshPlants(HostClass& cls) {
         if (!readVec3List(a[1], seeds)) return ev::throwTypeError("Mesh.spaceColonize: seedPoints must be a Vec3 list");
         bromath::Vec3 initDir = readVec3(a[2]);
         bromesh::SpaceColonizationOptions opts;
-        if (a.size() > 3) readColonizeOptions(a[3], opts);
+        if (a.size() > 3 && !readColonizeOptions(a[3], opts)) return ev::undefined();
         return makeBranchSegments(bromesh::spaceColonize(attractors, seeds, initDir, opts));
     });
 
@@ -672,9 +705,9 @@ void initMeshPlants(HostClass& cls) {
         std::vector<bromesh::BranchSegment> segs;
         if (!readBranchSegments(a[0], segs)) return ev::throwTypeError("Mesh.meshBranches: segments must be an array of branch segment objects");
         int sides = 8;
-        if (a.size() > 1 && ev::isNumber(a[1])) {
-            int s = static_cast<int>(ev::toDouble(a[1]));
-            if (s >= 3) sides = s;
+        if (a.size() > 1 && !ev::isNull(a[1]) &&
+            !countArg(a, 1, "Mesh.meshBranches: sides", 3, kMaxAxis, sides)) {
+            return ev::undefined();
         }
         return wrapMesh(bromesh::meshBranches(segs, sides));
     });
@@ -714,13 +747,15 @@ void initMeshPlants(HostClass& cls) {
             objVec3(ov, "base", o.base);
             objVec3(ov, "canopyCenter", o.canopyCenter);
             o.canopyRadius   = static_cast<float>(objNum(ov, "canopyRadius", o.canopyRadius));
-            o.attractorCount = objInt(ov, "attractorCount", o.attractorCount);
-            o.sides          = objInt(ov, "sides", o.sides);
+            if (!countField(ov, "attractorCount", "Mesh.tree: attractorCount", 0, kMaxElements, o.attractorCount) ||
+                !countField(ov, "sides", "Mesh.tree: sides", 3, kMaxAxis, o.sides)) {
+                return ev::undefined();
+            }
             o.leafRadius     = static_cast<float>(objNum(ov, "leafRadius", o.leafRadius));
             o.pipeExp        = static_cast<float>(objNum(ov, "pipeExp", o.pipeExp));
             o.seed           = objInt(ov, "seed", o.seed);
             Value colv = ev::getProperty(ov, "colonize");
-            if (ev::isObject(colv)) readColonizeOptions(colv, o.colonize);
+            if (ev::isObject(colv) && !readColonizeOptions(colv, o.colonize)) return ev::undefined();
         }
         bromesh::TreeResult r = bromesh::tree(o);
         ObjectBuilder out;
@@ -758,8 +793,10 @@ void initMeshPlants(HostClass& cls) {
             Rooted ov(a[1]);
             opts.minSpacing          = static_cast<float>(objNum(ov, "minSpacing",          opts.minSpacing));
             opts.minObstacleDistance = static_cast<float>(objNum(ov, "minObstacleDistance", opts.minObstacleDistance));
-            opts.maxCount            = objInt(ov, "maxCount", opts.maxCount);
-            opts.seed                = static_cast<uint64_t>(objNum(ov, "seed", static_cast<double>(opts.seed)));
+            if (!countField(ov, "maxCount", "Mesh.packAnchors: maxCount", 0, kMaxInt32, opts.maxCount)) {
+                return ev::undefined();
+            }
+            opts.seed                = seedValue(objNum(ov, "seed", static_cast<double>(opts.seed)));
             avoid = readAvoidField(ov, "avoid");
             readSpheresOpt(ov, "keepOut", keepOut);
         }
@@ -895,13 +932,21 @@ void initLSystem(HostClass& cls) {
         proto.def("derive", 2, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapLSystem(self);
             if (!h) return ev::throwTypeError("LSystem.derive: not an LSystem instance");
-            auto mods = h->ls->derive(i32At(a, 0), static_cast<uint64_t>(i64At(a, 1)));
+            int iterations = 0;
+            if (!countArg(a, 0, "LSystem.derive: iterations", 0, kMaxLSystemIterations, iterations)) {
+                return ev::undefined();
+            }
+            auto mods = h->ls->derive(iterations, seedValue(numAt(a, 1)));
             return ev::fromUtf8(bromesh::serializeModules(mods));
         });
         proto.def("deriveModules", 2, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapLSystem(self);
             if (!h) return ev::throwTypeError("LSystem.deriveModules: not an LSystem instance");
-            return makeModules(h->ls->derive(i32At(a, 0), static_cast<uint64_t>(i64At(a, 1))));
+            int iterations = 0;
+            if (!countArg(a, 0, "LSystem.deriveModules: iterations", 0, kMaxLSystemIterations, iterations)) {
+                return ev::undefined();
+            }
+            return makeModules(h->ls->derive(iterations, seedValue(numAt(a, 1))));
         });
     });
 }

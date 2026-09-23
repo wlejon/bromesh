@@ -298,8 +298,8 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
     proto.def("mirror", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.mirror: not a Mesh instance");
-        int axis = i32At(a, 0);
-        if (axis < 0 || axis > 2) return ev::throwRangeError("Mesh.mirror: axis must be 0 (X), 1 (Y), or 2 (Z)");
+        int axis = 0;
+        if (!countArg(a, 0, "Mesh.mirror: axis (0 X, 1 Y, 2 Z)", 0, 2, axis)) return ev::undefined();
         bromesh::mirrorMesh(m->mesh, axis);
         return self;
     });
@@ -320,54 +320,70 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
     bindStatic("sphere", 3, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 1.0));
-        int segs = r.getInt(1, 16);
-        int rings = r.getInt(2, 12);
-        return wrapMesh(bromesh::sphere(radius, segs > 2 ? segs : 16, rings > 1 ? rings : 12));
+        int segs = 16, rings = 12;
+        if (!countArg(a, 1, "Mesh.sphere: segments", 3, kMaxAxis, segs) ||
+            !countArg(a, 2, "Mesh.sphere: rings", 2, kMaxAxis, rings)) {
+            return ev::undefined();
+        }
+        return wrapMesh(bromesh::sphere(radius, segs, rings));
     });
 
     bindStatic("cylinder", 3, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 0.5));
         float halfH = static_cast<float>(r.getDouble(1, 1.0));
-        int segs = r.getInt(2, 16);
-        return wrapMesh(bromesh::cylinder(radius, halfH, segs > 2 ? segs : 16));
+        int segs = 16;
+        if (!countArg(a, 2, "Mesh.cylinder: segments", 3, kMaxAxis, segs)) return ev::undefined();
+        return wrapMesh(bromesh::cylinder(radius, halfH, segs));
     });
 
     bindStatic("capsule", 4, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 0.5));
         float halfH = static_cast<float>(r.getDouble(1, 1.0));
-        int segs = r.getInt(2, 16);
-        int rings = r.getInt(3, 8);
-        return wrapMesh(bromesh::capsule(radius, halfH, segs > 2 ? segs : 16, rings > 0 ? rings : 8));
+        int segs = 16, rings = 8;
+        if (!countArg(a, 2, "Mesh.capsule: segments", 3, kMaxAxis, segs) ||
+            !countArg(a, 3, "Mesh.capsule: rings", 1, kMaxAxis, rings)) {
+            return ev::undefined();
+        }
+        return wrapMesh(bromesh::capsule(radius, halfH, segs, rings));
     });
 
     bindStatic("cone", 5, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 0.5));
         float height = static_cast<float>(r.getDouble(1, 1.0));
-        int segs = r.getInt(2, 16);
-        int stacks = r.getInt(3, 4);
+        int segs = 16, stacks = 4;
+        if (!countArg(a, 2, "Mesh.cone: segments", 3, kMaxAxis, segs) ||
+            !countArg(a, 3, "Mesh.cone: stacks", 1, kMaxAxis, stacks)) {
+            return ev::undefined();
+        }
         bool capped = r.has(4) ? r.getBool(4, true) : true;
-        return wrapMesh(bromesh::cone(radius, height, segs > 2 ? segs : 16, stacks > 0 ? stacks : 4, capped));
+        return wrapMesh(bromesh::cone(radius, height, segs, stacks, capped));
     });
 
     bindStatic("plane", 4, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float w = static_cast<float>(r.getDouble(0, 1.0));
         float h = static_cast<float>(r.has(1) ? r.getDouble(1, w) : w);
-        int segW = r.getInt(2, 1);
-        int segH = r.getInt(3, 1);
-        return wrapMesh(bromesh::plane(w, h, segW > 0 ? segW : 1, segH > 0 ? segH : 1));
+        int segW = 1, segH = 1;
+        if (!countArg(a, 2, "Mesh.plane: segmentsW", 1, kMaxAxis, segW) ||
+            !countArg(a, 3, "Mesh.plane: segmentsH", 1, kMaxAxis, segH)) {
+            return ev::undefined();
+        }
+        return wrapMesh(bromesh::plane(w, h, segW, segH));
     });
 
     bindStatic("torus", 4, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 1.0));
         float tubeRadius = static_cast<float>(r.getDouble(1, 0.3));
-        int segs = r.getInt(2, 24);
-        int tubeSegs = r.getInt(3, 12);
-        return wrapMesh(bromesh::torus(radius, tubeRadius, segs > 2 ? segs : 24, tubeSegs > 2 ? tubeSegs : 12));
+        int segs = 24, tubeSegs = 12;
+        if (!countArg(a, 2, "Mesh.torus: segments", 3, kMaxAxis, segs) ||
+            !countArg(a, 3, "Mesh.torus: tubeSegments", 3, kMaxAxis, tubeSegs)) {
+            return ev::undefined();
+        }
+        return wrapMesh(bromesh::torus(radius, tubeRadius, segs, tubeSegs));
     });
 
     bindStatic("icosahedron", 1, [](Value, std::span<const Value> a) -> Value {
@@ -398,24 +414,22 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
         return wrapMesh(std::move(m));
     });
 
-    bindStatic("disk", 2, [](Value, std::span<const Value> a) -> Value {
+    auto disc = [](std::string_view fn, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 1.0));
-        int segs = r.getInt(1, 16);
-        return wrapMesh(bromesh::disc(radius > 0.0f ? radius : 1.0f, segs > 2 ? segs : 16));
-    });
-    bindStatic("disc", 2, [](Value, std::span<const Value> a) -> Value {
-        ArgReader r(a);
-        float radius = static_cast<float>(r.getDouble(0, 1.0));
-        int segs = r.getInt(1, 16);
-        return wrapMesh(bromesh::disc(radius > 0.0f ? radius : 1.0f, segs > 2 ? segs : 16));
-    });
+        int segs = 16;
+        if (!countArg(a, 1, std::string(fn) + ": segments", 3, kMaxAxis, segs)) return ev::undefined();
+        return wrapMesh(bromesh::disc(radius > 0.0f ? radius : 1.0f, segs));
+    };
+    bindStatic("disk", 2, [disc](Value, std::span<const Value> a) -> Value { return disc("Mesh.disk", a); });
+    bindStatic("disc", 2, [disc](Value, std::span<const Value> a) -> Value { return disc("Mesh.disc", a); });
 
 #if BROMESH_HAS_PAR_SHAPES
     bindStatic("geodesicSphere", 2, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 1.0));
-        int subdiv = a.size() > 1 ? (r.getInt(1, 2) >= 0 ? r.getInt(1, 2) : 0) : 2;
+        int subdiv = 2;  // 20 * 4^subdivisions faces
+        if (!countArg(a, 1, "Mesh.geodesicSphere: subdivisions", 0, kMaxSubdivisions, subdiv)) return ev::undefined();
         return wrapMesh(bromesh::geodesicSphere(radius > 0.0f ? radius : 1.0f, subdiv));
     });
 
@@ -423,7 +437,8 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
         ArgReader r(a);
         float radius = static_cast<float>(r.getDouble(0, 1.0));
         int seed = r.getInt(1, 1);
-        int subdiv = a.size() > 2 ? (r.getInt(2, 2) >= 0 ? r.getInt(2, 2) : 0) : 2;
+        int subdiv = 2;
+        if (!countArg(a, 2, "Mesh.rock: subdivisions", 0, kMaxSubdivisions, subdiv)) return ev::undefined();
         return wrapMesh(bromesh::rock(radius > 0.0f ? radius : 1.0f, seed, subdiv));
     });
 #endif
@@ -435,15 +450,21 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
         if (a.empty()) return ev::throwTypeError("Mesh.heightmapGrid: heights required");
         std::vector<float> heights = toFloatVector(a[0]);
         ArgReader r(a);
-        int gw = r.getInt(1, 0);
-        int gh = r.getInt(2, 0);
+        int gw = 0, gh = 0, b = 0;
+        if (!countArg(a, 1, "Mesh.heightmapGrid: gridW", 0, kMaxInt32, gw) ||
+            !countArg(a, 2, "Mesh.heightmapGrid: gridH", 0, kMaxInt32, gh) ||
+            !countArg(a, 4, "Mesh.heightmapGrid: border", 0, kMaxAxis, b)) {
+            return ev::undefined();
+        }
         double cellSize = r.getDouble(3, 1.0);
-        int border = r.getInt(4, 0);
 
         if (gw <= 0 || gh <= 0) return ev::throwTypeError("Mesh.heightmapGrid: width and height must be positive");
-        int b = border > 0 ? border : 0;
-        size_t expected = static_cast<size_t>(gw + 2 * b) * (gh + 2 * b);
-        if (heights.size() < expected) return ev::throwTypeError("Mesh.heightmapGrid: heights array too short");
+        // In double: (gw + 2b) * (gh + 2b) overflows an int long before the
+        // heights array could hold it.
+        const double expected = (static_cast<double>(gw) + 2.0 * b) * (static_cast<double>(gh) + 2.0 * b);
+        if (static_cast<double>(heights.size()) < expected) {
+            return ev::throwTypeError("Mesh.heightmapGrid: heights array too short");
+        }
         return wrapMesh(bromesh::heightmapGrid(heights.data(), gw, gh, static_cast<float>(cellSize > 0.0 ? cellSize : 1.0f), b));
     });
 }

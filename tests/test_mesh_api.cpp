@@ -24,6 +24,8 @@ using bronze::Value;
 void bromeshTestRestoredSurface();
 // Same file: the bindings fixed in the GC-rooting audit.
 void bromeshTestBindingFixes();
+// tests/test_mesh_api_validation.cpp — counts, sizes and indices throw.
+void bromeshTestValidation();
 
 int main() {
     std::cout << "========================================" << std::endl;
@@ -191,6 +193,7 @@ int main() {
 
     bromeshTestRestoredSurface();
     bromeshTestBindingFixes();
+    bromeshTestValidation();
 
     std::cout << "========================================" << std::endl;
     std::cout << "All bromesh Bronze API tests PASSED!" << std::endl;

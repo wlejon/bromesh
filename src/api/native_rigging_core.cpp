@@ -44,8 +44,7 @@ bromesh::Landmarks landmarksFromObject(Value v) {
         auto res = ev::call(keysFn, ev::undefined(), std::span<const Value>(args, 1));
         if (!res.thrown && ev::isObject(res.value)) {
             Rooted keys(res.value);
-            Value lenVal = ev::getProperty(keys, "length");
-            size_t n = ev::isNumber(lenVal) ? static_cast<size_t>(ev::toDouble(lenVal)) : 0;
+            size_t n = lengthValue(ev::getProperty(keys, "length"));
             for (size_t i = 0; i < n; ++i) {
                 std::string k = ev::toUtf8(ev::getElement(keys, static_cast<uint32_t>(i)));
                 std::vector<float> pt = toFloatVector(ev::getProperty(root, k));
@@ -169,7 +168,7 @@ void readBoneObject(Value in, bromesh::Bone& b) {
         if (f.size() >= n) std::copy(f.begin(), f.begin() + n, dst);
     };
     if (Value v = ev::getProperty(o, "name"); ev::isString(v)) b.name = ev::toUtf8(v);
-    if (Value v = ev::getProperty(o, "parent"); ev::isNumber(v)) b.parent = static_cast<int>(ev::toDouble(v));
+    if (Value v = ev::getProperty(o, "parent"); ev::isNumber(v)) b.parent = satInt(ev::toDouble(v));
     floats("localT", "translation", b.localT, 3);
     floats("localR", "rotation", b.localR, 4);
     floats("localS", "scale", b.localS, 3);
@@ -203,8 +202,11 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
                 h->skin.inverseBindMatrices = toFloatVector(v);
             }
             Value bcVal = ev::getProperty(opts, "boneCount");
-            if (ev::isNumber(bcVal)) {
-                h->skin.boneCount = static_cast<size_t>(ev::toDouble(bcVal));
+            if (!ev::isUndefined(bcVal)) {
+                // Weight post-processing densifies to vertices x boneCount.
+                int64_t bc = 0;
+                if (!intValue(bcVal, "SkinData: boneCount", 0, 1048576.0, bc)) return ev::undefined();
+                h->skin.boneCount = static_cast<size_t>(bc);
             } else if (!h->skin.inverseBindMatrices.empty()) {
                 h->skin.boneCount = h->skin.inverseBindMatrices.size() / 16;
             }
@@ -325,7 +327,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         if (!a.empty() && ev::isObject(a[0])) {
             readBoneObject(a[0], h->bone);
             Value idxVal = ev::getProperty(a[0], "index");  // a[0]: rooted slot
-            if (ev::isNumber(idxVal)) h->index = static_cast<int>(ev::toDouble(idxVal));
+            if (ev::isNumber(idxVal)) h->index = satInt(ev::toDouble(idxVal));
         }
         return g_jointClass.createInstance(std::move(h));
     }, [](ObjectBuilder& proto) {
@@ -397,8 +399,8 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             // rooted here, since every read allocates.
             Rooted bones(ev::getProperty(a[0], "bones"));
             if (ev::isObject(bones)) {
-                Value lenVal = ev::getProperty(bones, "length");
-                size_t n = ev::isNumber(lenVal) ? static_cast<size_t>(ev::toDouble(lenVal)) : 0;
+                size_t n = 0;
+                if (!listLength(ev::getProperty(bones, "length"), "Skeleton: bones", n)) return ev::undefined();
                 h->skeleton.bones.reserve(n);
                 for (size_t i = 0; i < n; ++i) {
                     Value bVal = ev::getElement(bones, static_cast<uint32_t>(i));
@@ -410,12 +412,22 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
                     }
                     h->skeleton.bones.push_back(b);
                 }
+                // The world-matrix and IK walks index bones[parent]: a parent
+                // is a bone of this skeleton, or negative for a root.
+                for (size_t i = 0; i < n; ++i) {
+                    const int p = h->skeleton.bones[i].parent;
+                    if (p >= 0 && static_cast<size_t>(p) >= n) {
+                        return ev::throwRangeError("Skeleton: bone " + std::to_string(i) + " has parent " +
+                                                   std::to_string(p) + ", out of range for " +
+                                                   std::to_string(n) + " bones");
+                    }
+                }
             }
 
             Rooted sockets(ev::getProperty(a[0], "sockets"));
             if (ev::isObject(sockets)) {
-                Value lenVal = ev::getProperty(sockets, "length");
-                size_t n = ev::isNumber(lenVal) ? static_cast<size_t>(ev::toDouble(lenVal)) : 0;
+                size_t n = 0;
+                if (!listLength(ev::getProperty(sockets, "length"), "Skeleton: sockets", n)) return ev::undefined();
                 for (size_t i = 0; i < n; ++i) {
                     Rooted s(ev::getElement(sockets, static_cast<uint32_t>(i)));
                     if (!ev::isObject(s)) continue;
@@ -423,7 +435,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
                     if (Value v = ev::getProperty(s, "name"); ev::isString(v)) sock.name = ev::toUtf8(v);
                     Value boneVal = ev::getProperty(s, "boneIndex");
                     if (ev::isUndefined(boneVal)) boneVal = ev::getProperty(s, "bone");
-                    if (ev::isNumber(boneVal)) sock.bone = static_cast<int>(ev::toDouble(boneVal));
+                    if (ev::isNumber(boneVal)) sock.bone = satInt(ev::toDouble(boneVal));
                     if (Value v = ev::getProperty(s, "offset"); !ev::isUndefined(v)) {
                         auto off = toFloatVector(v);
                         if (off.size() >= 16) {
@@ -509,7 +521,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
                 sock.name = ev::toUtf8(ev::getProperty(a[0], "name"));
                 Value bVal = ev::getProperty(a[0], "bone");
                 if (ev::isUndefined(bVal)) bVal = ev::getProperty(a[0], "boneIndex");
-                sock.bone = ev::isNumber(bVal) ? static_cast<int>(ev::toDouble(bVal)) : 0;
+                sock.bone = ev::isNumber(bVal) ? satInt(ev::toDouble(bVal)) : 0;
                 auto off = toFloatVector(ev::getProperty(a[0], "offset"));
                 if (off.size() >= 16) for (int i = 0; i < 16; ++i) sock.offset[i] = off[i];
             } else {
@@ -779,12 +791,16 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
     // =========================================================================
     voxelCls.install("VoxelChunk", 4, [](Value, std::span<const Value> a) -> Value {
         ArgReader r(a);
-        int dx = r.getInt(0, 16);
-        int dy = r.getInt(1, 16);
-        int dz = r.getInt(2, 16);
+        int dx = 16, dy = 16, dz = 16;
+        if (!countArg(a, 0, "VoxelChunk: sizeX", 1, kMaxVolumeAxis, dx) ||
+            !countArg(a, 1, "VoxelChunk: sizeY", 1, kMaxVolumeAxis, dy) ||
+            !countArg(a, 2, "VoxelChunk: sizeZ", 1, kMaxVolumeAxis, dz) ||
+            !volumeCellsOk("VoxelChunk", dx, dy, dz)) {
+            return ev::undefined();
+        }
         float cs = static_cast<float>(r.getDouble(3, 1.0));
         auto h = std::make_unique<HostVoxelChunk>();
-        h->chunk = std::make_unique<bromesh::VoxelChunk>(dx > 0 ? dx : 16, dy > 0 ? dy : 16, dz > 0 ? dz : 16, cs > 0.0f ? cs : 1.0f);
+        h->chunk = std::make_unique<bromesh::VoxelChunk>(dx, dy, dz, cs > 0.0f ? cs : 1.0f);
         return g_voxelChunkClass.createInstance(std::move(h));
     }, [](ObjectBuilder& proto) {
         proto.accessor("sizeX", [](Value self, std::span<const Value>) -> Value {
@@ -832,7 +848,9 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             auto* v = unwrapVoxelChunk(self);
             if (!v || !v->chunk) return ev::throwTypeError("VoxelChunk.set: not an instance");
             ArgReader r(a);
-            v->chunk->setVoxel(r.getInt(0, 0), r.getInt(1, 0), r.getInt(2, 0), static_cast<uint8_t>(r.getInt(3, 0)));
+            uint8_t material = 0;
+            if (!countArg(a, 3, "VoxelChunk.set: material", 0, 255, material)) return ev::undefined();
+            v->chunk->setVoxel(r.getInt(0, 0), r.getInt(1, 0), r.getInt(2, 0), material);
             return self;
         });
         proto.def("setVoxel", 4, [](Value self, std::span<const Value> a) -> Value {
@@ -852,7 +870,9 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         proto.def("fill", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* v = unwrapVoxelChunk(self);
             if (!v || !v->chunk) return ev::throwTypeError("VoxelChunk.fill: not an instance");
-            v->chunk->fill(static_cast<uint8_t>(i32At(a, 0)));
+            uint8_t material = 0;
+            if (!countArg(a, 0, "VoxelChunk.fill: material", 0, 255, material)) return ev::undefined();
+            v->chunk->fill(material);
             return self;
         });
 
@@ -894,8 +914,13 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
             if (!a.empty()) {
                 palVec = toFloatVector(a[0]);
                 if (!palVec.empty()) {
+                    // The mesher reads 4 floats per palette entry below count.
                     pal = palVec.data();
-                    count = a.size() > 1 ? i32At(a, 1) : static_cast<int>(palVec.size() / 4);
+                    count = static_cast<int>(std::min<size_t>(palVec.size() / 4, 256));
+                    if (!countArg(a, 1, "VoxelChunk.buildMesh: paletteCount", 0,
+                                  static_cast<double>(palVec.size() / 4), count)) {
+                        return ev::undefined();
+                    }
                 }
             }
             return wrapMesh(v->chunk->buildMesh(pal, count));

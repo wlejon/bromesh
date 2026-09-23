@@ -370,8 +370,8 @@ inline std::vector<float> toFloatVector(Value val) {
         ev::Persistent arr(val);
         Value lenVal = ev::getProperty(arr.get(), "length");
         if (ev::isNumber(lenVal)) {
-            size_t n = static_cast<size_t>(ev::toDouble(lenVal));
-            result.reserve(n);
+            const size_t n = lengthValue(lenVal);
+            result.reserve(std::min<size_t>(n, kReserveCap));
             auto num = [](Value v, double& out) {
                 if (ev::isUndefined(v)) return false;
                 out = ev::toDouble(v);
@@ -411,11 +411,11 @@ inline std::vector<uint32_t> toUint32Vector(Value val) {
         ev::Persistent arr(val);  // rooted across the allocating reads
         Value lenVal = ev::getProperty(arr.get(), "length");
         if (ev::isNumber(lenVal)) {
-            size_t n = static_cast<size_t>(ev::toDouble(lenVal));
-            result.reserve(n);
+            const size_t n = lengthValue(lenVal);
+            result.reserve(std::min<size_t>(n, kReserveCap));
             for (size_t i = 0; i < n; ++i) {
                 Value elem = ev::getElement(arr.get(), static_cast<uint32_t>(i));
-                result.push_back(static_cast<uint32_t>(ev::toDouble(elem)));
+                result.push_back(toUint32Wrap(ev::toDouble(elem)));
             }
         }
     }
@@ -433,11 +433,11 @@ inline std::vector<uint8_t> toUint8Vector(Value val) {
         ev::Persistent arr(val);  // rooted across the allocating reads
         Value lenVal = ev::getProperty(arr.get(), "length");
         if (ev::isNumber(lenVal)) {
-            size_t n = static_cast<size_t>(ev::toDouble(lenVal));
-            result.reserve(n);
+            const size_t n = lengthValue(lenVal);
+            result.reserve(std::min<size_t>(n, kReserveCap));
             for (size_t i = 0; i < n; ++i) {
                 Value elem = ev::getElement(arr.get(), static_cast<uint32_t>(i));
-                result.push_back(static_cast<uint8_t>(ev::toDouble(elem)));
+                result.push_back(static_cast<uint8_t>(toUint32Wrap(ev::toDouble(elem))));
             }
         }
     }
