@@ -54,7 +54,13 @@ public:
 
     void setStatic(const char* name, Value v) const;
 
-    void* unwrap(Value val) const { return ev::handleData(val); }
+    // The payload of a handle THIS class made; nullptr for anything else,
+    // another class's handle or another library's included. ev::handleData
+    // answers for ANY handle, so casting it and then reading a tag out of the
+    // payload is itself the type confusion (the tag sits past the end of a
+    // smaller foreign payload). Every payload make() hands out is registered
+    // with its class instead (host_class.cpp, brands). Allocates nothing.
+    void* unwrap(Value val) const;
 
     Value prototype() const;
     Value constructor() const;

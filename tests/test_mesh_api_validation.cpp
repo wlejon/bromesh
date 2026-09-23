@@ -5,13 +5,19 @@
 // non-number, RangeError for NaN, a fraction or a value out of range.
 #include "eval/eval.h"
 #include "embed/embed.h"
+#include "../src/api/host_mesh_internal.h"
 
+#include <bromesh/primitives/primitives.h>
+
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <span>
 #include <string>
 
 namespace {
 namespace ev = bronze::embed;
+using Value = bronze::Value;
 }
 
 void bromeshTestValidation() {
@@ -138,4 +144,62 @@ void bromeshTestValidation() {
         std::exit(1);
     }
     std::cout << "  validation OK." << std::endl;
+
+    // ── Receivers are brand-checked ───────────────────────────────────────
+    // A handle bromesh's classes did not make is never unwrapped as theirs,
+    // even when its payload is a HostMesh with the right tag and it sits on
+    // Mesh.prototype. (Tag checks alone read the tag out of whatever payload
+    // a foreign handle carries, past the end of a smaller one.) Both forged
+    // handles are built here with ev::makeHandle, bypassing HostClass::make.
+    ev::Persistent meshCtor(ev::globalValue("Mesh").value);
+    ev::Persistent proto(ev::getProperty(meshCtor.get(), "prototype"));
+    {
+        ev::Persistent forgeFn(ev::makeFunction(
+            [&proto](Value, std::span<const Value> a) -> Value {
+                const bool small = !a.empty() && ev::toBool(a[0]);
+                if (small) {
+                    // A foreign 4-byte payload: the tag offset lies past it.
+                    return ev::makeHandle(new uint32_t(0), [](void* p) { delete static_cast<uint32_t*>(p); },
+                                          ev::Finalize::InSweep, proto.get());
+                }
+                auto* hm = new bromesh::api::HostMesh();
+                hm->mesh = bromesh::box(1, 1, 1);
+                return ev::makeHandle(hm, [](void* p) { delete static_cast<bromesh::api::HostMesh*>(p); },
+                                      ev::Finalize::InSweep, proto.get());
+            },
+            1, "forgeMesh"));
+        ev::registerGlobal("forgeMesh", forgeFn.get());
+    }
+    const char* brandScript = R"JS(
+        const real = Mesh.box(1, 1, 1);
+        if (real.triangleCount !== 12) throw new Error("a real box has " + real.triangleCount + " triangles");
+        for (const small of [false, true]) {
+            const forged = forgeMesh(small);
+            if (!(forged instanceof Mesh)) throw new Error("the forged handle should sit on Mesh.prototype");
+            if (forged.triangleCount !== 0) {
+                throw new Error("a forged handle was unwrapped as a Mesh: triangleCount " + forged.triangleCount);
+            }
+            // Every method and getter on a forged receiver: a throw or an
+            // empty answer, never a read of the payload.
+            for (const k of Object.getOwnPropertyNames(Mesh.prototype)) {
+                if (k === "constructor") continue;
+                const d = Object.getOwnPropertyDescriptor(Mesh.prototype, k);
+                try {
+                    if (typeof d.value === "function") d.value.call(forged);
+                    else if (d.get) d.get.call(forged);
+                } catch (e) {}
+            }
+            // A mesh argument is checked the same way.
+            let threw = false, r;
+            try { r = real.intersectsMesh(forged); } catch (e) { threw = true; }
+            if (!threw && r === true) throw new Error("intersectsMesh read a forged mesh argument");
+        }
+        "SUCCESS";
+    )JS";
+    auto brandRes = bronze::eval::evalScript(brandScript);
+    if (brandRes.thrown || ev::toUtf8(brandRes.value) != "SUCCESS") {
+        std::cerr << "  brand script failed: " << ev::toUtf8(brandRes.value) << std::endl;
+        std::exit(1);
+    }
+    std::cout << "  brand checks OK." << std::endl;
 }

@@ -1,6 +1,7 @@
 #include "host_class.h"
 #include "object_builder.h"
 
+#include <mutex>
 #include <unordered_map>
 
 namespace bromesh::api {
@@ -17,7 +18,52 @@ std::unordered_map<const HostClass*, HostClass::Slots>& threadSlots() {
     return t;
 }
 
+// ── Brands ──────────────────────────────────────────────────────────────────
+// Every payload make() hands out is registered with the class that made it,
+// and unwrap() answers only for that class. The table is process-wide (a
+// Worker's handles live on its own thread, but payload addresses are unique)
+// and is never destroyed, so a sweep at exit can still unregister.
+struct Brand {
+    const HostClass* cls;
+    ev::HandleDestructor dtor;
+};
+
+std::mutex& brandMutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::unordered_map<const void*, Brand>& brands() {
+    static auto* m = new std::unordered_map<const void*, Brand>();
+    return *m;
+}
+
+// The destructor every branded handle carries: unregister, then run the
+// class's own. Runs in the sweep (Finalize::InSweep) and touches no heap.
+void brandedDestroy(void* data) {
+    ev::HandleDestructor dtor = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(brandMutex());
+        auto& m = brands();
+        auto it = m.find(data);
+        if (it != m.end()) {
+            dtor = it->second.dtor;
+            m.erase(it);
+        }
+    }
+    if (dtor) dtor(data);
+}
+
 }  // namespace
+
+void* HostClass::unwrap(Value val) const {
+    void* data = ev::handleData(val);
+    if (!data) return nullptr;
+    std::lock_guard<std::mutex> lk(brandMutex());
+    auto& m = brands();
+    auto it = m.find(data);
+    return (it != m.end() && it->second.cls == this) ? data : nullptr;
+}
 
 HostClass::Slots& HostClass::slots() const {
     return threadSlots()[this];
@@ -96,8 +142,16 @@ Value HostClass::make(void* data, ev::HandleDestructor dtor, ev::Finalize when) 
     if (s) {
         p = s->instanceProto ? s->instanceProto->get() : (s->proto ? s->proto->get() : ev::undefined());
     }
-    if (ev::isUndefined(p)) return ev::makeHandle(data, dtor, when);
-    return ev::makeHandle(data, dtor, when, p);
+    if (!data) {
+        if (ev::isUndefined(p)) return ev::makeHandle(data, dtor, when);
+        return ev::makeHandle(data, dtor, when, p);
+    }
+    {
+        std::lock_guard<std::mutex> lk(brandMutex());
+        brands()[data] = Brand{this, dtor};
+    }
+    if (ev::isUndefined(p)) return ev::makeHandle(data, brandedDestroy, when);
+    return ev::makeHandle(data, brandedDestroy, when, p);
 }
 
 void HostClass::setStatic(const char* name, Value v) const {
