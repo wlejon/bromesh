@@ -346,7 +346,8 @@ MeshData transvoxel(const float* field, int gridSize, int lod,
                     float isoLevel, float cellSize) {
     MeshData mesh;
 
-    if (!field || gridSize < 2)
+    // `1 << lod` is undefined for a negative lod or one past the int's bits.
+    if (!field || gridSize < 2 || lod < 0 || lod > kTransvoxelMaxLod)
         return mesh;
 
     int stride = 1 << lod;
@@ -400,7 +401,8 @@ MeshData transvoxel(const float* field, int gridSize, int lod,
         return idx;
     };
 
-    // Phase 1: Run marching cubes at this LOD's stride over the full chunk.
+    // Phase 1: Run marching cubes at this LOD's stride over the chunk's
+    // cellCount^3 cells (the whole chunk when gridSize = k * stride + 1).
     for (int cz = 0; cz < cellCount; ++cz) {
         for (int cy = 0; cy < cellCount; ++cy) {
             for (int cx = 0; cx < cellCount; ++cx) {
@@ -472,16 +474,20 @@ MeshData transvoxel(const float* field, int gridSize, int lod,
         }
     }
 
-    // Phase 2: Snap boundary vertices to coarser neighbor grids.
-    // For each face where the neighbor has coarser LOD (higher number),
-    // snap the two coordinates parallel to the face to the neighbor's grid spacing.
-    // This ensures shared boundary vertices are at matching positions to prevent cracks.
+    // Phase 2: Snap boundary vertices to coarser neighbor grids. There are no
+    // transition cells: for each face where the neighbor has coarser LOD
+    // (higher number), the two coordinates parallel to the face of every
+    // vertex on it are rounded to the neighbor's grid spacing, so the shared
+    // boundary vertices land where the coarser chunk puts its own and the
+    // seam has no cracks. Snapping can stretch or collapse the boundary
+    // triangles; it does not re-triangulate them.
     float tolerance = cellSize * stride * 0.01f; // tolerance for "on the boundary"
 
     for (int face = 0; face < 6; ++face) {
         int nLod = neighborLods[face];
         if (nLod < 0 || nLod <= lod)
             continue; // no neighbor, or neighbor is same/finer detail — skip
+        nLod = std::min(nLod, kTransvoxelMaxLod);
 
         int axis = faceAxis[face];
         bool isHigh = faceIsHigh[face];

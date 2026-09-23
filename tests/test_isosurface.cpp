@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <cmath>
+#include <vector>
 
 static void fillSphereField(float* field, int N, float radius) {
     float c = (N - 1) * 0.5f;
@@ -345,8 +346,11 @@ TEST(transvoxel_uniform_lod) {
 }
 
 TEST(transvoxel_with_transition) {
-    // 17x17x17 sphere field, lod=0, one neighbor at lod=1.
-    // Should produce non-empty mesh with snapped boundary vertices.
+    // 17x17x17 sphere field, lod=0, one neighbor at lod=1: an LOD transition
+    // across +X. No transition cells are emitted; any vertex on that face is
+    // snapped to the neighbour's grid. (This sphere does not reach x = 16, so
+    // transvoxel_snaps_to_coarser_neighbor below is the one that sees
+    // boundary vertices.)
     const int N = 17;
     float field[N * N * N];
     float cx = (N - 1) * 0.5f;
@@ -397,11 +401,73 @@ TEST(transvoxel_with_transition) {
             }
         }
     }
-    // There should be some boundary vertices (the sphere crosses x=16)
-    ASSERT(boundaryVertCount >= 0, "transvoxel boundary vertex check ran");
-    // If there are boundary vertices, they should all be snapped
+    // Any boundary vertices there are must be snapped (see the comment above:
+    // this field has none on x = 16).
     if (boundaryVertCount > 0) {
         ASSERT(allSnapped, "transvoxel +X boundary vertices should be snapped to neighbor grid");
     }
+}
+
+namespace {
+// A tilted plane that crosses every face of a 17^3 chunk off the lod-1 grid.
+void fillTiltedPlane(float* field, int n) {
+    for (int z = 0; z < n; ++z)
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x)
+                field[z * n * n + y * n + x] = y + 0.31f * z + 0.17f * x - 7.3f;
+}
+
+// Vertices on x = maxCoord, and how many of them sit off the `step` grid in y/z.
+void countPlusXBoundary(const bromesh::MeshData& m, float maxCoord, float step, int& onFace, int& offGrid) {
+    onFace = 0; offGrid = 0;
+    for (size_t v = 0; v < m.vertexCount(); ++v) {
+        if (std::fabs(m.positions[v * 3] - maxCoord) > 1e-3f) continue;
+        ++onFace;
+        const float y = m.positions[v * 3 + 1], z = m.positions[v * 3 + 2];
+        if (std::fabs(y - std::round(y / step) * step) > 1e-3f ||
+            std::fabs(z - std::round(z / step) * step) > 1e-3f) {
+            ++offGrid;
+        }
+    }
+}
+} // namespace
+
+TEST(transvoxel_snaps_to_coarser_neighbor) {
+    const int N = 17;
+    std::vector<float> field(N * N * N);
+    fillTiltedPlane(field.data(), N);
+
+    // A same-LOD neighbour leaves the face alone: the plane's crossings are
+    // off the lod-1 grid there.
+    int sameLods[6] = {0, -1, -1, -1, -1, -1};
+    auto same = bromesh::transvoxel(field.data(), N, 0, sameLods, 0.0f, 1.0f);
+    int onFace = 0, offGrid = 0;
+    countPlusXBoundary(same, 16.0f, 2.0f, onFace, offGrid);
+    ASSERT(onFace > 0, "transvoxel: the plane crosses the +X face");
+    ASSERT(offGrid > 0, "transvoxel: a same-LOD neighbour does not snap");
+
+    // A coarser neighbour snaps every +X vertex onto its grid.
+    int coarseLods[6] = {1, -1, -1, -1, -1, -1};
+    auto snapped = bromesh::transvoxel(field.data(), N, 0, coarseLods, 0.0f, 1.0f);
+    countPlusXBoundary(snapped, 16.0f, 2.0f, onFace, offGrid);
+    ASSERT(onFace > 0, "transvoxel: +X face vertices survive the snap");
+    ASSERT(offGrid == 0, "transvoxel: every +X vertex is on the lod-1 grid");
+}
+
+TEST(transvoxel_rejects_out_of_range_lod) {
+    const int N = 17;
+    std::vector<float> field(N * N * N);
+    fillTiltedPlane(field.data(), N);
+    int none[6] = {-1, -1, -1, -1, -1, -1};
+    // 1 << lod is undefined past the int's bits; these used to reach it.
+    for (int lod : {-1, -100, 31, 32, 1000}) {
+        ASSERT(bromesh::transvoxel(field.data(), N, lod, none).empty(), "transvoxel: out-of-range lod is empty");
+    }
+    // 2^5 = 32 > N - 1: no cell fits.
+    ASSERT(bromesh::transvoxel(field.data(), N, 5, none).empty(), "transvoxel: a lod coarser than the chunk is empty");
+    ASSERT(!bromesh::transvoxel(field.data(), N, 4, none).empty(), "transvoxel: lod 4 fits a 17^3 chunk");
+    // A neighbour level past the int's bits snaps as the maximum instead.
+    int huge[6] = {1000, -1, -1, -1, -1, -1};
+    ASSERT(!bromesh::transvoxel(field.data(), N, 0, huge).empty(), "transvoxel: a huge neighbour lod is survivable");
 }
 
