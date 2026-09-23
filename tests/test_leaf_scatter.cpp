@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 using namespace bromesh;
@@ -107,6 +108,60 @@ TEST(leaf_scatter_placements_layout) {
         ASSERT(std::isfinite(px) && std::isfinite(py) && std::isfinite(pz), "finite origin");
         ASSERT(placements.branchRadius[i] <= 0.05f + 1e-6f, "radius passes filter");
         ASSERT(placements.branchDepth[i] >= 1, "depth passes filter");
+    }
+}
+
+// perUnitLength is caller data (a JS option in the bindings): a NaN or
+// negative density places nothing, and a huge or infinite one is capped per
+// segment instead of going through an int conversion it cannot survive.
+TEST(leaf_scatter_density_is_clamped) {
+    std::vector<BranchSegment> segs(1);
+    segs[0].from = {0.0f, 1.0f, 0.0f};
+    segs[0].to = {0.0f, 2.0f, 0.0f};
+    segs[0].radius = 0.01f;
+    segs[0].depth = 1;
+    segs[0].parent = -1;
+
+    LeafPlacementOptions opts;
+    for (float bad : {std::nanf(""), -5.0f, 0.0f}) {
+        opts.perUnitLength = bad;
+        ASSERT(placeLeavesOnBranches(segs, opts).count() == 0, "no leaves for a NaN / non-positive density");
+    }
+    for (float huge : {1e30f, std::numeric_limits<float>::infinity()}) {
+        opts.perUnitLength = huge;
+        LeafPlacements pl = placeLeavesOnBranches(segs, opts);
+        ASSERT(pl.count() == static_cast<size_t>(kMaxLeavesPerSegment), "a huge density is capped per segment");
+    }
+}
+
+// The instance layout the header documents: row-major 3x4 affine plus a
+// white tint, the translation at 3 / 7 / 11 -- a leaf's origin lies on its
+// segment, which a column-major reading (translation at 12..14 = 1, 1, 1)
+// would not give.
+TEST(leaf_scatter_instance_layout_is_row_major) {
+    std::vector<BranchSegment> segs(1);
+    segs[0].from = {4.0f, 1.0f, -3.0f};
+    segs[0].to = {4.0f, 2.0f, -3.0f};
+    segs[0].radius = 0.01f;
+    segs[0].depth = 1;
+    segs[0].parent = -1;
+    LeafPlacementOptions opts;
+    opts.perUnitLength = 10.0f;
+    LeafPlacements pl = placeLeavesOnBranches(segs, opts);
+    ASSERT(pl.count() > 0, "placed leaves");
+    for (size_t i = 0; i < pl.count(); ++i) {
+        const float* M = &pl.transforms[i * 16];
+        ASSERT(std::fabs(M[3] - 4.0f) < 1e-4f && std::fabs(M[11] + 3.0f) < 1e-4f, "translation at 3 / 11");
+        ASSERT(M[7] >= 1.0f - 1e-4f && M[7] <= 2.0f + 1e-4f, "translation at 7 on the segment");
+        ASSERT(M[12] == 1.0f && M[13] == 1.0f && M[14] == 1.0f && M[15] == 1.0f, "white tint at 12..15");
+        // The basis columns (local X, Y, Z) are orthogonal and equally scaled.
+        const float cx[3] = {M[0], M[4], M[8]}, cy[3] = {M[1], M[5], M[9]}, cz[3] = {M[2], M[6], M[10]};
+        auto dot = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+        const float s2 = dot(cx, cx);
+        ASSERT(s2 > 0.0f, "non-degenerate basis");
+        ASSERT(std::fabs(dot(cy, cy) - s2) < 1e-4f * s2 && std::fabs(dot(cz, cz) - s2) < 1e-4f * s2, "uniform scale");
+        ASSERT(std::fabs(dot(cx, cy)) < 1e-4f * s2 && std::fabs(dot(cx, cz)) < 1e-4f * s2 &&
+               std::fabs(dot(cy, cz)) < 1e-4f * s2, "orthogonal basis");
     }
 }
 

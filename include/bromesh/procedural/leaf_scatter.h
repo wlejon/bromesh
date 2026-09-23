@@ -13,6 +13,9 @@
 
 namespace bromesh {
 
+/// Per-segment cap on placed leaves (length * perUnitLength * weight).
+inline constexpr int kMaxLeavesPerSegment = 65536;
+
 /// Options for `placeLeavesOnBranches` / `scatterLeaves`.
 struct LeafPlacementOptions {
     /// Skip branches whose radius exceeds this. Use to keep leaves off the trunk.
@@ -22,7 +25,8 @@ struct LeafPlacementOptions {
     /// Only place leaves on segments with no children (chain tips).
     bool  terminalOnly = false;
 
-    /// Average leaves per unit of segment length.
+    /// Average leaves per unit of segment length. A segment places at most
+    /// kMaxLeavesPerSegment; a NaN or non-positive density places none.
     float perUnitLength  = 20.0f;
     /// 0 = uniform along segment; >0 biases samples toward the tip
     /// (t = 1 - (1-u)^(1+falloff)).
@@ -87,9 +91,15 @@ struct LeafPlacementOptions {
     uint64_t seed = 0;
 };
 
-/// Flat per-leaf instance buffer. `transforms` stride is 16 floats (column-major
-/// 4x4 of T * R * uniform-S). `branchRadius` and `branchDepth` are 1 entry per
-/// leaf, useful for shading variation downstream.
+/// Flat per-leaf instance buffer. `transforms` is 16 floats per leaf in the
+/// instanced-draw layout bro's InstancedMeshNode reads: floats 0-11 are a
+/// ROW-major 3x4 affine of T * R * uniform-S (rows `r00 r01 r02 tx` /
+/// `r10 r11 r12 ty` / `r20 r21 r22 tz`, so the basis columns are the leaf's
+/// local X / Y / Z axes and the translation sits at 3 / 7 / 11), and floats
+/// 12-15 are the instance's RGBA tint, written as white (1, 1, 1, 1). It is
+/// not a 4x4 matrix: read as column-major, the tint would be a translation.
+/// `branchRadius` and `branchDepth` are 1 entry per leaf, useful for shading
+/// variation downstream.
 struct LeafPlacements {
     std::vector<float>   transforms;
     std::vector<float>   branchRadius;

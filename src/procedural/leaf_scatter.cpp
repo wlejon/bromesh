@@ -197,7 +197,11 @@ LeafPlacements placeLeavesOnBranches(
 
         FastRng rng(opts.seed ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL));
 
+        // Clamped before the int conversion: perUnitLength is caller data and
+        // a huge, infinite or NaN product has no int.
         float expected = length * opts.perUnitLength * weight;
+        if (!(expected > 0.0f)) continue;
+        expected = std::min(expected, static_cast<float>(kMaxLeavesPerSegment));
         int sampleCount = static_cast<int>(std::floor(expected));
         if (rng.uni01() < (expected - static_cast<float>(sampleCount))) {
             ++sampleCount;
