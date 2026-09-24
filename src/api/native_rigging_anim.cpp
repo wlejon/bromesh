@@ -516,13 +516,8 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         if (mats.size() < s->skin.boneCount * 16) {
             return ev::throwTypeError("Mesh.applySkinning: not enough matrix floats for bones");
         }
-        // Each bone's pose matrix is multiplied by its inverse bind matrix.
-        if (s->skin.inverseBindMatrices.size() < s->skin.boneCount * 16) {
-            return ev::throwRangeError("Mesh.applySkinning: the SkinData has " +
-                                       std::to_string(s->skin.inverseBindMatrices.size() / 16) +
-                                       " inverse bind matrices for " + std::to_string(s->skin.boneCount) +
-                                       " bones");
-        }
+        // The matrices are joint matrices (world x inverseBind, as
+        // pose.computeSkinningMatrices returns); the inverse binds are in them.
         bromesh::applySkinning(m->mesh, s->skin, mats.data());
         return selfP.get();
     });

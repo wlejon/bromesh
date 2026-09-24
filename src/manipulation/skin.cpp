@@ -7,8 +7,8 @@
 namespace bromesh {
 
 void applySkinning(MeshData& mesh, const SkinData& skin,
-                   const float* poseMatrices) {
-    if (mesh.empty() || skin.boneWeights.empty() || !poseMatrices) return;
+                   const float* skinningMatrices) {
+    if (mesh.empty() || skin.boneWeights.empty() || !skinningMatrices) return;
 
     const size_t vCount = mesh.vertexCount();
     if (skin.boneWeights.size() < vCount * 4) return;
@@ -17,26 +17,11 @@ void applySkinning(MeshData& mesh, const SkinData& skin,
     const bool hasNormals = mesh.hasNormals();
     const bool hasTangents = mesh.hasTangents();
 
-    // Precompute skinning matrices: pose * inverseBindMatrix for each bone
+    // The matrices are final joint matrices (world x inverseBind, what
+    // computeSkinningMatrices produces), so they apply to the bind-pose
+    // vertices as they are; the skin's inverse binds are already in them.
     const size_t boneCount = skin.boneCount;
-    std::vector<float> skinMats(boneCount * 16);
-
-    for (size_t b = 0; b < boneCount; ++b) {
-        const float* pose = &poseMatrices[b * 16];
-        const float* ibm = &skin.inverseBindMatrices[b * 16];
-        float* out = &skinMats[b * 16];
-
-        // 4x4 matrix multiply (column-major): out = pose * ibm
-        for (int col = 0; col < 4; ++col) {
-            for (int row = 0; row < 4; ++row) {
-                out[col * 4 + row] =
-                    pose[0 * 4 + row] * ibm[col * 4 + 0] +
-                    pose[1 * 4 + row] * ibm[col * 4 + 1] +
-                    pose[2 * 4 + row] * ibm[col * 4 + 2] +
-                    pose[3 * 4 + row] * ibm[col * 4 + 3];
-            }
-        }
-    }
+    const float* skinMats = skinningMatrices;
 
     for (size_t v = 0; v < vCount; ++v) {
         const float* weights = &skin.boneWeights[v * 4];

@@ -184,15 +184,12 @@ TEST(auto_rig_end_to_end) {
     ASSERT(bad == 0, "all vertices have valid weight sum");
     ASSERT(orphan == 0, "no orphan vertices");
 
-    // Bind-pose skinning must leave positions unchanged. applySkinning
-    // expects *world* matrices per bone (and multiplies by inverseBind
-    // internally via SkinData), so we pass computeWorldMatrices's output
-    // directly rather than computeSkinningMatrices's.
+    // Bind-pose skinning must leave positions unchanged.
     auto pose = bromesh::bindPose(r.skeleton);
-    std::vector<float> world;
-    bromesh::computeWorldMatrices(r.skeleton, pose, world);
+    std::vector<float> joints;
+    bromesh::computeSkinningMatrices(r.skeleton, pose, joints);
     auto beforeMesh = mesh;
-    bromesh::applySkinning(beforeMesh, r.skin, world.data());
+    bromesh::applySkinning(beforeMesh, r.skin, joints.data());
     float maxDelta = 0.0f;
     for (size_t i = 0; i < mesh.positions.size(); ++i) {
         float d = std::fabs(beforeMesh.positions[i] - mesh.positions[i]);
@@ -524,10 +521,10 @@ TEST(post_process_bind_pose_identity) {
     auto r = bromesh::autoRig(mesh, spec, lm, opts);
 
     auto pose = bromesh::bindPose(r.skeleton);
-    std::vector<float> world;
-    bromesh::computeWorldMatrices(r.skeleton, pose, world);
+    std::vector<float> joints;
+    bromesh::computeSkinningMatrices(r.skeleton, pose, joints);
     auto skinned = mesh;
-    bromesh::applySkinning(skinned, r.skin, world.data());
+    bromesh::applySkinning(skinned, r.skin, joints.data());
     float maxDelta = 0.0f;
     for (size_t i = 0; i < mesh.positions.size(); ++i) {
         float d = std::fabs(skinned.positions[i] - mesh.positions[i]);
@@ -625,10 +622,10 @@ TEST(detect_landmarks_humanoid_end_to_end) {
 
     // Bind-pose skinning is identity.
     auto pose = bromesh::bindPose(r.skeleton);
-    std::vector<float> world;
-    bromesh::computeWorldMatrices(r.skeleton, pose, world);
+    std::vector<float> joints;
+    bromesh::computeSkinningMatrices(r.skeleton, pose, joints);
     auto skinned = mesh;
-    bromesh::applySkinning(skinned, r.skin, world.data());
+    bromesh::applySkinning(skinned, r.skin, joints.data());
     float maxDelta = 0.0f;
     for (size_t i = 0; i < mesh.positions.size(); ++i) {
         float d = std::fabs(skinned.positions[i] - mesh.positions[i]);

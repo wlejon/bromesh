@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <cmath>
+#include <cstring>
 
 TEST(normalize_weights_basic) {
     bromesh::SkinData skin;
@@ -94,6 +95,46 @@ TEST(apply_skinning_translation) {
         }
     }
     ASSERT(shifted, "skin_translate: positions shifted by +5 on X");
+}
+
+// applySkinning takes computeSkinningMatrices' joint matrices (world x
+// inverseBind) and must not apply the skin's inverse binds a second time.
+// A 2-bone column (y 0..2, bone 1 at y=1) bent 90 degrees about Z at bone 1
+// swings its tip from (0,2,0) to (-1,1,0).
+TEST(apply_skinning_takes_joint_matrices) {
+    bromesh::Skeleton skel;
+    skel.bones.resize(2);
+    skel.bones[0].name = "root";
+    skel.bones[1].name = "tip";
+    skel.bones[1].parent = 0;
+    skel.bones[1].localT[1] = 1.0f;
+    skel.bones[1].inverseBind[13] = -1.0f;  // translate(0,-1,0)
+
+    bromesh::MeshData mesh;
+    mesh.positions = {0,0,0,  0,0.5f,0,  0,1.5f,0,  0,2,0};
+    mesh.indices = {0,1,2, 1,2,3};
+
+    bromesh::SkinData skin;
+    skin.boneCount = 2;
+    skin.inverseBindMatrices.resize(32);
+    for (int b = 0; b < 2; ++b)
+        std::memcpy(&skin.inverseBindMatrices[b * 16], skel.bones[b].inverseBind, 16 * sizeof(float));
+    skin.boneWeights = {1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0};
+    skin.boneIndices = {0,0,0,0, 0,0,0,0, 1,0,0,0, 1,0,0,0};
+
+    auto pose = bromesh::bindPose(skel);
+    const float h = std::sqrt(0.5f);
+    pose.data[10 + 3] = 0; pose.data[10 + 4] = 0;
+    pose.data[10 + 5] = h; pose.data[10 + 6] = h;
+
+    std::vector<float> joints;
+    bromesh::computeSkinningMatrices(skel, pose, joints);
+    bromesh::applySkinning(mesh, skin, joints.data());
+
+    ASSERT(std::fabs(mesh.positions[1 * 3 + 1] - 0.5f) < 1e-4f, "skin_joint: root-bound vertex unchanged");
+    ASSERT(std::fabs(mesh.positions[3 * 3 + 0] + 1.0f) < 1e-4f, "skin_joint: tip x swings to -1");
+    ASSERT(std::fabs(mesh.positions[3 * 3 + 1] - 1.0f) < 1e-4f, "skin_joint: tip y drops to 1");
+    ASSERT(std::fabs(mesh.positions[2 * 3 + 0] + 0.5f) < 1e-4f, "skin_joint: mid vertex x swings to -0.5");
 }
 
 TEST(apply_morph_target) {

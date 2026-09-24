@@ -208,10 +208,10 @@ static void assertEndToEnd(const bromesh::RigSpec& spec,
 
     // Bind-pose skinning is identity.
     auto pose = bromesh::bindPose(r.skeleton);
-    std::vector<float> world;
-    bromesh::computeWorldMatrices(r.skeleton, pose, world);
+    std::vector<float> joints;
+    bromesh::computeSkinningMatrices(r.skeleton, pose, joints);
     auto skinned = mesh;
-    bromesh::applySkinning(skinned, r.skin, world.data());
+    bromesh::applySkinning(skinned, r.skin, joints.data());
     float maxDelta = 0.0f;
     for (size_t i = 0; i < mesh.positions.size(); ++i) {
         float d = std::fabs(skinned.positions[i] - mesh.positions[i]);
@@ -325,10 +325,10 @@ TEST(detect_landmarks_quadruped_end_to_end) {
     ASSERT(r.skeleton.bones.size() == spec.bones.size(), "bone count");
 
     auto pose = bromesh::bindPose(r.skeleton);
-    std::vector<float> world;
-    bromesh::computeWorldMatrices(r.skeleton, pose, world);
+    std::vector<float> joints;
+    bromesh::computeSkinningMatrices(r.skeleton, pose, joints);
     auto skinned = mesh;
-    bromesh::applySkinning(skinned, r.skin, world.data());
+    bromesh::applySkinning(skinned, r.skin, joints.data());
     float maxDelta = 0.0f;
     for (size_t i = 0; i < mesh.positions.size(); ++i) {
         float d = std::fabs(skinned.positions[i] - mesh.positions[i]);
