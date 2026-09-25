@@ -424,4 +424,66 @@ TEST(bvh_closest_point_matches_brute_force) {
     }
 }
 
+static bromesh::MeshData pointCloud(const std::vector<float>& xyz) {
+    bromesh::MeshData m;
+    m.positions = xyz;
+    return m;
+}
+
+static bool hullIsOutward(const bromesh::MeshData& h) {
+    float cx = 0, cy = 0, cz = 0;
+    size_t n = h.vertexCount();
+    for (size_t i = 0; i < n; ++i) { cx += h.positions[i * 3]; cy += h.positions[i * 3 + 1]; cz += h.positions[i * 3 + 2]; }
+    cx /= n; cy /= n; cz /= n;
+    for (size_t t = 0; t < h.triangleCount(); ++t) {
+        const float* a = &h.positions[h.indices[t * 3] * 3];
+        const float* b = &h.positions[h.indices[t * 3 + 1] * 3];
+        const float* c = &h.positions[h.indices[t * 3 + 2] * 3];
+        float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+        float vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        if (nx * (a[0] - cx) + ny * (a[1] - cy) + nz * (a[2] - cz) <= 0) return false;
+    }
+    return true;
+}
+
+TEST(convex_hull_chamfered_box_point_cloud) {
+    const float hx = 1.0f, hy = 0.6f, hz = 0.8f, c = 0.15f;
+    std::vector<float> pts;
+    for (float sx : {-1.f, 1.f}) for (float sy : {-1.f, 1.f}) for (float sz : {-1.f, 1.f}) {
+        pts.insert(pts.end(), {sx * (hx - c), sy * hy, sz * (hz - c)});
+        pts.insert(pts.end(), {sx * hx, sy * (hy - c), sz * (hz - c)});
+        pts.insert(pts.end(), {sx * (hx - c), sy * (hy - c), sz * hz});
+    }
+    pts.insert(pts.end(), {0.1f, 0.2f, -0.1f, -0.3f, 0.0f, 0.4f});
+    auto h = bromesh::convexHull(pointCloud(pts));
+    ASSERT(h.triangleCount() == 44, "24 extreme points on a chamfered box hull into 44 triangles");
+    ASSERT(h.vertexCount() == h.triangleCount() * 3, "hull is flat-shaded, three vertices per triangle");
+    ASSERT(h.normals.size() == h.positions.size(), "hull carries normals");
+    ASSERT(hullIsOutward(h), "every hull triangle winds outward");
+    float box = 8 * hx * hy * hz;
+    float removed = 4 * c * c * ((hx - c) + (hy - c) + (hz - c)) + 20 * c * c * c / 3;
+    float vol = bromesh::computeVolume(h);
+    ASSERT(std::fabs(vol - (box - removed)) < 1e-3f, "chamfered box hull volume is exact");
+}
+
+TEST(convex_hull_ignores_interior_and_topology) {
+    auto sphere = bromesh::sphere(1.0f, 24, 16);
+    auto h = bromesh::convexHull(sphere);
+    ASSERT(!h.empty(), "sphere hull is non-empty");
+    ASSERT(hullIsOutward(h), "sphere hull winds outward");
+    float vs = bromesh::computeVolume(h);
+    ASSERT(vs > 3.8f && vs < 4.19f, "sphere hull volume approaches 4/3 pi");
+    auto b = bromesh::box(1, 2, 3);
+    auto hb = bromesh::convexHull(b);
+    ASSERT(std::fabs(bromesh::computeVolume(hb) - 48.0f) < 0.01f, "box hull keeps the box volume");
+}
+
+TEST(convex_hull_degenerate_inputs) {
+    ASSERT(bromesh::convexHull(pointCloud({0, 0, 0, 1, 0, 0, 0, 1, 0})).empty(), "three points have no hull");
+    ASSERT(bromesh::convexHull(pointCloud({0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0.5f, 0.5f, 0})).empty(), "coplanar points have no hull");
+    ASSERT(bromesh::convexHull(pointCloud({0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3})).empty(), "collinear points have no hull");
+    ASSERT(bromesh::convexHull(bromesh::MeshData{}).empty(), "empty input has no hull");
+}
+
 

@@ -62,13 +62,4 @@ std::vector<MeshData> convexDecomposition(const MeshData& mesh,
 #endif
 }
 
-MeshData convexHull(const MeshData& mesh) {
-    // Single hull = convex decomposition with maxHulls=1
-    ConvexDecompParams params;
-    params.maxHulls = 1;
-    auto hulls = convexDecomposition(mesh, params);
-    if (hulls.empty()) return {};
-    return std::move(hulls[0]);
-}
-
 } // namespace bromesh

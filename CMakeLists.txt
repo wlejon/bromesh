@@ -275,6 +275,7 @@ add_library(bromesh STATIC
     src/analysis/bbox.cpp
     src/analysis/manifold_check.cpp
     src/analysis/convex_decomposition.cpp
+    src/analysis/convex_hull.cpp
     src/analysis/bake.cpp
     src/analysis/bake_texture.cpp
     src/analysis/bake_transfer.cpp

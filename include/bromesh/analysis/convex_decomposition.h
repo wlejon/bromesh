@@ -19,7 +19,10 @@ struct ConvexDecompParams {
 std::vector<MeshData> convexDecomposition(const MeshData& mesh,
                                           const ConvexDecompParams& params = {});
 
-/// Compute the convex hull of a mesh (single hull).
+/// Exact convex hull of a mesh's vertex positions (quickhull). Topology is
+/// ignored, so a bare point cloud works. The result is flat-shaded: three
+/// vertices per triangle with outward normals, counter-clockwise from outside.
+/// Fewer than four points, or coplanar/collinear input, gives an empty mesh.
 MeshData convexHull(const MeshData& mesh);
 
 } // namespace bromesh
