@@ -36,7 +36,15 @@ inline Value hostFunction(ev::NativeFn fn, uint32_t arity, std::string_view name
     ev::NativeFn guarded = [fn = std::move(fn)](Value self, std::span<const Value> args) -> Value {
         std::string outer = std::move(t_listRefusal);
         t_listRefusal.clear();
-        Value r = fn(self, args);
+        Value r;
+        try {
+            r = fn(self, args);
+        } catch (...) {
+            std::string mine = std::move(t_listRefusal);
+            t_listRefusal = std::move(outer);
+            if (!mine.empty()) return ev::throwRangeError(mine);
+            throw;
+        }
         std::string mine = std::move(t_listRefusal);
         t_listRefusal = std::move(outer);
         if (!mine.empty()) return ev::throwRangeError(mine);
