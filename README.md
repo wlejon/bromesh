@@ -6,6 +6,10 @@
 
 A C++20 static library for mesh generation, manipulation, and I/O. Designed for game engines, tools, and procedural content pipelines.
 
+bromesh is one of the engine libraries of the [bro ecosystem](https://github.com/wlejon/bro/blob/main/docs/ecosystem.md): [bro](https://github.com/wlejon/bro) links it for its 3D subsystem and exposes it to apps as `bro.mesh` and `bro.rigging` through the JavaScript binding in `src/api/` (`bromesh_api`), and [broflora](https://github.com/wlejon/broflora) builds its plant geometry with it. It depends on [bromath](https://github.com/wlejon/bromath); the binding needs [bronze](https://github.com/wlejon/bronze) and [brass](https://github.com/wlejon/brass), and brass also compiles signed-distance-field graphs to native code for the isosurface extractors.
+
+Everything runs on the CPU. It is built and tested on Windows (MSVC), Linux (GCC and Clang) and macOS (arm64).
+
 ## Features
 
 | Category | Algorithms |
@@ -38,6 +42,8 @@ All mesh algorithms produce `bromesh::MeshData` -- a flat struct with separate p
 ## Building
 
 ```bash
+git clone https://github.com/wlejon/bronze.git
+git clone https://github.com/wlejon/brass.git
 git clone --recurse-submodules https://github.com/wlejon/bromesh.git
 cd bromesh
 cmake -B build
@@ -45,6 +51,10 @@ cmake --build build --config Release
 ```
 
 Requires CMake 3.24+ and a C++20 compiler (MSVC 2022, GCC 12+, Clang 15+).
+bronze and brass must sit beside bromesh (or pass `-DBRONZE_DIR=<path>`): they
+compile inside bromesh's build tree and have no submodule, because the
+JavaScript binding has to be compiled against the same bronze as the program
+that loads it. `-DBROMESH_ENABLE_API=OFF` skips the binding itself.
 
 ### Running tests
 
@@ -81,18 +91,21 @@ progressive LOD, CSG, splats, and more — live in the
 
 ## Dependencies
 
-All dependencies are git submodules — `git clone --recurse-submodules` (or
+Apart from bronze and brass (above), every dependency is a git submodule or
+vendored under `third_party/` — `git clone --recurse-submodules` (or
 `git submodule update --init --recursive` after a plain clone) is the only
-setup step.
+other setup step.
 
 [bromath](https://github.com/wlejon/bromath) (header-only Vec/Quat/Mat, AABB,
-curves, easing, `SpatialHash3D`) is the one required dependency. It resolves
-from a standalone checkout at `../bromath` when one exists (the multi-repo dev
-layout), falling back to the `third_party/bromath` submodule; override with
-`-DBROMATH_DIR=<path>`.
+curves, easing, `SpatialHash3D`) is the one required library. It resolves the
+way every repo in the ecosystem resolves a sibling: an existing `bromath`
+target wins, then a checkout beside the top-level project at `../bromath` (the
+multi-repo dev layout; override with `-DBROMATH_DIR=<path>`), then the
+`third_party/bromath` submodule.
 
-The rest live under `third_party/` and are optional — if one is missing, its
-features are disabled at configure time and the library still builds:
+The rest are optional — if one is missing, its features are disabled at
+configure time and the library still builds. draco and par_shapes are vendored
+in tree; the others are submodules:
 
 | Library | Purpose | License |
 |---|---|---|
@@ -108,14 +121,29 @@ features are disabled at configure time and the library still builds:
 
 ## Integration
 
-bromesh is a static library. Add it as a CMake subdirectory:
+bromesh is a static library. Add it as a CMake subdirectory (resolve bromath
+first if your project also uses it, so one copy serves both):
 
 ```cmake
 add_subdirectory(path/to/bromesh)
 target_link_libraries(your_target PRIVATE bromesh)
 ```
 
-All public headers are under `include/bromesh/`.
+All public headers are under `include/bromesh/`. The JavaScript surface
+(`bromesh_api`) is documented in bro's
+[mesh-api.js](https://github.com/wlejon/bro/blob/main/docs/mesh-api.js),
+[mesh-io-api.js](https://github.com/wlejon/bro/blob/main/docs/mesh-io-api.js),
+[mesh-plants-api.js](https://github.com/wlejon/bro/blob/main/docs/mesh-plants-api.js) and
+[rigging-api.js](https://github.com/wlejon/bro/blob/main/docs/rigging-api.js).
+
+## Tests and CI
+
+`ctest` runs the C++ suite plus the JavaScript binding tests. CI builds and
+tests on Linux (GCC and Clang), Windows (MSVC) and macOS/arm64 against bromath
+from main, builds once more from the `third_party/` submodules alone (the
+fresh-clone path), and reports coverage of `include/bromesh/` and `src/` in each
+run's summary. [CodeQL](.github/workflows/codeql.yml) analyses the library on
+every push and weekly.
 
 ## License
 

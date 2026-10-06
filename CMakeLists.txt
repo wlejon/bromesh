@@ -14,20 +14,27 @@ if(MSVC)
 endif()
 
 # --- bromath (shared math library, header-only) ---
-# Resolution order: an already-loaded target (a parent project got there first),
-# a standalone checkout at ../bromath (the multi-repo dev layout), then the
-# third_party/bromath submodule (what a fresh `git clone --recursive` gets).
-set(BROMATH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bromath" CACHE PATH
-    "Standalone bromath checkout; falls back to the third_party/bromath submodule if absent")
+# Resolves like every repo in the bro ecosystem: an existing target (a parent
+# project got there first) wins; otherwise a checkout beside the top-level
+# project (../bromath, the multi-repo dev layout; -DBROMATH_DIR=<path>
+# overrides); otherwise the top-level project's third_party/bromath submodule
+# (what a fresh `git clone --recursive` gets). third_party/ is flat: it carries
+# every sibling bromesh needs, which is bromath alone.
 if(NOT TARGET bromath)
+    set(BROMATH_DIR "${CMAKE_SOURCE_DIR}/../bromath" CACHE PATH
+        "Path to standalone bromath repo (set to a missing path to force submodule fallback)")
     if(EXISTS "${BROMATH_DIR}/CMakeLists.txt")
-        add_subdirectory("${BROMATH_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/bromath" EXCLUDE_FROM_ALL)
-    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/bromath/CMakeLists.txt")
-        add_subdirectory(third_party/bromath EXCLUDE_FROM_ALL)
+        message(STATUS "bromesh: bromath from ${BROMATH_DIR}")
+        add_subdirectory("${BROMATH_DIR}" "${CMAKE_BINARY_DIR}/bromath" EXCLUDE_FROM_ALL)
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/bromath/CMakeLists.txt")
+        message(STATUS "bromesh: bromath from ${CMAKE_SOURCE_DIR}/third_party/bromath (submodule)")
+        add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/bromath" "${CMAKE_BINARY_DIR}/bromath" EXCLUDE_FROM_ALL)
     else()
         message(FATAL_ERROR
-            "bromesh: bromath not found at ${BROMATH_DIR} or third_party/bromath. "
-            "Run `git submodule update --init --recursive` or set -DBROMATH_DIR=<path>.")
+            "bromesh needs bromath (math headers): not found at ${BROMATH_DIR} or "
+            "${CMAKE_SOURCE_DIR}/third_party/bromath. Clone https://github.com/wlejon/bromath next "
+            "to this repo, run `git submodule update --init --recursive`, or override with "
+            "-DBROMATH_DIR=...")
     endif()
 endif()
 
@@ -46,6 +53,10 @@ if(NOT TARGET bronze_runtime_shared)
         # Explicit BRONZE_DIR supplied
     elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../bronze/CMakeLists.txt")
         set(BRONZE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bronze" CACHE PATH "bronze source tree")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/../bronze/CMakeLists.txt")
+        # Beside the top-level project: this repo is a third_party/ submodule
+        # of the project being built.
+        set(BRONZE_DIR "${CMAKE_SOURCE_DIR}/../bronze" CACHE PATH "bronze source tree")
     endif()
 
     if(NOT BRONZE_DIR OR NOT EXISTS "${BRONZE_DIR}/CMakeLists.txt")
