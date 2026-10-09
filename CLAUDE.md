@@ -9,14 +9,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build and test
 
 ```bash
-# All dependencies (bromath included) are submodules under third_party/, so
-# this is the only setup step. bromath prefers a standalone checkout at
-# ../bromath when one exists (multi-repo dev layout; overridable via
-# -DBROMATH_DIR=...) and falls back to the third_party/bromath submodule.
-# Features linked against missing optional submodules silently disable
-# (see "Optional-by-submodule" below).
-git submodule update --init --recursive
-
+# A plain clone is enough: every dependency (bromath, bronze/brass, the
+# third-party libraries) is pinned to a commit by bro_dependency() in
+# CMakeLists.txt (cmake/bro_deps.cmake). A working tree at ../<name> wins
+# when present, else the pinned commit is fetched at configure;
+# -DFETCHCONTENT_SOURCE_DIR_<NAME>=<path> overrides one dependency.
 cmake -B build
 cmake --build build --config Release
 
@@ -108,19 +105,17 @@ This is the one area where the separation of modules matters because it spans ma
 
 The strategy doc at `docs/auto-rig-strategy.md` is the north star for this subsystem.
 
-### Optional-by-submodule pattern
+### Optional-dependency pattern
 
 The **one hard dependency** is `bromath` (header-only, linked as
 `bromath::bromath`) — it backs `MeshData`'s AABB plus the Vec/Quat/Mat and
 `SpatialHash3D` types used throughout sweep/procedural/analysis. It resolves in
-order: an already-loaded `bromath` target (parent project), a standalone
-checkout at `../bromath` (multi-repo dev layout, overridable via
-`-DBROMATH_DIR`), then the `third_party/bromath` submodule. Everything else is
-optional.
+order: an already-loaded `bromath` target (parent project), a working tree at
+`../bromath`, then the pinned commit. Everything else is optional.
 
-Every third-party dependency (meshoptimizer, V-HACD, tinygltf, par_shapes, xatlas, manifold, OpenFBX, OSQP) is a git submodule under `third_party/`. The top-level `CMakeLists.txt` creates each dep's target only if it doesn't already exist (a parent project may have loaded it first) and only if its source is present; feature availability then keys off `if(TARGET ...)`, which sets the `BROMESH_HAS_<DEP>` public compile definition. Note `manifold` backs both Boolean/CSG (`csg/boolean.cpp`) and polygon triangulation (`manipulation/polygon.cpp`); the latter no-ops to an empty `MeshData` when `BROMESH_HAS_MANIFOLD==0`.
+The third-party dependencies (meshoptimizer, V-HACD, tinygltf, xatlas, manifold, OpenFBX, OSQP) are pinned by `bro_dependency()` in the top-level `CMakeLists.txt`; par_shapes and draco are vendored under `third_party/`. Each dep's target is created only if it doesn't already exist (a parent project may have loaded it first) and only if its source is present; feature availability then keys off `if(TARGET ...)`, which sets the `BROMESH_HAS_<DEP>` public compile definition. Note `manifold` backs both Boolean/CSG (`csg/boolean.cpp`) and polygon triangulation (`manipulation/polygon.cpp`); the latter no-ops to an empty `MeshData` when `BROMESH_HAS_MANIFOLD==0`.
 
-**Implication for new code**: any `.cpp` that uses an optional dep must compile to a working no-op (usually returning an empty `MeshData` or `false`) when its `BROMESH_HAS_...` macro is undefined. Do not add a hard dependency on any submodule. The library must build and link with every submodule absent.
+**Implication for new code**: any `.cpp` that uses an optional dep must compile to a working no-op (usually returning an empty `MeshData` or `false`) when its `BROMESH_HAS_...` macro is undefined. Do not add a hard dependency on any third-party library. The library must build and link with every optional dependency absent.
 
 tinygltf is compiled with `TINYGLTF_NO_EXTERNAL_IMAGE` / `TINYGLTF_NO_STB_IMAGE_WRITE` — embedded images are decoded into `GltfScene::images` but external-file images are intentionally not loaded (sandbox reasons).
 
@@ -134,4 +129,4 @@ tinygltf is compiled with `TINYGLTF_NO_EXTERNAL_IMAGE` / `TINYGLTF_NO_STB_IMAGE_
 
 ## Dependency policy
 
-Prefer git submodules under `third_party/` for new deps — do not vendor copies of third-party source.
+Pin new deps with `bro_dependency()` (`THIRD_PARTY`, exact commit) — do not vendor copies of third-party source or add git submodules.

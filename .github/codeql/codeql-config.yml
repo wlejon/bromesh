@@ -3,12 +3,13 @@ name: bromesh CodeQL config
 queries:
   - uses: security-extended
 
-# The vendored submodules are kept out of the analysis by build order (see the
+# The third-party libraries are kept out of the analysis by build order (see the
 # pre-build step in codeql.yml) — that is what excludes their compiled TUs.
 # This paths-ignore is the complement: it drops any finding that originates in a
-# vendored *header* pulled into a bromesh translation unit, which build order
+# third-party *header* pulled into a bromesh translation unit, which build order
 # cannot catch. Together they scope the Security tab to bromesh's own code.
+# Fetched dependencies land under the build tree's _deps/; draco and par_shapes
+# are vendored under third_party/.
 paths-ignore:
   - bromesh/third_party
-  - bronze
-  - brass
+  - build/_deps

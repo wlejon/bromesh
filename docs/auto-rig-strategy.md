@@ -242,8 +242,8 @@ Settled:
 
 1. **Rig spec format: JSON**, with a hand-rolled parser in `rig_spec.cpp` — no
    parser dependency added.
-2. **QP solver for BBW: OSQP**, as an optional submodule. BBW compiles to a
-   no-op returning failure when the submodule is absent.
+2. **QP solver for BBW: OSQP**, as an optional dependency. BBW compiles to a
+   no-op returning failure when OSQP is absent.
 3. **Rig spec expression language: a fixed, closed set** — `landmark:A`,
    `mid:A,B`, `lerp:A,B,t`, `offset:A,dx,dy,dz`. No control flow, no
    user-defined functions.

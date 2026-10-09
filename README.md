@@ -42,19 +42,21 @@ All mesh algorithms produce `bromesh::MeshData` -- a flat struct with separate p
 ## Building
 
 ```bash
-git clone https://github.com/wlejon/bronze.git
-git clone https://github.com/wlejon/brass.git
-git clone --recurse-submodules https://github.com/wlejon/bromesh.git
+git clone https://github.com/wlejon/bromesh.git
 cd bromesh
 cmake -B build
 cmake --build build --config Release
 ```
 
 Requires CMake 3.24+ and a C++20 compiler (MSVC 2022, GCC 12+, Clang 15+).
-bronze and brass must sit beside bromesh (or pass `-DBRONZE_DIR=<path>`): they
-compile inside bromesh's build tree and have no submodule, because the
-JavaScript binding has to be compiled against the same bronze as the program
-that loads it. `-DBROMESH_ENABLE_API=OFF` skips the binding itself.
+A plain clone is all it takes: every dependency is pinned to a commit in
+`CMakeLists.txt` (`bro_dependency()`, `cmake/bro_deps.cmake`). A working tree
+beside bromesh (`../bromath`, `../bronze`, ...) wins when present; otherwise the
+pinned commit is fetched at configure. `-DFETCHCONTENT_SOURCE_DIR_<NAME>=<path>`
+points one dependency anywhere else. bronze and brass compile inside bromesh's
+build tree, because the JavaScript binding has to be compiled against the same
+bronze as the program that loads it. `-DBROMESH_ENABLE_API=OFF` skips the
+binding itself.
 
 ### Running tests
 
@@ -91,21 +93,16 @@ progressive LOD, CSG, splats, and more — live in the
 
 ## Dependencies
 
-Apart from bronze and brass (above), every dependency is a git submodule or
-vendored under `third_party/` — `git clone --recurse-submodules` (or
-`git submodule update --init --recursive` after a plain clone) is the only
-other setup step.
+Every dependency is either pinned by `bro_dependency()` and resolved as
+described under Building, or vendored under `third_party/`.
 
 [bromath](https://github.com/wlejon/bromath) (header-only Vec/Quat/Mat, AABB,
-curves, easing, `SpatialHash3D`) is the one required library. It resolves the
-way every repo in the ecosystem resolves a sibling: an existing `bromath`
-target wins, then a checkout beside the top-level project at `../bromath` (the
-multi-repo dev layout; override with `-DBROMATH_DIR=<path>`), then the
-`third_party/bromath` submodule.
+curves, easing, `SpatialHash3D`) is the one required library. An existing
+`bromath` target wins (one copy serves a whole build), then `../bromath`, then
+the pinned commit.
 
-The rest are optional — if one is missing, its features are disabled at
-configure time and the library still builds. draco and par_shapes are vendored
-in tree; the others are submodules:
+The rest are third-party. draco and par_shapes are vendored in tree; the
+others are fetched at their pinned commits:
 
 | Library | Purpose | License |
 |---|---|---|
@@ -139,9 +136,8 @@ All public headers are under `include/bromesh/`. The JavaScript surface
 ## Tests and CI
 
 `ctest` runs the C++ suite plus the JavaScript binding tests. CI builds and
-tests on Linux (GCC and Clang), Windows (MSVC) and macOS/arm64 against bromath
-from main, builds once more from the `third_party/` submodules alone (the
-fresh-clone path), and reports coverage of `include/bromesh/` and `src/` in each
+tests a plain clone on Linux (GCC and Clang), Windows (MSVC) and macOS/arm64
+against the pinned dependencies, and reports coverage of `include/bromesh/` and `src/` in each
 run's summary. [CodeQL](.github/workflows/codeql.yml) analyses the library on
 every push and weekly.
 

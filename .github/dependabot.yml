@@ -1,8 +1,8 @@
 version: 2
 
-# Third-party code is vendored as git submodules (meshoptimizer, manifold, osqp,
-# v-hacd, xatlas, OpenFBX, tinygltf) pinned to specific commits, not pulled from
-# a package manager, so there is no manifest for Dependabot to bump. The only
+# Third-party code (meshoptimizer, manifold, osqp, v-hacd, xatlas, OpenFBX,
+# tinygltf) is pinned to specific commits by bro_dependency() in CMakeLists.txt,
+# not pulled from a package manager, so there is no manifest for Dependabot to bump. The only
 # versioned things it can watch are the pinned actions in .github/workflows/.
 updates:
   - package-ecosystem: github-actions

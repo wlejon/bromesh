@@ -13,74 +13,36 @@ if(MSVC)
     endif()
 endif()
 
+# --- Dependencies (cmake/bro_deps.cmake) ---
+# Like every repo in the bro ecosystem: an existing target (a parent project
+# got there first, and its pins win) first; otherwise the ../<name> working
+# tree beside the top-level project; otherwise the commit pinned here, fetched
+# at configure. Third-party code is pinned the same way.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
+
 # --- bromath (shared math library, header-only) ---
-# Resolves like every repo in the bro ecosystem: an existing target (a parent
-# project got there first) wins; otherwise a checkout beside the top-level
-# project (../bromath, the multi-repo dev layout; -DBROMATH_DIR=<path>
-# overrides); otherwise the top-level project's third_party/bromath submodule
-# (what a fresh `git clone --recursive` gets). third_party/ is flat: it carries
-# every sibling bromesh needs, which is bromath alone.
-if(NOT TARGET bromath)
-    set(BROMATH_DIR "${CMAKE_SOURCE_DIR}/../bromath" CACHE PATH
-        "Path to standalone bromath repo (set to a missing path to force submodule fallback)")
-    if(EXISTS "${BROMATH_DIR}/CMakeLists.txt")
-        message(STATUS "bromesh: bromath from ${BROMATH_DIR}")
-        add_subdirectory("${BROMATH_DIR}" "${CMAKE_BINARY_DIR}/bromath" EXCLUDE_FROM_ALL)
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/bromath/CMakeLists.txt")
-        message(STATUS "bromesh: bromath from ${CMAKE_SOURCE_DIR}/third_party/bromath (submodule)")
-        add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/bromath" "${CMAKE_BINARY_DIR}/bromath" EXCLUDE_FROM_ALL)
-    else()
-        message(FATAL_ERROR
-            "bromesh needs bromath (math headers): not found at ${BROMATH_DIR} or "
-            "${CMAKE_SOURCE_DIR}/third_party/bromath. Clone https://github.com/wlejon/bromath next "
-            "to this repo, run `git submodule update --init --recursive`, or override with "
-            "-DBROMATH_DIR=...")
-    endif()
-endif()
+bro_dependency(bromath GITHUB wlejon/bromath REF 8b511fbd69c014bf0584d2b42e6c96a8cf720f6a)
 
 # --- bronze, the JavaScript runtime the api binds ---
-# A checkout beside this one (../bronze, with ../brass beside it — bronze
-# resolves and add_subdirectory()s its own code generator), the layout of a
-# bro tree and of CI (bronze's .github/actions/checkout-toolchain), or an
-# explicit -DBRONZE_DIR. No vendored fallback: the api is bound across
-# bronze's C++ embed boundary, so it has to build against the bronze the
-# surrounding tree builds against. Under bro this block is skipped, bro having
-# added bronze already.
-if(NOT TARGET bronze_runtime_shared)
-    set(BRONZE_BUILD_SHARED_RUNTIME ON CACHE BOOL "" FORCE)
-    set(BRONZE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    if(DEFINED BRONZE_DIR AND EXISTS "${BRONZE_DIR}/CMakeLists.txt")
-        # Explicit BRONZE_DIR supplied
-    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../bronze/CMakeLists.txt")
-        set(BRONZE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bronze" CACHE PATH "bronze source tree")
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/../bronze/CMakeLists.txt")
-        # Beside the top-level project: this repo is a third_party/ submodule
-        # of the project being built.
-        set(BRONZE_DIR "${CMAKE_SOURCE_DIR}/../bronze" CACHE PATH "bronze source tree")
-    endif()
-
-    if(NOT BRONZE_DIR OR NOT EXISTS "${BRONZE_DIR}/CMakeLists.txt")
-        message(FATAL_ERROR
-            "bronze not found: check it out beside this repository (../bronze, with ../brass beside it) "
-            "or pass -DBRONZE_DIR=<path>.")
-    endif()
-
-    add_subdirectory("${BRONZE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/bronze-build" EXCLUDE_FROM_ALL)
-endif()
+# It brings brass, its code generator, which bromesh's JIT links. The api is
+# bound across bronze's C++ embed boundary, so it has to build against the
+# bronze the surrounding tree builds against.
+bro_dependency(bronze GITHUB wlejon/bronze REF 15ce4cf5fc25d8afe03882985ae95adcba46a6a9 TARGET bronze_runtime_shared
+               OPTIONS BRONZE_BUILD_SHARED_RUNTIME=ON BRONZE_BUILD_TESTS=OFF)
 
 # --- Third-party dependencies ---
+# Pinned at the commits the former third_party/ submodules recorded. The
+# header-only / no-CMake ones are fetched as source (SOURCE_ONLY) and compiled
+# into targets of our own below.
 
 # meshoptimizer — simplification, vertex cache optimization, quantization
-if(NOT TARGET meshoptimizer)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/meshoptimizer/CMakeLists.txt")
-        set(MESHOPT_BUILD_DEMO OFF CACHE BOOL "" FORCE)
-        set(MESHOPT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-        set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-        add_subdirectory(third_party/meshoptimizer EXCLUDE_FROM_ALL)
-    else()
-        message(STATUS "bromesh: meshoptimizer not found, simplification/optimization disabled")
-    endif()
-endif()
+bro_dependency(meshoptimizer GITHUB zeux/meshoptimizer REF dc9d09ed83e1004aef47a1c3c597e0ec64848a37 THIRD_PARTY
+               OPTIONS MESHOPT_BUILD_DEMO=OFF MESHOPT_BUILD_TOOLS=OFF MESHOPT_BUILD_SHARED_LIBS=OFF)
+bro_dependency(tinygltf GITHUB syoyo/tinygltf REF d8f3bd93f7bdcb7304017f4354d58f1ab85a5578 THIRD_PARTY SOURCE_ONLY)
+bro_dependency(vhacd GITHUB kmammou/v-hacd REF f900e42361491f525262d4825e758845e4969897 THIRD_PARTY SOURCE_ONLY)
+bro_dependency(xatlas GITHUB jpcy/xatlas REF f700c7790aaa030e794b52ba7791a05c085faf0c THIRD_PARTY SOURCE_ONLY)
+bro_dependency(manifold GITHUB elalish/manifold REF d93943fc7ef4418f736330c00fe32411b136b1d1 THIRD_PARTY SOURCE_ONLY)
+bro_dependency(OpenFBX GITHUB nem0/OpenFBX REF 9974840ed4f56cfa3b26f4a53be5e019254462de THIRD_PARTY SOURCE_ONLY)
 
 # par_shapes — parametric primitive generation (header-only, we compile it)
 if(NOT TARGET par_shapes AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/par/par_shapes.h")
@@ -104,10 +66,10 @@ if(NOT TARGET par_shapes)
 endif()
 
 # tinygltf — glTF/GLB loading (header-only, we compile it)
-if(NOT TARGET tinygltf AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf/tiny_gltf.h")
+if(NOT TARGET tinygltf AND EXISTS "${tinygltf_SOURCE_DIR}/tiny_gltf.h")
     add_library(tinygltf STATIC third_party/impl/tinygltf_impl.cpp)
-    target_include_directories(tinygltf PUBLIC third_party/tinygltf)
-    # stb_image is bundled in third_party/tinygltf and is compiled into
+    target_include_directories(tinygltf PUBLIC ${tinygltf_SOURCE_DIR})
+    # stb_image is bundled in the tinygltf tree and is compiled into
     # tinygltf_impl.cpp so tinygltf can decode embedded textures; loadGLTF
     # then surfaces them via GltfScene::images. External images (.glb with
     # separate PNGs alongside) stay disabled for sandboxing.
@@ -128,9 +90,9 @@ if(NOT TARGET tinygltf)
 endif()
 
 # V-HACD — convex decomposition (header-only, we compile it)
-if(NOT TARGET vhacd AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/v-hacd/include/VHACD.h")
+if(NOT TARGET vhacd AND EXISTS "${vhacd_SOURCE_DIR}/include/VHACD.h")
     add_library(vhacd STATIC third_party/impl/vhacd_impl.cpp)
-    target_include_directories(vhacd PUBLIC third_party/v-hacd/include)
+    target_include_directories(vhacd PUBLIC ${vhacd_SOURCE_DIR}/include)
     if(MSVC)
         target_compile_options(vhacd PRIVATE /W0)
     else()
@@ -142,9 +104,9 @@ if(NOT TARGET vhacd)
 endif()
 
 # xatlas — automatic UV unwrapping and atlas generation
-if(NOT TARGET xatlas AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas/source/xatlas/xatlas.h")
-    add_library(xatlas STATIC third_party/xatlas/source/xatlas/xatlas.cpp)
-    target_include_directories(xatlas PUBLIC third_party/xatlas/source/xatlas)
+if(NOT TARGET xatlas AND EXISTS "${xatlas_SOURCE_DIR}/source/xatlas/xatlas.h")
+    add_library(xatlas STATIC ${xatlas_SOURCE_DIR}/source/xatlas/xatlas.cpp)
+    target_include_directories(xatlas PUBLIC ${xatlas_SOURCE_DIR}/source/xatlas)
     if(MSVC)
         target_compile_options(xatlas PRIVATE /W0)
     else()
@@ -156,28 +118,28 @@ if(NOT TARGET xatlas)
 endif()
 
 # manifold — Boolean/CSG operations (built from source, no optional deps)
-if(NOT TARGET manifold_lib AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/manifold/src/manifold.cpp")
+if(NOT TARGET manifold_lib AND EXISTS "${manifold_SOURCE_DIR}/src/manifold.cpp")
     add_library(manifold_lib STATIC
-        third_party/manifold/src/boolean3.cpp
-        third_party/manifold/src/boolean_result.cpp
-        third_party/manifold/src/constructors.cpp
-        third_party/manifold/src/csg_tree.cpp
-        third_party/manifold/src/edge_op.cpp
-        third_party/manifold/src/face_op.cpp
-        third_party/manifold/src/impl.cpp
-        third_party/manifold/src/manifold.cpp
-        third_party/manifold/src/minkowski.cpp
-        third_party/manifold/src/polygon.cpp
-        third_party/manifold/src/properties.cpp
-        third_party/manifold/src/quickhull.cpp
-        third_party/manifold/src/sdf.cpp
-        third_party/manifold/src/smoothing.cpp
-        third_party/manifold/src/sort.cpp
-        third_party/manifold/src/subdivision.cpp
-        third_party/manifold/src/tree2d.cpp
+        ${manifold_SOURCE_DIR}/src/boolean3.cpp
+        ${manifold_SOURCE_DIR}/src/boolean_result.cpp
+        ${manifold_SOURCE_DIR}/src/constructors.cpp
+        ${manifold_SOURCE_DIR}/src/csg_tree.cpp
+        ${manifold_SOURCE_DIR}/src/edge_op.cpp
+        ${manifold_SOURCE_DIR}/src/face_op.cpp
+        ${manifold_SOURCE_DIR}/src/impl.cpp
+        ${manifold_SOURCE_DIR}/src/manifold.cpp
+        ${manifold_SOURCE_DIR}/src/minkowski.cpp
+        ${manifold_SOURCE_DIR}/src/polygon.cpp
+        ${manifold_SOURCE_DIR}/src/properties.cpp
+        ${manifold_SOURCE_DIR}/src/quickhull.cpp
+        ${manifold_SOURCE_DIR}/src/sdf.cpp
+        ${manifold_SOURCE_DIR}/src/smoothing.cpp
+        ${manifold_SOURCE_DIR}/src/sort.cpp
+        ${manifold_SOURCE_DIR}/src/subdivision.cpp
+        ${manifold_SOURCE_DIR}/src/tree2d.cpp
     )
-    target_include_directories(manifold_lib PUBLIC third_party/manifold/include)
-    target_include_directories(manifold_lib PRIVATE third_party/manifold/src)
+    target_include_directories(manifold_lib PUBLIC ${manifold_SOURCE_DIR}/include)
+    target_include_directories(manifold_lib PRIVATE ${manifold_SOURCE_DIR}/src)
     target_compile_features(manifold_lib PUBLIC cxx_std_17)
     target_compile_definitions(manifold_lib PUBLIC MANIFOLD_PAR=-1)
     if(MSVC)
@@ -193,27 +155,21 @@ endif()
 # OSQP — quadratic programming solver (bounded biharmonic weights).
 # Guard and link on osqpstatic — the target bromesh actually consumes — so a
 # parent project that already loaded OSQP still gets BBW enabled here.
-if(NOT TARGET osqpstatic AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/osqp/CMakeLists.txt")
-    set(OSQP_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
-    set(OSQP_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
-    set(OSQP_ENABLE_PRINTING OFF CACHE BOOL "" FORCE)
-    set(OSQP_ENABLE_PROFILING OFF CACHE BOOL "" FORCE)
-    set(OSQP_ENABLE_INTERRUPT OFF CACHE BOOL "" FORCE)
-    set(OSQP_ALGEBRA_BACKEND "builtin" CACHE STRING "" FORCE)
-    set(CMAKE_WARN_DEPRECATED OFF)
-    add_subdirectory(third_party/osqp EXCLUDE_FROM_ALL)
-endif()
+set(CMAKE_WARN_DEPRECATED OFF)
+bro_dependency(osqp GITHUB osqp/osqp REF 236713ce9a56c182ac3230d52108f952afce1523 THIRD_PARTY TARGET osqpstatic
+               OPTIONS OSQP_BUILD_SHARED_LIB=OFF OSQP_BUILD_STATIC_LIB=ON OSQP_ENABLE_PRINTING=OFF
+                       OSQP_ENABLE_PROFILING=OFF OSQP_ENABLE_INTERRUPT=OFF OSQP_ALGEBRA_BACKEND=builtin)
 if(NOT TARGET osqpstatic)
     message(STATUS "bromesh: OSQP not found, bounded biharmonic weights disabled")
 endif()
 
 # OpenFBX — FBX file loading (we compile it from source)
-if(NOT TARGET openfbx AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/OpenFBX/src/ofbx.h")
+if(NOT TARGET openfbx AND EXISTS "${OpenFBX_SOURCE_DIR}/src/ofbx.h")
     add_library(openfbx STATIC
-        third_party/OpenFBX/src/ofbx.cpp
-        third_party/OpenFBX/src/libdeflate.c
+        ${OpenFBX_SOURCE_DIR}/src/ofbx.cpp
+        ${OpenFBX_SOURCE_DIR}/src/libdeflate.c
     )
-    target_include_directories(openfbx PUBLIC third_party/OpenFBX/src)
+    target_include_directories(openfbx PUBLIC ${OpenFBX_SOURCE_DIR}/src)
     if(MSVC)
         target_compile_options(openfbx PRIVATE /W0)
     else()

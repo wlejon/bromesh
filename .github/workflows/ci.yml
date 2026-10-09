@@ -10,23 +10,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Every C++ dependency, bromath included, is a submodule under third_party/,
-# so a recursive checkout covers those. The test matrix also checks bromath
-# out beside the repo from main, the layout bromesh is developed in (../bromath
-# wins over the submodule), so a breaking change landing in bromath fails
-# here; the `submodule` job builds without it, from the pinned submodule.
-# bronze — the JavaScript runtime bromesh_api binds — has no submodule and
-# resolves from ../bronze only, so every job checks this repo out under
-# bromesh/ and lays bronze and brass beside it with bronze's
-# checkout-toolchain action:
+# Every job builds a plain clone, checked out under bromesh/ with the build
+# tree beside it. Every C++ dependency — bromath, the third-party libraries
+# (meshoptimizer, manifold, osqp, v-hacd, xatlas, OpenFBX, tinygltf) and bronze,
+# the JavaScript runtime bromesh_api binds, with brass, its code generator —
+# comes from the commit CMakeLists.txt pins (cmake/bro_deps.cmake), fetched at
+# configure. There are no submodules and no sibling checkouts.
 #
-#     $GITHUB_WORKSPACE/
-#       bromesh/    <- this repo, with submodules
-#       bromath/    <- test matrix only
-#       bronze/
-#       brass/      <- bronze's code generator; bronze add_subdirectory()s it
-#
-# Both compile inside this build tree with the job's own compiler and CRT —
+# bronze and brass compile inside this build tree with the job's own compiler and CRT —
 # the api is bound across bronze's C++ embed boundary, so a prebuilt bronze
 # would be an unverifiable ABI hazard. That is what makes test_mesh_api the
 # check that the library works the way bro uses it.
@@ -55,14 +46,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: bromesh
-          submodules: recursive
-
-      - uses: actions/checkout@v7
-        with:
-          repository: wlejon/bromath
-          path: bromath
-
-      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Configure
         env:
@@ -77,42 +60,10 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
-  # ── Submodule fallback ────────────────────────────────────────────────────
-  #
-  # No sibling checkouts: bromath comes from the third_party/ submodule at the
-  # commit this repo pins, as it does for a fresh `git clone --recursive`.
-  # bronze and brass are the documented exception (no submodule; the api has
-  # to compile against the bronze of the program that loads it) and are laid
-  # out beside the repo as in the other jobs. The configure step checks
-  # bromath really took the submodule path.
-  submodule:
-    name: Submodule fallback · ubuntu-24.04
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          path: bromesh
-          submodules: recursive
-
-      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
-
-      - name: Configure
-        shell: bash
-        run: |
-          test ! -e bromath
-          cmake -S bromesh -B build -DCMAKE_BUILD_TYPE=Release | tee configure.log
-          grep -q "bromesh: bromath from .*third_party/bromath (submodule)" configure.log
-
-      - name: Build
-        run: cmake --build build --parallel 4
-
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-
   # ── Coverage ──────────────────────────────────────────────────────────────
   #
   # Debug + --coverage on Linux only. --filter scopes the numbers to bromesh's
-  # own code (include/bromesh/ + src/); the vendored submodules and the tests
+  # own code (include/bromesh/ + src/); the third-party libraries and the tests
   # are excluded. --gcov-ignore-errors=no_working_dir_found tolerates the
   # generated/vendored TUs whose sources gcovr cannot resolve.
   coverage:
@@ -122,9 +73,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: bromesh
-          submodules: recursive
-
-      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install gcovr
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcovr
@@ -163,7 +111,7 @@ jobs:
           {
             echo '## Coverage — `include/bromesh/` + `src/`'
             echo
-            echo 'The vendored submodules and the tests are filtered out.'
+            echo 'The third-party libraries and the tests are filtered out.'
             echo
             echo '```'
             cat coverage-summary.txt
