@@ -21,13 +21,13 @@ endif()
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
 
 # --- bromath (shared math library, header-only) ---
-bro_dependency(bromath GITHUB wlejon/bromath REF 8b511fbd69c014bf0584d2b42e6c96a8cf720f6a)
+bro_dependency(bromath GITHUB wlejon/bromath)
 
 # --- bronze, the JavaScript runtime the api binds ---
 # It brings brass, its code generator, which bromesh's JIT links. The api is
 # bound across bronze's C++ embed boundary, so it has to build against the
 # bronze the surrounding tree builds against.
-bro_dependency(bronze GITHUB wlejon/bronze REF 15ce4cf5fc25d8afe03882985ae95adcba46a6a9 TARGET bronze_runtime_shared
+bro_dependency(bronze GITHUB wlejon/bronze TARGET bronze_runtime_shared
                OPTIONS BRONZE_BUILD_SHARED_RUNTIME=ON BRONZE_BUILD_TESTS=OFF)
 
 # --- Third-party dependencies ---
