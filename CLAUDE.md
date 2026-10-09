@@ -10,9 +10,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # A plain clone is enough: every dependency (bromath, bronze/brass, the
-# third-party libraries) is pinned to a commit by bro_dependency() in
-# CMakeLists.txt (cmake/bro_deps.cmake). A working tree at ../<name> wins
-# when present, else the pinned commit is fetched at configure;
+# third-party libraries) is a bro_dependency() in CMakeLists.txt
+# (cmake/bro_deps.cmake). A working tree at ../<name> wins when present, else
+# it is fetched at configure: the siblings at their main's head, the
+# third-party libraries at their pinned commits;
 # -DFETCHCONTENT_SOURCE_DIR_<NAME>=<path> overrides one dependency.
 cmake -B build
 cmake --build build --config Release
@@ -111,7 +112,7 @@ The **one hard dependency** is `bromath` (header-only, linked as
 `bromath::bromath`) — it backs `MeshData`'s AABB plus the Vec/Quat/Mat and
 `SpatialHash3D` types used throughout sweep/procedural/analysis. It resolves in
 order: an already-loaded `bromath` target (parent project), a working tree at
-`../bromath`, then the pinned commit. Everything else is optional.
+`../bromath`, then the head of bromath's main. Everything else is optional.
 
 The third-party dependencies (meshoptimizer, V-HACD, tinygltf, xatlas, manifold, OpenFBX, OSQP) are pinned by `bro_dependency()` in the top-level `CMakeLists.txt`; par_shapes and draco are vendored under `third_party/`. Each dep's target is created only if it doesn't already exist (a parent project may have loaded it first) and only if its source is present; feature availability then keys off `if(TARGET ...)`, which sets the `BROMESH_HAS_<DEP>` public compile definition. Note `manifold` backs both Boolean/CSG (`csg/boolean.cpp`) and polygon triangulation (`manipulation/polygon.cpp`); the latter no-ops to an empty `MeshData` when `BROMESH_HAS_MANIFOLD==0`.
 

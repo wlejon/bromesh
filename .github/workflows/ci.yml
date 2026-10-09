@@ -14,8 +14,8 @@ concurrency:
 # tree beside it. Every C++ dependency — bromath, the third-party libraries
 # (meshoptimizer, manifold, osqp, v-hacd, xatlas, OpenFBX, tinygltf) and bronze,
 # the JavaScript runtime bromesh_api binds, with brass, its code generator —
-# comes from the commit CMakeLists.txt pins (cmake/bro_deps.cmake), fetched at
-# configure. There are no submodules and no sibling checkouts.
+# is fetched at configure by cmake/bro_deps.cmake: the third-party libraries at
+# pinned commits, the rest at the heads of their main branches. There are no submodules and no sibling checkouts.
 #
 # bronze and brass compile inside this build tree with the job's own compiler and CRT —
 # the api is bound across bronze's C++ embed boundary, so a prebuilt bronze

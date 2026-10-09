@@ -15,9 +15,9 @@ endif()
 
 # --- Dependencies (cmake/bro_deps.cmake) ---
 # Like every repo in the bro ecosystem: an existing target (a parent project
-# got there first, and its pins win) first; otherwise the ../<name> working
-# tree beside the top-level project; otherwise the commit pinned here, fetched
-# at configure. Third-party code is pinned the same way.
+# got there first, and its choice wins) first; otherwise the ../<name> working
+# tree beside the top-level project; otherwise the head of its main, fetched
+# at configure. Third-party code is pinned to exact commits instead.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
 
 # --- bromath (shared math library, header-only) ---

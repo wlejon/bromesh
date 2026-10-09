@@ -52,7 +52,7 @@ Requires CMake 3.24+ and a C++20 compiler (MSVC 2022, GCC 12+, Clang 15+).
 A plain clone is all it takes: every dependency is pinned to a commit in
 `CMakeLists.txt` (`bro_dependency()`, `cmake/bro_deps.cmake`). A working tree
 beside bromesh (`../bromath`, `../bronze`, ...) wins when present; otherwise the
-pinned commit is fetched at configure. `-DFETCHCONTENT_SOURCE_DIR_<NAME>=<path>`
+head of its main branch is fetched at configure. `-DFETCHCONTENT_SOURCE_DIR_<NAME>=<path>`
 points one dependency anywhere else. bronze and brass compile inside bromesh's
 build tree, because the JavaScript binding has to be compiled against the same
 bronze as the program that loads it. `-DBROMESH_ENABLE_API=OFF` skips the
@@ -93,13 +93,13 @@ progressive LOD, CSG, splats, and more — live in the
 
 ## Dependencies
 
-Every dependency is either pinned by `bro_dependency()` and resolved as
+Every dependency is either declared with `bro_dependency()` and resolved as
 described under Building, or vendored under `third_party/`.
 
 [bromath](https://github.com/wlejon/bromath) (header-only Vec/Quat/Mat, AABB,
 curves, easing, `SpatialHash3D`) is the one required library. An existing
 `bromath` target wins (one copy serves a whole build), then `../bromath`, then
-the pinned commit.
+the head of its main branch.
 
 The rest are third-party. draco and par_shapes are vendored in tree; the
 others are fetched at their pinned commits:

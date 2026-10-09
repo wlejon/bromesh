@@ -26,8 +26,8 @@ jobs:
       actions: read
 
     # Same layout as ci.yml: this repo under bromesh/; its dependencies,
-    # bronze and brass among them, are fetched at configure from the pinned
-    # commits. bronze is needed at configure for the api; it is not built
+    # bronze and brass among them, are fetched at configure from the heads
+    # of their main branches (third-party ones from pinned commits). bronze is needed at configure for the api; it is not built
     # here, since only the bromesh target is traced.
     steps:
       - uses: actions/checkout@v7
