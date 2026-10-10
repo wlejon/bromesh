@@ -299,7 +299,7 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
     });
 
     // ---- Self-intersection -------------------------------------------------
-    // Dropped by the bronze port (bro docs/transition-drift.md H7); the three
+    // Dropped by the bronze port; the three
     // together are how a caller validates a mesh before a boolean or a
     // physics bake.
     proto.def("hasSelfIntersections", 0, [](Value self, std::span<const Value>) -> Value {

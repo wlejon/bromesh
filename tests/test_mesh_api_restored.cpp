@@ -1,6 +1,6 @@
 // Behavioural coverage for the Mesh / Skeleton members that the QuickJS →
-// bronze port dropped or narrowed (bro docs/transition-drift.md rows H7 and
-// the mesh rows of build/binding-audit/shape_all.txt).
+// bronze port dropped or narrowed (the mesh rows of
+// build/binding-audit/shape_all.txt).
 //
 // Linked into test_mesh_api; called from its main(). The checks run real
 // geometry rather than probing for names, so a stub would still fail them.

@@ -60,7 +60,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
 
     // Per-vertex tangents as a flat Float32Array (xyzw per vertex, w = the
     // bitangent sign). Needed for normal-mapped materials; dropped by the
-    // bronze port (bro docs/transition-drift.md H7).
+    // bronze port.
     proto.def("computeTangents", 0, [](Value self, std::span<const Value>) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.computeTangents: not a Mesh instance");

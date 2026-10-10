@@ -20,7 +20,7 @@ using bronze::Value;
     } while (0)
 
 // tests/test_mesh_api_restored.cpp — the Mesh / Skeleton members the bronze
-// port dropped (bro docs/transition-drift.md row H7).
+// port dropped.
 void bromeshTestRestoredSurface();
 // Same file: the bindings fixed in the GC-rooting audit.
 void bromeshTestBindingFixes();
