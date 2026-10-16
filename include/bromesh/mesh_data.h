@@ -21,8 +21,11 @@ struct MeshData {
     std::vector<uint32_t> boneIndices; // 4 indices per vertex, stride 4 (optional)
     /// Vegetation sway data, 16 floats per vertex (optional): four vec4s in
     /// mesh space, (root.xyz, height), (crown.xyz, crownRadius),
-    /// (anchor.xyz, branchWeight), (axis.xyz, phase). Plant emitters (broflora)
-    /// write it and a renderer bends the vertex by wind with it; see bro's
+    /// (anchor.xyz, branchWeight), (axis, twig, limb, trunk): the last four
+    /// packed words (integers held in floats; broflora/sway.h): a leaf's stem
+    /// direction (0 on wood), and the twig, limb and trunk cantilevers it
+    /// hangs from. Plant emitters (broflora) write it and a renderer bends
+    /// the vertex by wind with it; see bro's
     /// docs/scene-nodes-api.js "Vegetation". Operations that rebuild the
     /// vertex set (weld, simplify, merge) do not carry it.
     std::vector<float> vegetation;
