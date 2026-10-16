@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include "bromesh/procedural/leaf_clumps.h"
 #include "bromesh/procedural/leaf_scatter.h"
 #include "bromesh/procedural/obstacle_field.h"
 #include "bromesh/procedural/plants.h"
@@ -222,6 +223,47 @@ TEST(leaf_scatter_obstacles_and_density_weights) {
 
     MeshData emptySrcScatter = scatterLeaves(segs, MeshData{});
     ASSERT(emptySrcScatter.empty(), "scattering empty source mesh is empty");
+}
+
+TEST(leaf_clumps_fill_their_lobes) {
+    std::vector<LeafClump> clumps(2);
+    clumps[0].center = {0.0f, 2.0f, 0.0f};
+    clumps[0].radius = 0.5f;
+    clumps[0].segment = 7;
+    clumps[1].center = {3.0f, 2.0f, 0.0f};
+    clumps[1].radius = 0.25f;
+    clumps[1].density = 0.5f;
+    LeafClumpOptions opts;
+    opts.perArea = 50.0f;
+    opts.seed = 99;
+
+    LeafPlacements pl = placeLeavesInClumps(clumps, opts);
+    const int n0 = leafClumpCount(clumps[0], 0, opts), n1 = leafClumpCount(clumps[1], 1, opts);
+    ASSERT(n0 > 100 && n1 > 0 && n1 < n0 / 4, "leaf count follows area and density");
+    ASSERT(pl.count() == static_cast<size_t>(n0 + n1), "every leaf placed");
+    ASSERT(pl.segment.size() == pl.count(), "a clump index per leaf");
+    for (size_t i = 0; i < pl.count(); ++i) {
+        const float* M = &pl.transforms[i * 16];
+        const LeafClump& c = clumps[pl.segment[i]];
+        const Vec3 P{M[3], M[7], M[11]};
+        ASSERT(vdist(P, c.center) <= c.radius * 1.15f, "a leaf sits inside its clump");
+        // Leaf frame: orthogonal, handed as placeLeavesOnBranches' (X = Z x Y).
+        const Vec3 X{M[0], M[4], M[8]}, Y{M[1], M[5], M[9]}, Z{M[2], M[6], M[10]};
+        ASSERT(std::fabs(vdot(X, Y)) < 1e-4f && std::fabs(vdot(Y, Z)) < 1e-4f, "orthogonal frame");
+        ASSERT(vdot(vcross(X, Y), Z) < 0.0f, "the leaf-card frame placeLeavesOnBranches writes");
+        ASSERT(M[12] == 1.0f && M[15] == 1.0f, "white tint");
+    }
+    // Most leaves face out of their clump.
+    size_t out = 0;
+    for (size_t i = 0; i < pl.count(); ++i) {
+        const float* M = &pl.transforms[i * 16];
+        const Vec3 P{M[3], M[7], M[11]}, N{M[1], M[5], M[9]};
+        if (vdot(P - clumps[pl.segment[i]].center, N) > 0.0f) ++out;
+    }
+    ASSERT(out > pl.count() * 3 / 4, "leaves face outward");
+    // Deterministic.
+    LeafPlacements again = placeLeavesInClumps(clumps, opts);
+    ASSERT(again.transforms == pl.transforms, "same seed, same leaves");
 }
 
 TEST(leaf_scatter_pack_anchors_functionality) {
