@@ -35,6 +35,8 @@ Value meshConstructor(Value, std::span<const Value> args) {
         if (Value v = field("uvs"); present(v)) hm->mesh.uvs = toFloatVector(v);
         if (Value v = field("colors"); present(v)) hm->mesh.colors = toFloatVector(v);
         if (Value v = field("indices"); present(v)) hm->mesh.indices = toUint32Vector(v);
+        if (Value v = field("tangents"); present(v)) hm->mesh.tangents = toFloatVector(v);
+        if (Value v = field("vegetation"); present(v)) hm->mesh.vegetation = toFloatVector(v);
     } else {
         // Positional arguments: positions, normals, uvs, colors, indices
         if (args.size() > 0 && !ev::isUndefined(args[0])) hm->mesh.positions = toFloatVector(args[0]);
@@ -56,6 +58,12 @@ Value meshConstructor(Value, std::span<const Value> args) {
     }
     if (!hm->mesh.colors.empty() && hm->mesh.colors.size() != verts * 4) {
         return ev::throwTypeError("Mesh: colors must hold one rgba per vertex");
+    }
+    if (!hm->mesh.tangents.empty() && hm->mesh.tangents.size() != verts * 4) {
+        return ev::throwTypeError("Mesh: tangents must hold one xyzw per vertex");
+    }
+    if (!hm->mesh.vegetation.empty() && hm->mesh.vegetation.size() != verts * 16) {
+        return ev::throwTypeError("Mesh: vegetation must hold 16 floats per vertex");
     }
     if (!triangleIndicesOk(hm->mesh.indices, verts, "Mesh")) return ev::undefined();
 
@@ -137,6 +145,24 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
                 return ev::throwTypeError("colors must hold one rgba per vertex");
             }
             m->mesh.colors = std::move(v);
+            return ev::undefined();
+        });
+
+    // Vegetation sway data, 16 floats per vertex (mesh_data.h).
+    proto.accessor("vegetation",
+        [](Value self, std::span<const Value>) -> Value {
+            auto* m = unwrapMesh(self);
+            if (!m) return ev::undefined();
+            return makeFloat32Array(m->mesh.vegetation.data(), m->mesh.vegetation.size());
+        },
+        [](Value self, std::span<const Value> a) -> Value {
+            auto* m = unwrapMesh(self);
+            if (!m || a.empty()) return ev::undefined();
+            std::vector<float> v = toFloatVector(a[0]);
+            if (!v.empty() && v.size() != m->mesh.vertexCount() * 16) {
+                return ev::throwTypeError("vegetation must hold 16 floats per vertex");
+            }
+            m->mesh.vegetation = std::move(v);
             return ev::undefined();
         });
 

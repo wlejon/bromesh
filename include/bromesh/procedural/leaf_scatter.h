@@ -99,11 +99,14 @@ struct LeafPlacementOptions {
 /// 12-15 are the instance's RGBA tint, written as white (1, 1, 1, 1). It is
 /// not a 4x4 matrix: read as column-major, the tint would be a translation.
 /// `branchRadius` and `branchDepth` are 1 entry per leaf, useful for shading
-/// variation downstream.
+/// variation downstream. `segment` is the index (into the input segments) of
+/// the branch each leaf grows on, so a caller can carry per-segment data
+/// (wind sway, colour) onto the leaves.
 struct LeafPlacements {
     std::vector<float>   transforms;
     std::vector<float>   branchRadius;
     std::vector<int32_t> branchDepth;
+    std::vector<int32_t> segment;
     size_t count() const { return transforms.size() / 16; }
 };
 
@@ -115,6 +118,11 @@ struct LeafPlacements {
 LeafPlacements placeLeavesOnBranches(
     const std::vector<BranchSegment>& segments,
     const LeafPlacementOptions& opts = {});
+
+/// Stamp `mesh` (in its local space) at every placement of `pl` into one
+/// merged mesh: leaf i owns vertices [i * mesh.vertexCount(), (i + 1) *
+/// mesh.vertexCount()), so per-leaf data (`pl.segment`) maps onto them.
+MeshData stampMeshAtPlacements(const MeshData& mesh, const LeafPlacements& pl);
 
 /// Stamp `leaf` (in its local space) at every placement and return a single
 /// merged mesh. Positions are transformed by the full 4x4; normals by the

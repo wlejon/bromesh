@@ -19,6 +19,13 @@ struct MeshData {
     std::vector<float> tangents;     // xyz + handedness w, stride 4 (optional)
     std::vector<float> boneWeights;  // 4 weights per vertex, stride 4 (optional)
     std::vector<uint32_t> boneIndices; // 4 indices per vertex, stride 4 (optional)
+    /// Vegetation sway data, 16 floats per vertex (optional): four vec4s in
+    /// mesh space, (root.xyz, height), (crown.xyz, crownRadius),
+    /// (anchor.xyz, branchWeight), (axis.xyz, phase). Plant emitters (broflora)
+    /// write it and a renderer bends the vertex by wind with it; see bro's
+    /// docs/scene-nodes-api.js "Vegetation". Operations that rebuild the
+    /// vertex set (weld, simplify, merge) do not carry it.
+    std::vector<float> vegetation;
     std::vector<uint32_t> indices;
 
     size_t vertexCount() const { return positions.size() / 3; }
@@ -29,6 +36,7 @@ struct MeshData {
     bool hasTangents() const { return tangents.size() / 4 == vertexCount(); }
     bool hasBoneWeights() const { return !boneWeights.empty() && boneWeights.size() / 4 == vertexCount(); }
     bool hasBoneIndices() const { return !boneIndices.empty() && boneIndices.size() / 4 == vertexCount(); }
+    bool hasVegetation() const { return !vegetation.empty() && vegetation.size() == vertexCount() * 16; }
     bool empty() const { return positions.empty(); }
 
     /// Enforces size invariants across attribute streams and index buffer,
@@ -42,6 +50,7 @@ struct MeshData {
         if (!tangents.empty() && tangents.size() != vc * 4) return false;
         if (!boneWeights.empty() && boneWeights.size() != vc * 4) return false;
         if (!boneIndices.empty() && boneIndices.size() != vc * 4) return false;
+        if (!vegetation.empty() && vegetation.size() != vc * 16) return false;
         if (indices.size() % 3 != 0) return false;
         for (uint32_t i : indices) {
             if (i >= vc) return false;
@@ -57,6 +66,7 @@ struct MeshData {
         tangents.clear();
         boneWeights.clear();
         boneIndices.clear();
+        vegetation.clear();
         indices.clear();
     }
 

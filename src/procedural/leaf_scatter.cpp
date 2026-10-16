@@ -76,6 +76,8 @@ void writeMatrix(std::vector<float>& out,
     out.push_back(1.0f);
 }
 
+} // namespace
+
 // Transform and stamp a prototype mesh at every placement in `pl` into a single merged MeshData.
 MeshData stampMeshAtPlacements(const MeshData& srcMesh, const LeafPlacements& pl) {
     if (srcMesh.empty()) return {};
@@ -149,8 +151,6 @@ MeshData stampMeshAtPlacements(const MeshData& srcMesh, const LeafPlacements& pl
 
     return out;
 }
-
-} // namespace
 
 LeafPlacements placeLeavesOnBranches(
     const std::vector<BranchSegment>& segments,
@@ -300,6 +300,7 @@ LeafPlacements placeLeavesOnBranches(
     out.transforms.reserve(totalTransforms * 16);
     out.branchRadius.reserve(totalTransforms);
     out.branchDepth.reserve(totalTransforms);
+    out.segment.reserve(totalTransforms);
 
     if (opts.dedupRadius > 0.0f) {
         SpatialHash3D dedupHash(opts.dedupRadius);
@@ -318,6 +319,7 @@ LeafPlacements placeLeavesOnBranches(
                 out.transforms.insert(out.transforms.end(), M, M + 16);
                 out.branchRadius.push_back(segRadius[i][k]);
                 out.branchDepth.push_back(segDepth[i][k]);
+                out.segment.push_back(static_cast<int32_t>(i));
             }
         }
     } else {
@@ -325,6 +327,7 @@ LeafPlacements placeLeavesOnBranches(
             out.transforms.insert(out.transforms.end(), segTransforms[i].begin(), segTransforms[i].end());
             out.branchRadius.insert(out.branchRadius.end(), segRadius[i].begin(), segRadius[i].end());
             out.branchDepth.insert(out.branchDepth.end(), segDepth[i].begin(), segDepth[i].end());
+            out.segment.insert(out.segment.end(), segRadius[i].size(), static_cast<int32_t>(i));
         }
     }
 

@@ -747,6 +747,7 @@ void initMeshPlants(HostClass& cls) {
         obj.set("transforms", makeFloat32Array(p.transforms.data(), p.transforms.size()));
         obj.set("branchRadius", makeFloat32Array(p.branchRadius.data(), p.branchRadius.size()));
         obj.set("branchDepth", makeInt32Array(p.branchDepth.data(), p.branchDepth.size()));
+        obj.set("segment", makeInt32Array(p.segment.data(), p.segment.size()));
         return obj.build();
     });
 
