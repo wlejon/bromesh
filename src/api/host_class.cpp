@@ -77,7 +77,16 @@ const HostClass::Slots* HostClass::slotsIfAny() const {
 
 bool HostClass::installed() const {
     const Slots* s = slotsIfAny();
-    return s && s->ctor;
+    if (!s || !s->ctor || !s->realmGlobal) return false;
+    ev::GlobalValue gt = ev::globalValue("globalThis");
+    if (!gt.found || !ev::isObject(gt.value)) return false;
+    ev::Persistent gtP(gt.value);
+    if (s->realmGlobal->get() != gtP.get()) return false;
+    if (!s->name.empty()) {
+        Value cur = ev::getProperty(gtP.get(), s->name);
+        if (cur != s->ctor->get()) return false;
+    }
+    return true;
 }
 
 void HostClass::install(const char* name, uint32_t arity, ev::NativeFn body,
@@ -89,6 +98,17 @@ void HostClass::install(const char* name, uint32_t arity, ev::NativeFn body,
     }
 
     Slots& s = slots();
+    delete s.ctor;
+    delete s.proto;
+    delete s.instanceProto;
+    delete s.realmGlobal;
+    s.ctor = nullptr;
+    s.proto = nullptr;
+    s.instanceProto = nullptr;
+    s.realmGlobal = nullptr;
+    s.name = name ? name : "";
+    s.aliases.clear();
+
     ev::Persistent ctor(hostFunction(std::move(ctorBody), arity, name));
     s.ctor = new ev::Persistent(ctor.get());
 
@@ -102,7 +122,9 @@ void HostClass::install(const char* name, uint32_t arity, ev::NativeFn body,
     ev::registerGlobal(name, s.ctor->get());
     ev::GlobalValue gt = ev::globalValue("globalThis");
     if (gt.found && !gt.value.isUndefined() && ev::isObject(gt.value)) {
-        ev::setProperty(gt.value, name, s.ctor->get());
+        ev::Persistent gtP(gt.value);
+        gtP.set(ev::setProperty(gtP.get(), name, s.ctor->get()));
+        s.realmGlobal = new ev::Persistent(gtP.get());
     }
 }
 
@@ -113,7 +135,8 @@ void HostClass::alias(const char* name) const {
     ev::registerGlobal(name, s.ctor->get());
     ev::GlobalValue gt = ev::globalValue("globalThis");
     if (gt.found && !gt.value.isUndefined() && ev::isObject(gt.value)) {
-        ev::setProperty(gt.value, name, s.ctor->get());
+        ev::Persistent gtP(gt.value);
+        ev::setProperty(gtP.get(), name, s.ctor->get());
     }
 }
 
@@ -157,7 +180,8 @@ Value HostClass::make(void* data, ev::HandleDestructor dtor, ev::Finalize when) 
 void HostClass::setStatic(const char* name, Value v) const {
     const Slots* s = slotsIfAny();
     if (!s || !s->ctor) return;
-    s->ctor->set(ev::setProperty(s->ctor->get(), name, v));
+    ev::Persistent vP(v);
+    s->ctor->set(ev::setProperty(s->ctor->get(), name, vP.get()));
 
     for (const auto& a : s->aliases) {
         ev::registerGlobal(a.c_str(), s->ctor->get());
@@ -165,7 +189,8 @@ void HostClass::setStatic(const char* name, Value v) const {
         // globalThis Value from before the loop would be stale here.
         ev::GlobalValue gt = ev::globalValue("globalThis");
         if (gt.found && ev::isObject(gt.value)) {
-            ev::setProperty(gt.value, a.c_str(), s->ctor->get());
+            ev::Persistent gtP(gt.value);
+            ev::setProperty(gtP.get(), a.c_str(), s->ctor->get());
         }
     }
 }

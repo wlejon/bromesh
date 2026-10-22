@@ -1,9 +1,12 @@
 #include "bromesh/api.h"
+#include "bromesh/primitives/primitives.h"
 #include "eval/eval.h"
 #include "embed/embed.h"
 
 #include <cassert>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -194,6 +197,74 @@ int main() {
     bromeshTestRestoredSurface();
     bromeshTestBindingFixes();
     bromeshTestValidation();
+
+    // 5. Test Rig.specFromFile with setPathResolver
+    {
+        auto tmpPath = std::filesystem::temp_directory_path() / "bromesh_test_rig_spec.json";
+        {
+            std::ofstream out(tmpPath);
+            out << R"({"name":"custom_test_rig","bones":[{"name":"root","parent":""}]})";
+        }
+        bromesh::api::setPathResolver([tmpPath](const std::string& p) -> std::string {
+            if (p == "virtual/rig.json") return tmpPath.string();
+            return p;
+        });
+        auto r = bronze::eval::evalScript(R"JS(
+            const spec = Rig.specFromFile("virtual/rig.json");
+            if (!spec || spec.name !== "custom_test_rig" || spec.boneCount !== 1) {
+                throw new Error("Rig.specFromFile failed to resolve path via setPathResolver");
+            }
+            const spec2 = bro.rigging.specFromFile("virtual/rig.json");
+            if (!spec2 || spec2.name !== "custom_test_rig") {
+                throw new Error("bro.rigging.specFromFile failed to resolve path");
+            }
+            "OK";
+        )JS");
+        bromesh::api::setPathResolver(nullptr);
+        std::filesystem::remove(tmpPath);
+        CHECK(!r.thrown && ev::toUtf8(r.value) == "OK");
+    }
+
+    // 6. Test sequential multi-Realm installation on the same thread (both call orderings)
+    for (int order = 0; order < 2; ++order) {
+        ev::Realm* realm = ev::createRealm();
+        {
+            ev::RealmScope scope(realm);
+            if (order == 0) {
+                bromesh::api::installMesh();
+                bromesh::api::installRigging();
+            } else {
+                bromesh::api::installRigging();
+                bromesh::api::installMesh();
+            }
+            ev::Persistent cppMesh(bromesh::api::makeMeshValue(bromesh::box(1.0f, 1.0f, 1.0f)));
+            ev::registerGlobal("__testCppMesh", cppMesh.get());
+            auto r = bronze::eval::evalScript(R"JS(
+                if (typeof Mesh !== "function") throw new Error("Mesh missing in new realm");
+                if (typeof IK !== "object") throw new Error("IK missing in new realm");
+                if (typeof bro.mesh.box !== "function") throw new Error("bro.mesh.box missing in new realm");
+                if (typeof Mesh.prototype.applySkinning !== "function") throw new Error("Mesh.prototype.applySkinning missing");
+                if (typeof Mesh.prototype.applyMorphTarget !== "function") throw new Error("Mesh.prototype.applyMorphTarget missing");
+                if (!(__testCppMesh instanceof Mesh)) throw new Error("makeMeshValue prototype mismatch in new realm");
+                if (typeof __testCppMesh.volume !== "function" || __testCppMesh.volume() <= 0) {
+                    throw new Error("makeMeshValue methods missing in new realm");
+                }
+                const b = bro.mesh.box(1, 1, 1);
+                const sk = new Skeleton();
+                if (!(b instanceof Mesh) || !(sk instanceof Skeleton)) {
+                    throw new Error("instanceof failed in new realm");
+                }
+                "REALM_OK";
+            )JS");
+            if (r.thrown) {
+                std::cerr << "Multi-realm eval threw (order=" << order << "): " << ev::toUtf8(r.value) << std::endl;
+                ev::destroyRealm(realm);
+                return 1;
+            }
+            CHECK(ev::toUtf8(r.value) == "REALM_OK");
+        }
+        ev::destroyRealm(realm);
+    }
 
     std::cout << "========================================" << std::endl;
     std::cout << "All bromesh Bronze API tests PASSED!" << std::endl;

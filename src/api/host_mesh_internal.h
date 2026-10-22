@@ -498,6 +498,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
                      HostClass& rigCls, HostClass& voxelCls);
 void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
                      ObjectBuilder& ikBuilder);
+void initRiggingMesh(HostClass& meshCls);
 
 Value makeMeshNamespace();
 Value makeRiggingNamespace();

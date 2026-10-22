@@ -31,6 +31,8 @@ public:
         ev::Persistent* proto = nullptr;
         ev::Persistent* ctor = nullptr;
         ev::Persistent* instanceProto = nullptr;
+        ev::Persistent* realmGlobal = nullptr;
+        std::string name;
         std::vector<std::string> aliases;
     };
 

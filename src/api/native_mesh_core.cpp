@@ -499,12 +499,7 @@ void initMeshCore(ObjectBuilder& proto, HostClass& cls) {
 }
 
 void ensureMeshClassesInstalled() {
-    // Once per THREAD, not per process: a class's constructor and prototype
-    // are the installing thread's (host_class.h), so a Worker realm installs
-    // its own.
-    static thread_local bool installed = false;
-    if (installed) return;
-    installed = true;
+    if (g_meshClass.installed()) return;
 
     g_meshClass.install("Mesh", 1, meshConstructor, [](ObjectBuilder& proto) {
         initMeshCore(proto, g_meshClass);
@@ -514,10 +509,12 @@ void ensureMeshClassesInstalled() {
         initMeshIo(proto, g_meshClass);
         initMeshSdf(proto, g_meshClass);
     });
+    initRiggingMesh(g_meshClass);
 
     auto objVal = ev::globalValue("Object");
     if (objVal.found && ev::isObject(objVal.value)) {
-        Rooted createFn(ev::getProperty(objVal.value, "create"));
+        Rooted objP(objVal.value);
+        Rooted createFn(ev::getProperty(objP.get(), "create"));
         if (ev::isFunction(createFn)) {
             Value baseProto = g_meshClass.prototype();
             Value subProto = ev::call(createFn.get(), ev::undefined(), std::span<const Value>(&baseProto, 1)).value;

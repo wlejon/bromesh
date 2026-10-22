@@ -499,11 +499,15 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
     animCls.alias("Animation");
     animCls.alias("SkeletalAnimation");
 
+    initRiggingMesh(meshCls);
+}
+
+void initRiggingMesh(HostClass& meshCls) {
     // =========================================================================
     // Mesh Rigging Extensions
     // =========================================================================
     meshCls.prototype(); // ensures proto exists
-    ObjectBuilder meshProto(g_meshClass.prototype());
+    ObjectBuilder meshProto(meshCls.prototype());
 
     meshProto.def("applySkinning", 2, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
@@ -619,12 +623,8 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
 }
 
 void ensureRiggingClassesInstalled() {
-    // Per thread, like ensureMeshClassesInstalled.
-    static thread_local bool installed = false;
-    if (installed) return;
-    installed = true;
-
     ensureMeshClassesInstalled();
+    if (g_skinDataClass.installed()) return;
 
     ObjectBuilder ikObj;
     initRiggingCore(g_skinDataClass, g_skeletonClass, g_jointClass, g_skeletonRigClass, g_voxelChunkClass);
@@ -634,7 +634,8 @@ void ensureRiggingClassesInstalled() {
     ev::registerGlobal("IK", ikObj.get());
     ev::GlobalValue gt = ev::globalValue("globalThis");
     if (gt.found && !gt.value.isUndefined() && ev::isObject(gt.value)) {
-        ev::setProperty(gt.value, "IK", ikObj.get());
+        ev::Persistent gtP(gt.value);
+        ev::setProperty(gtP.get(), "IK", ikObj.get());
     }
 }
 
