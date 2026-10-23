@@ -22,21 +22,31 @@ inline double numAt(std::span<const Value> args, size_t i) {
     Value v = args[i];
     if (ev::isObject(v)) return 0.0;
     double d = ev::toDouble(v);
-    return std::isnan(d) ? 0.0 : d;
+    return !std::isfinite(d) ? 0.0 : d;
+}
+
+inline float finiteFloat(Value v, float def = 0.0f) {
+    if (!ev::isNumber(v)) return def;
+    const double d = ev::toDouble(v);
+    return std::isfinite(d) ? static_cast<float>(d) : def;
 }
 
 // The plain integer readers saturate instead of converting out of range
 // (undefined behaviour for a double): 1e30 reads as INT32_MAX, not garbage.
 // Counts do not use them; see intValue below.
 inline int64_t i64At(std::span<const Value> args, size_t i) {
-    const double d = numAt(args, i);
+    if (i >= args.size() || ev::isObject(args[i])) return 0;
+    const double d = ev::toDouble(args[i]);
+    if (std::isnan(d)) return 0;
     if (d >= 9223372036854775807.0) return INT64_MAX;
     if (d <= -9223372036854775808.0) return INT64_MIN;
     return static_cast<int64_t>(d);
 }
 
 inline int32_t i32At(std::span<const Value> args, size_t i) {
-    const double d = numAt(args, i);
+    if (i >= args.size() || ev::isObject(args[i])) return 0;
+    const double d = ev::toDouble(args[i]);
+    if (std::isnan(d)) return 0;
     if (d >= 2147483647.0) return INT32_MAX;
     if (d <= -2147483648.0) return INT32_MIN;
     return static_cast<int32_t>(d);

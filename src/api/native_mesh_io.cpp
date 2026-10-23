@@ -110,14 +110,14 @@ void readVec3Into(Value v, float out[3]) {
         // Numbers are immediates: x/y stay valid across the later reads.
         Value y = ev::getProperty(obj.get(), "y");
         Value z = ev::getProperty(obj.get(), "z");
-        out[0] = static_cast<float>(ev::toDouble(x));
-        if (ev::isNumber(y)) out[1] = static_cast<float>(ev::toDouble(y));
-        if (ev::isNumber(z)) out[2] = static_cast<float>(ev::toDouble(z));
+        out[0] = finiteFloat(x);
+        out[1] = finiteFloat(y);
+        out[2] = finiteFloat(z);
         return;
     }
     for (uint32_t i = 0; i < 3; ++i) {
         Value e = ev::getElement(obj.get(), i);
-        if (ev::isNumber(e)) out[i] = static_cast<float>(ev::toDouble(e));
+        out[i] = finiteFloat(e);
     }
 }
 

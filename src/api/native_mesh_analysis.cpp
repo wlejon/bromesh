@@ -372,7 +372,7 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
                 if (!countArg(a, 0, "Mesh.projectUVs: projection", 0, 5, type)) return ev::undefined();
             }
         }
-        float scale = a.size() > 1 && ev::isNumber(a[1]) ? static_cast<float>(ev::toDouble(a[1])) : 1.0f;
+        float scale = a.size() > 1 ? finiteFloat(a[1], 1.0f) : 1.0f;
         bromesh::projectUVs(m->mesh, static_cast<bromesh::ProjectionType>(type), scale);
         return self;
     });
@@ -433,7 +433,7 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
             if (!countField(a[0], "maxVertices", kV, 3, 256, maxV)) return ev::undefined();
             if (!countField(a[0], "maxTriangles", kT, 1, 512, maxT)) return ev::undefined();
             Value v = ev::getProperty(a[0], "coneWeight");
-            if (ev::isNumber(v)) coneW = static_cast<float>(ev::toDouble(v));
+            coneW = finiteFloat(v, coneW);
         } else {
             ArgReader r(a);
             if (!countArg(a, 0, kV, 3, 256, maxV)) return ev::undefined();
@@ -728,9 +728,9 @@ void initMeshAnalysis(ObjectBuilder& proto, HostClass& cls) {
                 return ev::undefined();
             }
             Value sr = ev::getProperty(a[1], "supportRadius");
-            if (ev::isNumber(sr)) params.supportRadius = static_cast<float>(ev::toDouble(sr));
+            params.supportRadius = finiteFloat(sr, params.supportRadius);
             Value il = ev::getProperty(a[1], "isoLevel");
-            if (ev::isNumber(il)) params.isoLevel = static_cast<float>(ev::toDouble(il));
+            params.isoLevel = finiteFloat(il, params.isoLevel);
         }
         return wrapMesh(bromesh::reconstructFromPointCloud(cloud->mesh, params));
     });

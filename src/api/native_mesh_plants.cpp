@@ -87,7 +87,7 @@ double objNum(Value o, const char* key, double def) {
     Value v = ev::getProperty(o, key);
     if (!ev::isNumber(v)) return def;
     double d = ev::toDouble(v);
-    return std::isnan(d) ? def : d;
+    return !std::isfinite(d) ? def : d;
 }
 
 // A non-count int field (tag, parent, depth, seed), saturating. Counts use
@@ -110,15 +110,15 @@ bromath::Vec3 readVec3(Value in) {
     Rooted v(in);  // every read below may allocate
     Value x = ev::getProperty(v, "x");
     if (ev::isNumber(x)) {
-        r.x = static_cast<float>(ev::toDouble(x));
+        r.x = finiteFloat(x);
         r.y = static_cast<float>(objNum(v, "y", 0.0));
         r.z = static_cast<float>(objNum(v, "z", 0.0));
         return r;
     }
     // Numbers are immediates: converting each read at once holds nothing.
-    if (Value e = ev::getElement(v, 0); ev::isNumber(e)) r.x = static_cast<float>(ev::toDouble(e));
-    if (Value e = ev::getElement(v, 1); ev::isNumber(e)) r.y = static_cast<float>(ev::toDouble(e));
-    if (Value e = ev::getElement(v, 2); ev::isNumber(e)) r.z = static_cast<float>(ev::toDouble(e));
+    if (Value e = ev::getElement(v, 0); ev::isNumber(e)) r.x = finiteFloat(e);
+    if (Value e = ev::getElement(v, 1); ev::isNumber(e)) r.y = finiteFloat(e);
+    if (Value e = ev::getElement(v, 2); ev::isNumber(e)) r.z = finiteFloat(e);
     return r;
 }
 
@@ -168,9 +168,9 @@ bool readVec3List(Value in, std::vector<bromath::Vec3>& out) {
             if (n % 3 != 0) return false;
             out.resize(n / 3);
             for (size_t k = 0; k < out.size(); ++k) {
-                out[k].x = static_cast<float>(ev::toDouble(ev::getElement(v, static_cast<uint32_t>(3 * k))));
-                out[k].y = static_cast<float>(ev::toDouble(ev::getElement(v, static_cast<uint32_t>(3 * k + 1))));
-                out[k].z = static_cast<float>(ev::toDouble(ev::getElement(v, static_cast<uint32_t>(3 * k + 2))));
+                out[k].x = finiteFloat(ev::getElement(v, static_cast<uint32_t>(3 * k)));
+                out[k].y = finiteFloat(ev::getElement(v, static_cast<uint32_t>(3 * k + 1)));
+                out[k].z = finiteFloat(ev::getElement(v, static_cast<uint32_t>(3 * k + 2)));
             }
             return true;
         }
@@ -198,8 +198,8 @@ bool readVec2List(Value in, std::vector<bromath::Vec2>& out) {
             if (n % 2 != 0) return false;
             out.resize(n / 2);
             for (size_t k = 0; k < out.size(); ++k) {
-                out[k].x = static_cast<float>(ev::toDouble(ev::getElement(v, static_cast<uint32_t>(2 * k))));
-                out[k].y = static_cast<float>(ev::toDouble(ev::getElement(v, static_cast<uint32_t>(2 * k + 1))));
+                out[k].x = finiteFloat(ev::getElement(v, static_cast<uint32_t>(2 * k)));
+                out[k].y = finiteFloat(ev::getElement(v, static_cast<uint32_t>(2 * k + 1)));
             }
             return true;
         }
@@ -207,11 +207,11 @@ bool readVec2List(Value in, std::vector<bromath::Vec2>& out) {
         bromath::Vec2 p{};
         Value x = ev::getProperty(e, "x");
         if (ev::isNumber(x)) {
-            p.x = static_cast<float>(ev::toDouble(x));
+            p.x = finiteFloat(x);
             p.y = static_cast<float>(objNum(e, "y", 0.0));
         } else {
-            if (Value c = ev::getElement(e, 0); ev::isNumber(c)) p.x = static_cast<float>(ev::toDouble(c));
-            if (Value c = ev::getElement(e, 1); ev::isNumber(c)) p.y = static_cast<float>(ev::toDouble(c));
+            if (Value c = ev::getElement(e, 0); ev::isNumber(c)) p.x = finiteFloat(c);
+            if (Value c = ev::getElement(e, 1); ev::isNumber(c)) p.y = finiteFloat(c);
         }
         out.push_back(p);
     }
@@ -223,7 +223,7 @@ bool readVec2List(Value in, std::vector<bromath::Vec2>& out) {
 bool readFloatLike(Value in, std::vector<float>& out) {
     out.clear();
     if (ev::isNumber(in)) {
-        out.push_back(static_cast<float>(ev::toDouble(in)));
+        out.push_back(finiteFloat(in));
         return true;
     }
     if (!ev::isObject(in)) return false;
@@ -458,7 +458,7 @@ Value capsuleFieldFromArgs(std::span<const Value> a) {
         return ev::throwTypeError("CapsuleField: spheres must be an array of {center, radius[, tag]} objects");
     }
     float cellSize = 0.0f;
-    if (a.size() >= 3 && ev::isNumber(a[2])) cellSize = static_cast<float>(ev::toDouble(a[2]));
+    if (a.size() >= 3) cellSize = finiteFloat(a[2], 0.0f);
     return makeCapsuleField(std::move(caps), std::move(sphs), cellSize);
 }
 
@@ -584,7 +584,7 @@ void initMeshPlants(HostClass& cls) {
             if (!countField(o, "nsub", "Mesh.blob: nsub", 0, kMaxSubdivisions, nsub)) return ev::undefined();
             Value sv = ev::getProperty(o, "scale");
             if (ev::isNumber(sv)) {
-                float s = static_cast<float>(ev::toDouble(sv));
+                float s = finiteFloat(sv, 1.0f);
                 scale = {s, s, s};
             } else if (ev::isObject(sv)) {
                 scale = readVec3(sv);
@@ -799,7 +799,7 @@ void initMeshPlants(HostClass& cls) {
         std::vector<bromesh::BranchSegment> segs;
         if (!readBranchSegments(a[0], segs)) return ev::throwTypeError("Mesh.capsuleFieldFromSegments: segments must be a branch-segment array");
         float radiusScale = 1.0f;
-        if (a.size() >= 2 && ev::isNumber(a[1])) radiusScale = static_cast<float>(ev::toDouble(a[1]));
+        if (a.size() >= 2) radiusScale = finiteFloat(a[1], 1.0f);
         std::vector<bromesh::Sphere> sphs;
         if (a.size() >= 3 && ev::isObject(a[2])) readSpheres(a[2], sphs);
         return makeCapsuleField(bromesh::CapsuleField::capsulesFromSegments(segs, radiusScale), std::move(sphs), 0.0f);
@@ -885,13 +885,13 @@ void initCapsuleField(HostClass& cls) {
         proto.def("contains", 3, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapCapsuleField(self);
             if (!h || !h->field || a.empty()) return ev::fromBool(false);
-            float extra = (a.size() > 2 && ev::isNumber(a[2])) ? static_cast<float>(ev::toDouble(a[2])) : 0.0f;
+            float extra = (a.size() > 2) ? finiteFloat(a[2], 0.0f) : 0.0f;
             return ev::fromBool(h->field->contains(readVec3(a[0]), excludeTagAt(a, 1), extra));
         });
         proto.def("tooClose", 3, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapCapsuleField(self);
             if (!h || !h->field || a.empty()) return ev::fromBool(false);
-            float clearance = (a.size() > 1 && ev::isNumber(a[1])) ? static_cast<float>(ev::toDouble(a[1])) : 0.0f;
+            float clearance = (a.size() > 1) ? finiteFloat(a[1], 0.0f) : 0.0f;
             return ev::fromBool(h->field->tooClose(readVec3(a[0]), clearance, excludeTagAt(a, 2)));
         });
         proto.def("distance", 2, [](Value self, std::span<const Value> a) -> Value {
@@ -913,7 +913,7 @@ void initCapsuleField(HostClass& cls) {
         proto.def("intersectsSphere", 3, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapCapsuleField(self);
             if (!h || !h->field || a.size() < 2) return ev::fromBool(false);
-            float radius = ev::isNumber(a[1]) ? static_cast<float>(ev::toDouble(a[1])) : 0.0f;
+            float radius = finiteFloat(a[1], 0.0f);
             return ev::fromBool(h->field->intersectsSphere(readVec3(a[0]), radius, excludeTagAt(a, 2)));
         });
     });

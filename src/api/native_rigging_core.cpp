@@ -73,7 +73,10 @@ Value landmarksToObject(const bromesh::Landmarks& lm) {
 template <typename T>
 void readNum(Value obj, const char* key, T& out) {
     Value v = ev::getProperty(obj, key);
-    if (ev::isNumber(v)) out = static_cast<T>(ev::toDouble(v));
+    if (ev::isNumber(v)) {
+        const double d = ev::toDouble(v);
+        if (std::isfinite(d)) out = static_cast<T>(d);
+    }
 }
 
 // Rig.autoRig's options bag: method + the shared smoothing / pruning keys,

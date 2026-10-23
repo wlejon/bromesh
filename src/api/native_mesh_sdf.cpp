@@ -19,11 +19,11 @@ static bromath::Vec3 readVec3Param(Value v) {
     // read is converted at once and nothing but the root is held across.
     ev::Persistent obj(v);
     auto comp = [](Value c, float& out) {
-        if (ev::isNumber(c)) out = static_cast<float>(ev::toDouble(c));
+        if (ev::isNumber(c)) out = finiteFloat(c, out);
     };
     Value x = ev::getProperty(obj.get(), "x");
     if (ev::isNumber(x)) {
-        r.x = static_cast<float>(ev::toDouble(x));
+        r.x = finiteFloat(x);
         comp(ev::getProperty(obj.get(), "y"), r.y);
         comp(ev::getProperty(obj.get(), "z"), r.z);
         return r;
@@ -56,7 +56,7 @@ static bromath::AABB3 parseBounds(Value v, bromath::AABB3 def = {{-2.0f, -2.0f, 
         }
         Value sizeVal = ev::getProperty(obj.get(), "size");
         if (ev::isNumber(sizeVal)) {
-            float s = static_cast<float>(ev::toDouble(sizeVal));
+            float s = finiteFloat(sizeVal, 2.0f);
             return {{-s, -s, -s}, {s, s, s}};
         }
     }
@@ -140,7 +140,7 @@ static bool parseMeshOptions(Value optsVal, SdfMeshOptions& opt) {
     }
 
     Value isoVal = ev::getProperty(opts.get(), "isoLevel");
-    if (ev::isNumber(isoVal)) opt.isoLevel = static_cast<float>(ev::toDouble(isoVal));
+    if (ev::isNumber(isoVal)) opt.isoLevel = finiteFloat(isoVal, opt.isoLevel);
 
     Value cbVal = ev::getProperty(opts.get(), "closeBoundary");
     if (ev::isBool(cbVal)) opt.closeBoundary = ev::toBool(cbVal);
@@ -384,19 +384,19 @@ void initMeshSdf(ObjectBuilder&, HostClass& meshCls) {
                 std::string t = ev::toUtf8(typeVal);
                 if (t == "sphere") {
                     Value rVal = ev::getProperty(a[0], "radius");
-                    float r = ev::isNumber(rVal) ? static_cast<float>(ev::toDouble(rVal)) : 1.0f;
+                    float r = finiteFloat(rVal, 1.0f);
                     outGraph.sphere(r);
                 } else if (t == "box") {
                     Value extVal = ev::getProperty(a[0], "halfExtents");
                     bromath::Vec3 ext = ev::isObject(extVal) ? readVec3Param(extVal) : bromath::Vec3{1.0f, 1.0f, 1.0f};
                     outGraph.box(ext);
                 } else if (t == "torus") {
-                    float majR = static_cast<float>(ev::toDouble(ev::getProperty(a[0], "majorRadius")));
-                    float minR = static_cast<float>(ev::toDouble(ev::getProperty(a[0], "minorRadius")));
+                    float majR = finiteFloat(ev::getProperty(a[0], "majorRadius"), 1.0f);
+                    float minR = finiteFloat(ev::getProperty(a[0], "minorRadius"), 0.3f);
                     outGraph.torus(majR > 0 ? majR : 1.0f, minR > 0 ? minR : 0.3f);
                 } else if (t == "cylinder") {
-                    float r = static_cast<float>(ev::toDouble(ev::getProperty(a[0], "radius")));
-                    float hh = static_cast<float>(ev::toDouble(ev::getProperty(a[0], "halfHeight")));
+                    float r = finiteFloat(ev::getProperty(a[0], "radius"), 0.5f);
+                    float hh = finiteFloat(ev::getProperty(a[0], "halfHeight"), 1.0f);
                     outGraph.cylinder(r > 0 ? r : 0.5f, hh > 0 ? hh : 1.0f);
                 }
                 return parseMeshOptions(a[0], outOpt) ? Extract::Ok : Extract::Threw;

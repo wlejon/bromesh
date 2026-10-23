@@ -211,7 +211,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
             Value nameVal = ev::getProperty(a[0], "name");
             if (ev::isString(nameVal)) h->animation.name = ev::toUtf8(nameVal);
             Value durVal = ev::getProperty(a[0], "duration");
-            if (ev::isNumber(durVal)) h->animation.duration = static_cast<float>(ev::toDouble(durVal));
+            if (ev::isNumber(durVal)) h->animation.duration = finiteFloat(durVal, h->animation.duration);
 
             Rooted chsVal(ev::getProperty(a[0], "channels"));
             if (ev::isObject(chsVal)) {
@@ -398,7 +398,7 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
                 return ev::undefined();
             }
             Value toV = ev::getProperty(a[4], "tolerance");
-            if (ev::isNumber(toV)) tol = static_cast<float>(ev::toDouble(toV));
+            if (ev::isNumber(toV)) tol = finiteFloat(toV, tol);
         }
         bool ok = bromesh::solveFABRIK(skel->skeleton, pose->pose, chain, target, iters, tol);
         return ev::fromBool(ok);
@@ -541,10 +541,10 @@ void initRiggingMesh(HostClass& meshCls) {
             Value dnVal = ev::getProperty(opt, "deltaNormals");
             if (!ev::isUndefined(dnVal)) mt.deltaNormals = toFloatVector(dnVal);
             float w = 1.0f;
-            if (a.size() > 1 && ev::isNumber(a[1])) w = static_cast<float>(ev::toDouble(a[1]));
+            if (a.size() > 1 && ev::isNumber(a[1])) w = finiteFloat(a[1], 1.0f);
             else {
                 Value wVal = ev::getProperty(opt, "weight");
-                if (ev::isNumber(wVal)) w = static_cast<float>(ev::toDouble(wVal));
+                if (ev::isNumber(wVal)) w = finiteFloat(wVal, 1.0f);
             }
             bromesh::applyMorphTarget(m->mesh, mt, w);
             return selfP.get();

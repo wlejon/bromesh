@@ -344,9 +344,9 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
                 return ev::undefined();
             }
             Value v = ev::getProperty(o.get(), "resolution");
-            if (ev::isNumber(v)) res = ev::toDouble(v);
+            if (ev::isNumber(v)) { double d = ev::toDouble(v); if (std::isfinite(d)) res = d; }
             v = ev::getProperty(o.get(), "minVolumePerHull");
-            if (ev::isNumber(v)) minVol = ev::toDouble(v);
+            if (ev::isNumber(v)) { double d = ev::toDouble(v); if (std::isfinite(d)) minVol = d; }
         } else {
             ArgReader r(a);
             if (!countArg(a, 0, "Mesh.convexDecomposition: maxHulls", 1, kMaxAxis, maxHulls) ||
