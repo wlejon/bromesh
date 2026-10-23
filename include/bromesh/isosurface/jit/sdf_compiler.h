@@ -7,12 +7,16 @@
 #if BROMESH_HAS_BRASS_JIT
 #include <brass/codegen/kernel_jit.hpp>
 #include <brass/codegen/sdf_builder.hpp>
+#include <brass/target/spirv_target.hpp>
+#include <brass/target/ptx_target.hpp>
 #endif
 
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace bromesh {
 
@@ -39,8 +43,18 @@ public:
 
     CompiledSdfKernel compile(const SdfGraph& graph, int rootNode = -1);
 
+    std::vector<uint32_t> compile_spirv(const SdfGraph& graph, int rootNode = -1);
+    std::string compile_ptx(const SdfGraph& graph, int rootNode = -1);
+
+    std::vector<uint32_t> compileSpirv(const SdfGraph& graph, int rootNode = -1) {
+        return compile_spirv(graph, rootNode);
+    }
+    std::string compilePtx(const SdfGraph& graph, int rootNode = -1) {
+        return compile_ptx(graph, rootNode);
+    }
+
     SDFVolume evaluateVolume(const SdfGraph& graph, int dimX, int dimY, int dimZ,
-                             const bromath::AABB3& bounds, int rootNode = -1);
+                             const bromath::AABB3& bounds, int rootNode = -1, bool parallel = true);
 
     void clearCache();
 
@@ -48,5 +62,7 @@ private:
     std::mutex m_cacheMutex;
     std::unordered_map<uint64_t, CompiledSdfKernel> m_cache;
 };
+
+using SdfCompiler = JitSdfCompiler;
 
 } // namespace bromesh

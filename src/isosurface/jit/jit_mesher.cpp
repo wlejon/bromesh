@@ -21,28 +21,39 @@ static void computeAnalyticalNormals(MeshData& mesh, SdfPointEvalFn pointFn, con
     const float inv2eps = 1.0f / (2.0f * eps);
     const int64_t numVerts = static_cast<int64_t>(mesh.positions.size() / 3);
 
-    #pragma omp parallel for
-    for (int64_t i = 0; i < numVerts; ++i) {
-        float x = mesh.positions[3 * i + 0];
-        float y = mesh.positions[3 * i + 1];
-        float z = mesh.positions[3 * i + 2];
+    auto evalVertRange = [&](int64_t start, int64_t end) {
+        for (int64_t i = start; i < end; ++i) {
+            float x = mesh.positions[3 * i + 0];
+            float y = mesh.positions[3 * i + 1];
+            float z = mesh.positions[3 * i + 2];
 
-        float gx = (pointFn(x + eps, y, z) - pointFn(x - eps, y, z)) * inv2eps;
-        float gy = (pointFn(x, y + eps, z) - pointFn(x, y - eps, z)) * inv2eps;
-        float gz = (pointFn(x, y, z + eps) - pointFn(x, y, z - eps)) * inv2eps;
+            float gx = (pointFn(x + eps, y, z) - pointFn(x - eps, y, z)) * inv2eps;
+            float gy = (pointFn(x, y + eps, z) - pointFn(x, y - eps, z)) * inv2eps;
+            float gz = (pointFn(x, y, z + eps) - pointFn(x, y, z - eps)) * inv2eps;
 
-        float len = std::sqrt(gx * gx + gy * gy + gz * gz);
-        if (len > 1e-7f) {
-            float invLen = 1.0f / len;
-            mesh.normals[3 * i + 0] = gx * invLen;
-            mesh.normals[3 * i + 1] = gy * invLen;
-            mesh.normals[3 * i + 2] = gz * invLen;
-        } else {
-            mesh.normals[3 * i + 0] = 0.0f;
-            mesh.normals[3 * i + 1] = 1.0f;
-            mesh.normals[3 * i + 2] = 0.0f;
+            float len = std::sqrt(gx * gx + gy * gy + gz * gz);
+            if (len > 1e-7f) {
+                float invLen = 1.0f / len;
+                mesh.normals[3 * i + 0] = gx * invLen;
+                mesh.normals[3 * i + 1] = gy * invLen;
+                mesh.normals[3 * i + 2] = gz * invLen;
+            } else {
+                mesh.normals[3 * i + 0] = 0.0f;
+                mesh.normals[3 * i + 1] = 1.0f;
+                mesh.normals[3 * i + 2] = 0.0f;
+            }
         }
+    };
+
+#if BROMESH_HAS_BRASS_JIT
+    if (numVerts >= 64) {
+        brass::codegen::parallel_for(0, numVerts, evalVertRange);
+    } else {
+        evalVertRange(0, numVerts);
     }
+#else
+    evalVertRange(0, numVerts);
+#endif
 }
 
 MeshData marchingCubesFromSDF(

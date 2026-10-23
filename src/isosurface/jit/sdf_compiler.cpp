@@ -1,5 +1,11 @@
 #include "bromesh/isosurface/jit/sdf_compiler.h"
 
+#if BROMESH_HAS_BRASS_JIT
+#include <brass/mir/scalar_opt.hpp>
+#include <brass/mir/smt_guard_elim.hpp>
+#include <brass/mir/superopt.hpp>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -10,6 +16,66 @@ namespace bromesh {
 #if BROMESH_HAS_BRASS_JIT
 using namespace brass;
 using namespace brass::codegen;
+
+static Value* lowerNoise3d(SdfKernelBuilder& kb, Value* px, Value* py, Value* pz) {
+    Value* flr_x = kb.floor_f32(px);
+    Value* flr_y = kb.floor_f32(py);
+    Value* flr_z = kb.floor_f32(pz);
+
+    Value* i0 = kb.builder().build_fptosi_i32_f32(flr_x);
+    Value* j0 = kb.builder().build_fptosi_i32_f32(flr_y);
+    Value* k0 = kb.builder().build_fptosi_i32_f32(flr_z);
+
+    Value* one_i = kb.const_i32(1);
+    Value* i1 = kb.builder().build_add(i0, one_i);
+    Value* j1 = kb.builder().build_add(j0, one_i);
+    Value* k1 = kb.builder().build_add(k0, one_i);
+
+    Value* fx = kb.sub(px, flr_x);
+    Value* fy = kb.sub(py, flr_y);
+    Value* fz = kb.sub(pz, flr_z);
+
+    Value* c_3 = kb.const_f32(3.0f);
+    Value* c_2 = kb.const_f32(2.0f);
+    Value* u = kb.mul(kb.mul(fx, fx), kb.sub(c_3, kb.mul(fx, c_2)));
+    Value* v = kb.mul(kb.mul(fy, fy), kb.sub(c_3, kb.mul(fy, c_2)));
+    Value* w = kb.mul(kb.mul(fz, fz), kb.sub(c_3, kb.mul(fz, c_2)));
+
+    auto hash_corner = [&](Value* ix, Value* iy, Value* iz) -> Value* {
+        Value* h = kb.builder().build_xor(ix, kb.builder().build_mul(iy, kb.const_i32(374761393)));
+        h = kb.builder().build_xor(h, kb.builder().build_mul(iz, kb.const_i32(668265263)));
+        Value* shift13 = kb.builder().build_lshr(h, kb.const_i32(13));
+        h = kb.builder().build_mul(kb.builder().build_xor(h, shift13), kb.const_i32(1274126177));
+        Value* shift16 = kb.builder().build_lshr(h, kb.const_i32(16));
+        h = kb.builder().build_xor(h, shift16);
+
+        Value* masked = kb.builder().build_and(h, kb.const_i32(0x7FFF));
+        Value* h_f = kb.builder().build_sitofp_f32_i32(masked);
+
+        Value* scale = kb.const_f32(2.0f / 32767.0f);
+        Value* one_f = kb.const_f32(1.0f);
+        return kb.sub(kb.mul(h_f, scale), one_f);
+    };
+
+    Value* h000 = hash_corner(i0, j0, k0);
+    Value* h100 = hash_corner(i1, j0, k0);
+    Value* h010 = hash_corner(i0, j1, k0);
+    Value* h110 = hash_corner(i1, j1, k0);
+    Value* h001 = hash_corner(i0, j0, k1);
+    Value* h101 = hash_corner(i1, j0, k1);
+    Value* h011 = hash_corner(i0, j1, k1);
+    Value* h111 = hash_corner(i1, j1, k1);
+
+    Value* x00 = kb.lerp_f32(h000, h100, u);
+    Value* x10 = kb.lerp_f32(h010, h110, u);
+    Value* x01 = kb.lerp_f32(h001, h101, u);
+    Value* x11 = kb.lerp_f32(h011, h111, u);
+
+    Value* y0 = kb.lerp_f32(x00, x10, v);
+    Value* y1 = kb.lerp_f32(x01, x11, v);
+
+    return kb.lerp_f32(y0, y1, w);
+}
 
 static Value* lowerToMir(SdfKernelBuilder& kb, const SdfGraph& graph, int nodeId,
                          Value* px, Value* py, Value* pz) {
@@ -126,7 +192,7 @@ static Value* lowerToMir(SdfKernelBuilder& kb, const SdfGraph& graph, int nodeId
             Value* nx = kb.mul(px, kb.const_f32(node.v0.x));
             Value* ny = kb.mul(py, kb.const_f32(node.v0.y));
             Value* nz = kb.mul(pz, kb.const_f32(node.v0.z));
-            Value* n = kb.noise_3d(nx, ny, nz);
+            Value* n = lowerNoise3d(kb, nx, ny, nz);
             return kb.mul(n, kb.const_f32(node.f0));
         }
         case SdfOp::Displace: {
@@ -136,6 +202,62 @@ static Value* lowerToMir(SdfKernelBuilder& kb, const SdfGraph& graph, int nodeId
         }
     }
     return kb.const_f32(1e9f);
+}
+
+static Function* buildGpuSdfKernel(Module& mod, const SdfGraph& graph, int rootNode) {
+    int root = rootNode >= 0 ? rootNode : graph.root();
+    Function* fn = mod.create_function("eval_sdf_gpu", Type::void_type(), {
+        Type::ptr(), // float* out_grid
+        Type::i32(), // int32_t dimX
+        Type::i32(), // int32_t dimY
+        Type::i32(), // int32_t dimZ
+        Type::f32(), // float minX
+        Type::f32(), // float minY
+        Type::f32(), // float minZ
+        Type::f32(), // float stepX
+        Type::f32(), // float stepY
+        Type::f32()  // float stepZ
+    });
+
+    SdfKernelBuilder kb(mod, fn);
+    BasicBlock* entry = kb.builder().append_block("entry");
+    Value* out_grid = kb.builder().add_block_param(entry, Type::ptr());
+    Value* dimX = kb.builder().add_block_param(entry, Type::i32());
+    Value* dimY = kb.builder().add_block_param(entry, Type::i32());
+    Value* dimZ = kb.builder().add_block_param(entry, Type::i32());
+    Value* minX = kb.builder().add_block_param(entry, Type::f32());
+    Value* minY = kb.builder().add_block_param(entry, Type::f32());
+    Value* minZ = kb.builder().add_block_param(entry, Type::f32());
+    Value* stepX = kb.builder().add_block_param(entry, Type::f32());
+    Value* stepY = kb.builder().add_block_param(entry, Type::f32());
+    Value* stepZ = kb.builder().add_block_param(entry, Type::f32());
+
+    kb.position_at_end(entry);
+    Value* idx = kb.global_tid_x();
+    Value* stride_z = kb.mul(dimX, dimY);
+    Value* total = kb.mul(stride_z, dimZ);
+    Value* in_bounds = kb.builder().build_slt(idx, total);
+
+    kb.if_then(in_bounds, [&]() {
+        Value* iz = kb.div(idx, stride_z);
+        Value* rem = kb.sub(idx, kb.mul(iz, stride_z));
+        Value* iy = kb.div(rem, dimX);
+        Value* ix = kb.sub(rem, kb.mul(iy, dimX));
+
+        Value* px = kb.fma(kb.to_f32(ix), stepX, minX);
+        Value* py = kb.fma(kb.to_f32(iy), stepY, minY);
+        Value* pz = kb.fma(kb.to_f32(iz), stepZ, minZ);
+
+        Value* sdf_val = lowerToMir(kb, graph, root, px, py, pz);
+        kb.store_f32_indexed(out_grid, idx, sdf_val, 4, 0);
+    });
+    kb.builder().build_ret_void();
+
+    run_smt_guard_elimination(*fn, mod);
+    run_mir_superopt(*fn, mod);
+    eliminate_dead_code(*fn);
+
+    return fn;
 }
 #endif
 
@@ -316,9 +438,15 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
     if (Target::host().is_x64() || Target::host().is_aarch64()) {
         try {
             KernelOptions opts;
+            opts.opt_level = 2;
             opts.enable_optimizations = true;
+            opts.enable_sroa = true;
+            opts.enable_bce = true;
+            opts.enable_smt_guard_elim = true;
+            opts.enable_superopt = true;
             opts.enable_avx2 = true;
             opts.enable_fma = true;
+            opts.enable_parallel = true;
 
             // 1. Grid Evaluation Function
             std::string gridModName = "sdf_grid_" + std::to_string(hash);
@@ -402,8 +530,35 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
     return kernel;
 }
 
+std::vector<uint32_t> JitSdfCompiler::compile_spirv(const SdfGraph& graph, int rootNode) {
+#if BROMESH_HAS_BRASS_JIT
+    uint64_t hash = graph.computeHash();
+    Module mod("sdf_spirv_" + std::to_string(hash));
+    Function* fn = buildGpuSdfKernel(mod, graph, rootNode);
+    auto kernel = brass::target::SpirvTarget::compile(*fn);
+    return kernel.words;
+#else
+    (void)graph;
+    (void)rootNode;
+    return {};
+#endif
+}
+
+std::string JitSdfCompiler::compile_ptx(const SdfGraph& graph, int rootNode) {
+#if BROMESH_HAS_BRASS_JIT
+    uint64_t hash = graph.computeHash();
+    Module mod("sdf_ptx_" + std::to_string(hash));
+    Function* fn = buildGpuSdfKernel(mod, graph, rootNode);
+    return brass::target::PtxTarget::emit_function(*fn);
+#else
+    (void)graph;
+    (void)rootNode;
+    return {};
+#endif
+}
+
 SDFVolume JitSdfCompiler::evaluateVolume(const SdfGraph& graph, int dimX, int dimY, int dimZ,
-                                        const bromath::AABB3& bounds, int rootNode) {
+                                        const bromath::AABB3& bounds, int rootNode, bool parallel) {
     SDFVolume vol;
     if (dimX <= 0 || dimY <= 0 || dimZ <= 0) {
         return vol;
@@ -424,8 +579,27 @@ SDFVolume JitSdfCompiler::evaluateVolume(const SdfGraph& graph, int dimX, int di
     CompiledSdfKernel kernel = compile(graph, root);
 
     if (kernel.gridFn) {
-        float boundsMin[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
-        kernel.gridFn(vol.field.data(), boundsMin, vol.cellSize, dimX, dimY, dimZ);
+        auto evalSliceRange = [&](int64_t zStart, int64_t zEnd) {
+            for (int64_t z = zStart; z < zEnd; ++z) {
+                float sliceBoundsMin[3] = {
+                    bounds.min.x,
+                    bounds.min.y,
+                    bounds.min.z + static_cast<float>(z) * vol.cellSize[2]
+                };
+                float* sliceOut = vol.field.data() + static_cast<size_t>(z) * static_cast<size_t>(dimY) * static_cast<size_t>(dimX);
+                kernel.gridFn(sliceOut, sliceBoundsMin, vol.cellSize, dimX, dimY, 1);
+            }
+        };
+#if BROMESH_HAS_BRASS_JIT
+        if (parallel && dimZ >= 2) {
+            brass::codegen::parallel_for(0, static_cast<int64_t>(dimZ), evalSliceRange);
+        } else {
+            evalSliceRange(0, static_cast<int64_t>(dimZ));
+        }
+#else
+        (void)parallel;
+        evalSliceRange(0, static_cast<int64_t>(dimZ));
+#endif
     } else {
         // Fallback scalar evaluation
         #pragma omp parallel for

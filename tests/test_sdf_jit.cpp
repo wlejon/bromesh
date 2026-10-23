@@ -4,8 +4,13 @@
 #include "bromesh/isosurface/jit/jit_mesher.h"
 #include "bromesh/analysis/bbox.h"
 
+#if BROMESH_HAS_BRASS_JIT
+#include <brass/target/spirv/spirv_ir.hpp>
+#endif
+
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 
 TEST(sdf_jit_graph_construction_and_hash) {
@@ -216,4 +221,57 @@ TEST(sdf_jit_benchmark_128_cube) {
 
     // Sanity check that execution is very fast (e.g. < 500 ms for 2M samples in JIT)
     ASSERT(ms < 2000.0, "128^3 evaluation must complete under 2 seconds");
+}
+
+TEST(sdf_jit_parallel_vs_sequential_equivalence_97) {
+    bromesh::SdfGraph g;
+    int s = g.sphere(0.85f);
+    int b = g.roundedBox({0.6f, 0.5f, 0.7f}, 0.1f);
+    int u = g.opSmoothUnion(s, b, 0.15f);
+    int t = g.torus(0.7f, 0.2f);
+    int sub = g.opSmoothSubtraction(u, t, 0.1f);
+    int noise = g.noise3D({2.5f, 2.5f, 2.5f}, 0.04f);
+    g.displace(sub, noise);
+
+    bromath::AABB3 bounds{{-1.5f, -1.5f, -1.5f}, {1.5f, 1.5f, 1.5f}};
+    const int dim = 36;
+
+    auto volParallel = bromesh::SdfCompiler::instance().evaluateVolume(g, dim, dim, dim, bounds, -1, true);
+    auto volSequential = bromesh::SdfCompiler::instance().evaluateVolume(g, dim, dim, dim, bounds, -1, false);
+
+    ASSERT(volParallel.field.size() == volSequential.field.size(), "Field sizes match");
+    ASSERT(!volParallel.field.empty(), "Volume field is non-empty");
+
+    for (size_t i = 0; i < volParallel.field.size(); ++i) {
+        uint32_t bitsPar = 0;
+        uint32_t bitsSeq = 0;
+        std::memcpy(&bitsPar, &volParallel.field[i], sizeof(uint32_t));
+        std::memcpy(&bitsSeq, &volSequential.field[i], sizeof(uint32_t));
+        ASSERT(bitsPar == bitsSeq, "Parallel Z-slice evaluation must be bit-identical to sequential evaluation");
+    }
+}
+
+TEST(sdf_jit_gpu_spirv_and_ptx_codegen_99) {
+#if BROMESH_HAS_BRASS_JIT
+    bromesh::SdfGraph g;
+    int s = g.sphere(1.0f);
+    int b = g.box({0.75f, 0.75f, 0.75f});
+    int u = g.opSmoothUnion(s, b, 0.2f);
+    int c = g.cylinder(0.35f, 1.2f);
+    int diff = g.opSubtraction(u, c);
+    int xform = g.translate(diff, {0.1f, -0.2f, 0.05f});
+    int noise = g.noise3D({2.0f, 2.0f, 2.0f}, 0.03f);
+    g.displace(xform, noise);
+
+    std::vector<uint32_t> spv = bromesh::SdfCompiler::instance().compile_spirv(g);
+    ASSERT(!spv.empty(), "SPIR-V binary must not be empty");
+    ASSERT(spv[0] == 0x07230203u, "SPIR-V magic number must match 0x07230203");
+    std::string spvErr;
+    ASSERT(brass::spirv::verify_spirv_module(spv, &spvErr), "Generated SPIR-V compute shader must pass structural verification");
+
+    std::string ptx = bromesh::SdfCompiler::instance().compile_ptx(g);
+    ASSERT(!ptx.empty(), "PTX source must not be empty");
+    ASSERT(ptx.find(".visible .entry eval_sdf_gpu") != std::string::npos, "PTX must contain .visible .entry eval_sdf_gpu");
+    ASSERT(ptx.find("st.global") != std::string::npos, "PTX must contain global store to output volume grid");
+#endif
 }
