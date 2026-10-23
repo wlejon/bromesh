@@ -99,6 +99,12 @@ public:
     // Custom mathematical / JS expression primitive
     int customExpr(std::string_view expr, float lipschitzBound = 1.0f);
     int customExpr(SdfCustomExpr compiledExpr);
+    int customPrimitive(std::string_view expr, float lipschitzBound = 1.0f) {
+        return customExpr(expr, lipschitzBound);
+    }
+    int customPrimitive(SdfCustomExpr compiledExpr) {
+        return customExpr(std::move(compiledExpr));
+    }
 
     // CSG operations
     int opUnion(int a, int b);

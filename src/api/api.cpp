@@ -63,7 +63,7 @@ Value makeMeshNamespace() {
         "merge", "booleanUnion", "booleanDifference", "booleanIntersection",
         "convexHull", "marchingCubes", "surfaceNets", "dualContouring",
         "transvoxel", "greedyMesh", "polygon2D", "polygon3D", "reconstruct",
-        "createSDF", "marchingCubesSDF", "surfaceNetsSDF",
+        "createSDF", "fromSDF", "marchingCubesSDF", "surfaceNetsSDF",
         "loadOBJ", "loadPLY", "loadSTL", "loadVOX", "loadFBX", "loadSplatPLY", "saveSplatPLY"
 #if BROMESH_HAS_GLTF
         , "loadGLTF"

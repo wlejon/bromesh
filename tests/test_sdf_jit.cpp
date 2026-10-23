@@ -462,6 +462,14 @@ TEST(sdf_jit_custom_expression_gyroid_and_gpu_108) {
     auto kJs = bromesh::SdfCompiler::instance().compile(gJs);
     ASSERT(std::fabs(kJs.pointFn(2.0f, 0.0f, 0.0f) - 1.0f) < 1e-5f, "JS arrow expression evaluates accurately");
 
+    // Verify Math.* prefix normalization, block body with return, and custom parameter names (#114)
+    bromesh::SdfGraph gJsMath;
+    gJsMath.customPrimitive("(u, v, w) => { return Math.min(Math.hypot(u, v, w) - 1.0, Math.max(Math.abs(u) - 0.5, Math.floor(v + 2.0) - 2.0)); }", 1.0f);
+    auto kJsMath = bromesh::SdfCompiler::instance().compile(gJsMath);
+    ASSERT(kJsMath.pointFn != nullptr && kJsMath.gradFn != nullptr, "JS block arrow with Math.* intrinsics compiles");
+    float dMath = kJsMath.pointFn(0.0f, 0.0f, 0.0f);
+    ASSERT(std::fabs(dMath - (-1.0f)) < 1e-5f, "JS Math.* expression evaluates accurately at origin");
+
     // Verify Marching Cubes meshing of the bounded Gyroid
     bromath::AABB3 bounds{{-1.6f, -1.6f, -1.6f}, {1.6f, 1.6f, 1.6f}};
     bromesh::MeshData mesh = bromesh::marchingCubesFromSDF(g, 40, 40, 40, bounds, 0.0f, true, true);

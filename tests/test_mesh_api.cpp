@@ -266,7 +266,7 @@ int main() {
         ev::destroyRealm(realm);
     }
 
-    // 7. Test SDFGraph customExpr, queryContact, and evalBlockBounds (#106, #107, #108)
+    // 7. Test SDFGraph customExpr, queryContact, evalBlockBounds, toMesh, JS arrow callbacks, and evaluateVolumeStats (#106, #107, #108, #114)
     {
         auto r = bronze::eval::evalScript(R"JS(
             const g = Mesh.createSDF();
@@ -286,6 +286,45 @@ int main() {
             if (!(mesh instanceof Mesh) || mesh.vertexCount <= 0) {
                 throw new Error("SDFGraph.marchingCubes on customExpr failed");
             }
+
+            // #114: SDFGraph.toMesh() with default (marchingCubes) and surfaceNets algorithms
+            const mcMesh = g.toMesh({ resolution: 24, bounds: { size: 1.5 } });
+            if (!(mcMesh instanceof Mesh) || mcMesh.vertexCount !== mesh.vertexCount) {
+                throw new Error("SDFGraph.toMesh default algorithm mismatch");
+            }
+            const snMesh = g.toMesh({ algorithm: "surfaceNets", resolution: 24, bounds: { size: 1.5 }, macroBlockPruning: true });
+            if (!(snMesh instanceof Mesh) || snMesh.vertexCount <= 0) {
+                throw new Error("SDFGraph.toMesh surfaceNets failed");
+            }
+            const fromSdfMesh = Mesh.fromSDF(g, { algorithm: "surfaceNets", resolution: 24, bounds: { size: 1.5 } });
+            if (!(fromSdfMesh instanceof Mesh) || fromSdfMesh.vertexCount !== snMesh.vertexCount) {
+                throw new Error("Mesh.fromSDF surfaceNets mismatch");
+            }
+
+            // #114: JS arrow function and block function customPrimitive / customExpr
+            const gArrow = Mesh.createSDF();
+            const nArrow = gArrow.customPrimitive((x, y, z) => Math.sin(x * 4) * Math.cos(y * 4) - 0.2, 4.0);
+            const nSphere = gArrow.customExpr((x, y, z) => { return Math.sqrt(x * x + y * y + z * z) - 1.0; }, 1.0);
+            gArrow.intersection(nArrow, nSphere);
+            const arrowMesh = gArrow.toMesh({ resolution: 24, bounds: { size: 1.4 } });
+            if (!(arrowMesh instanceof Mesh) || arrowMesh.vertexCount <= 0 || arrowMesh.triangleCount <= 0) {
+                throw new Error("SDFGraph.customPrimitive with JS arrow callback failed to mesh");
+            }
+
+            // #114: evaluateVolumeStats, compileSpirv, compilePtx
+            const stats = gArrow.evaluateVolumeStats({ resolution: 64, bounds: { size: 2.5 }, enableMacroBlockPruning: true });
+            if (!stats || !(stats.totalBlocks > 0) || !(stats.activeBlocks > 0) || !(stats.activeBlocks < stats.totalBlocks) || !(stats.prunedBlocks > 0) || !(stats.pruningRatio > 0)) {
+                throw new Error("SDFGraph.evaluateVolumeStats returned unexpected stats: " + JSON.stringify(stats));
+            }
+            const spv = gArrow.compileSpirv();
+            if (!(spv instanceof Uint32Array) || spv.length === 0 || spv[0] !== 0x07230203) {
+                throw new Error("SDFGraph.compileSpirv failed");
+            }
+            const ptx = gArrow.compilePtx();
+            if (typeof ptx !== "string" || !ptx.includes("eval_sdf_gpu")) {
+                throw new Error("SDFGraph.compilePtx failed");
+            }
+
             "SDF_OK";
         )JS");
         if (r.thrown) {

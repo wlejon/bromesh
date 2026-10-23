@@ -19,6 +19,9 @@ struct ExprParser {
     int regX = -1;
     int regY = -1;
     int regZ = -1;
+    std::string_view paramX;
+    std::string_view paramY;
+    std::string_view paramZ;
 
     explicit ExprParser(std::string_view s) : src(s) {
         regX = emit({SdfExprOp::VarX, -1, -1, -1, 0.0f});
@@ -63,18 +66,47 @@ struct ExprParser {
         return false;
     }
 
+    void parseParamNames(std::string_view paramSlice) {
+        size_t p = 0;
+        int idx = 0;
+        while (p < paramSlice.size() && idx < 3) {
+            while (p < paramSlice.size() &&
+                   (std::isspace(static_cast<unsigned char>(paramSlice[p])) ||
+                    paramSlice[p] == '(' || paramSlice[p] == ')' || paramSlice[p] == ',')) {
+                ++p;
+            }
+            size_t start = p;
+            while (p < paramSlice.size() &&
+                   (std::isalnum(static_cast<unsigned char>(paramSlice[p])) || paramSlice[p] == '_')) {
+                ++p;
+            }
+            if (p > start) {
+                std::string_view name = paramSlice.substr(start, p - start);
+                if (idx == 0) paramX = name;
+                else if (idx == 1) paramY = name;
+                else if (idx == 2) paramZ = name;
+                ++idx;
+            } else {
+                ++p;
+            }
+        }
+    }
+
     // Optional JS function / arrow wrapper stripping:
     // e.g. "(x, y, z) => ..." or "function(x, y, z) { return ...; }"
     void stripJsFunctionHeader() {
         skipWs();
         size_t arrowPos = src.find("=>");
         if (arrowPos != std::string_view::npos) {
+            parseParamNames(src.substr(pos, arrowPos - pos));
             pos = arrowPos + 2;
         } else if (matchKeyword("function")) {
             skipWs();
             while (pos < src.size() && src[pos] != '(') ++pos;
             if (pos < src.size() && src[pos] == '(') {
+                size_t openParen = pos;
                 while (pos < src.size() && src[pos] != ')') ++pos;
+                parseParamNames(src.substr(openParen, pos - openParen));
                 if (pos < src.size()) ++pos;
             }
         }
@@ -213,12 +245,16 @@ struct ExprParser {
                 return buildCall(ident, args);
             }
 
-            if (ident == "x" || ident == "px") return regX;
-            if (ident == "y" || ident == "py") return regY;
-            if (ident == "z" || ident == "pz") return regZ;
+            if (ident == "x" || ident == "px" || (!paramX.empty() && ident == paramX)) return regX;
+            if (ident == "y" || ident == "py" || (!paramY.empty() && ident == paramY)) return regY;
+            if (ident == "z" || ident == "pz" || (!paramZ.empty() && ident == paramZ)) return regZ;
             if (ident == "pi" || ident == "PI") return emitConst(3.14159265358979323846f);
             if (ident == "tau" || ident == "TAU") return emitConst(6.28318530717958647692f);
             if (ident == "e" || ident == "E") return emitConst(2.71828182845904523536f);
+            if (ident == "SQRT2") return emitConst(1.4142135623730951f);
+            if (ident == "SQRT1_2") return emitConst(0.7071067811865476f);
+            if (ident == "LN2") return emitConst(0.6931471805599453f);
+            if (ident == "LN10") return emitConst(2.302585092994046f);
 
             throw std::invalid_argument("Custom SDF expression: unknown identifier '" + std::string(ident) + "'");
         }
@@ -254,13 +290,37 @@ struct ExprParser {
             requireArgs(1);
             return emit({SdfExprOp::Floor, args[0], -1, -1, 0.0f});
         }
+        if (fn == "ceil" || fn == "ceilf") {
+            requireArgs(1);
+            int neg = emit({SdfExprOp::Neg, args[0], -1, -1, 0.0f});
+            int flr = emit({SdfExprOp::Floor, neg, -1, -1, 0.0f});
+            return emit({SdfExprOp::Neg, flr, -1, -1, 0.0f});
+        }
+        if (fn == "round" || fn == "roundf") {
+            requireArgs(1);
+            int half = emitConst(0.5f);
+            int shifted = emit({SdfExprOp::Add, args[0], half, -1, 0.0f});
+            return emit({SdfExprOp::Floor, shifted, -1, -1, 0.0f});
+        }
         if (fn == "min" || fn == "fmin" || fn == "fminf") {
-            requireArgs(2);
-            return emit({SdfExprOp::Min, args[0], args[1], -1, 0.0f});
+            if (args.size() < 2) {
+                throw std::invalid_argument("Custom SDF expression: function 'min' expects at least 2 arguments");
+            }
+            int acc = emit({SdfExprOp::Min, args[0], args[1], -1, 0.0f});
+            for (size_t i = 2; i < args.size(); ++i) {
+                acc = emit({SdfExprOp::Min, acc, args[i], -1, 0.0f});
+            }
+            return acc;
         }
         if (fn == "max" || fn == "fmax" || fn == "fmaxf") {
-            requireArgs(2);
-            return emit({SdfExprOp::Max, args[0], args[1], -1, 0.0f});
+            if (args.size() < 2) {
+                throw std::invalid_argument("Custom SDF expression: function 'max' expects at least 2 arguments");
+            }
+            int acc = emit({SdfExprOp::Max, args[0], args[1], -1, 0.0f});
+            for (size_t i = 2; i < args.size(); ++i) {
+                acc = emit({SdfExprOp::Max, acc, args[i], -1, 0.0f});
+            }
+            return acc;
         }
         if (fn == "clamp") {
             requireArgs(3);
@@ -276,6 +336,9 @@ struct ExprParser {
             return emit({SdfExprOp::Fma, diff, args[2], args[0], 0.0f});
         }
         if (fn == "length" || fn == "hypot") {
+            if (args.size() == 1) {
+                return emit({SdfExprOp::Abs, args[0], -1, -1, 0.0f});
+            }
             if (args.size() == 2) {
                 int x2 = emit({SdfExprOp::Mul, args[0], args[0], -1, 0.0f});
                 int sum = emit({SdfExprOp::Fma, args[1], args[1], x2, 0.0f});
@@ -287,7 +350,7 @@ struct ExprParser {
                 int sum = emit({SdfExprOp::Fma, args[2], args[2], xy2, 0.0f});
                 return emit({SdfExprOp::Sqrt, sum, -1, -1, 0.0f});
             }
-            throw std::invalid_argument("Custom SDF expression: 'length' expects 2 or 3 arguments");
+            throw std::invalid_argument("Custom SDF expression: 'length' expects 1, 2 or 3 arguments");
         }
         if (fn == "pow") {
             requireArgs(2);

@@ -71,7 +71,28 @@ struct SdfMeshOptions {
     float isoLevel = 0.0f;
     bool closeBoundary = true;
     bool computeGradients = true;
+    bool enableMacroBlockPruning = true;
+    std::string algorithm = "marchingCubes";
 };
+
+static bool extractCustomExprSource(Value v, std::string& outExpr) {
+    if (ev::isString(v)) {
+        outExpr = ev::toUtf8(v);
+        return !outExpr.empty();
+    }
+    if (ev::isFunction(v)) {
+        ev::Persistent fn(v);
+        ev::Persistent toStrFn(ev::getProperty(fn.get(), "toString"));
+        if (ev::isFunction(toStrFn.get())) {
+            ev::CallResult r = ev::call(toStrFn.get(), fn.get(), {});
+            if (!r.thrown && ev::isString(r.value)) {
+                outExpr = ev::toUtf8(r.value);
+                return !outExpr.empty();
+            }
+        }
+    }
+    return false;
+}
 
 // A node id argument: an existing node of `g`, [0, size). A node can only
 // name nodes built before it, which is also what keeps the graph acyclic —
@@ -148,6 +169,25 @@ static bool parseMeshOptions(Value optsVal, SdfMeshOptions& opt) {
     Value cgVal = ev::getProperty(opts.get(), "computeGradients");
     if (ev::isBool(cgVal)) opt.computeGradients = ev::toBool(cgVal);
 
+    Value mbpVal = ev::getProperty(opts.get(), "macroBlockPruning");
+    if (ev::isBool(mbpVal)) opt.enableMacroBlockPruning = ev::toBool(mbpVal);
+
+    Value embpVal = ev::getProperty(opts.get(), "enableMacroBlockPruning");
+    if (ev::isBool(embpVal)) opt.enableMacroBlockPruning = ev::toBool(embpVal);
+
+    Value algVal = ev::getProperty(opts.get(), "algorithm");
+    if (ev::isString(algVal)) {
+        std::string alg = ev::toUtf8(algVal);
+        if (alg == "marchingCubes" || alg == "marching_cubes" || alg == "mc") {
+            opt.algorithm = "marchingCubes";
+        } else if (alg == "surfaceNets" || alg == "surface_nets" || alg == "sn") {
+            opt.algorithm = "surfaceNets";
+        } else {
+            ev::throwRangeError("SDF mesh options: unknown algorithm '" + alg + "'");
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -218,10 +258,10 @@ void initSdfGraph(HostClass& cls) {
         auto customExprFn = [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapSdfGraph(self);
             if (!h) return ev::throwTypeError("SDFGraph.customExpr: invalid instance");
-            if (a.empty() || !ev::isString(a[0])) {
-                return ev::throwTypeError("SDFGraph.customExpr: formula string required");
+            std::string expr;
+            if (a.empty() || !extractCustomExprSource(a[0], expr)) {
+                return ev::throwTypeError("SDFGraph.customExpr: formula string or function required");
             }
-            std::string expr = ev::toUtf8(a[0]);
             float lip = (a.size() > 1 && ev::isNumber(a[1])) ? finiteFloat(a[1], 1.0f) : 1.0f;
             try {
                 return ev::fromDouble(h->graph.customExpr(expr, lip));
@@ -399,6 +439,45 @@ void initSdfGraph(HostClass& cls) {
             return res.build();
         });
 
+        proto.def("evaluateVolumeStats", 1, [](Value self, std::span<const Value> a) -> Value {
+            auto* h = unwrapSdfGraph(self);
+            if (!h) return ev::throwTypeError("SDFGraph.evaluateVolumeStats: invalid instance");
+            SdfMeshOptions opt;
+            if (!parseMeshOptions(!a.empty() ? a[0] : ev::undefined(), opt)) return ev::undefined();
+            SDFVolume vol = JitSdfCompiler::instance().evaluateVolume(
+                h->graph, opt.dimX, opt.dimY, opt.dimZ, opt.bounds,
+                -1, true, opt.isoLevel, opt.enableMacroBlockPruning);
+            size_t activeBlocks = vol.activeBlockCount;
+            size_t totalBlocks = vol.totalBlockCount;
+            size_t prunedBlocks = (totalBlocks >= activeBlocks) ? (totalBlocks - activeBlocks) : 0;
+            double pruningRatio = (totalBlocks > 0)
+                                      ? (static_cast<double>(prunedBlocks) / static_cast<double>(totalBlocks))
+                                      : 0.0;
+            ObjectBuilder res;
+            res.set("activeBlocks", static_cast<double>(activeBlocks));
+            res.set("totalBlocks", static_cast<double>(totalBlocks));
+            res.set("prunedBlocks", static_cast<double>(prunedBlocks));
+            res.set("pruningRatio", pruningRatio);
+            res.set("dimX", static_cast<double>(vol.dimX));
+            res.set("dimY", static_cast<double>(vol.dimY));
+            res.set("dimZ", static_cast<double>(vol.dimZ));
+            return res.build();
+        });
+
+        proto.def("compileSpirv", 0, [](Value self, std::span<const Value>) -> Value {
+            auto* h = unwrapSdfGraph(self);
+            if (!h) return ev::throwTypeError("SDFGraph.compileSpirv: invalid instance");
+            std::vector<uint32_t> spv = JitSdfCompiler::instance().compileSpirv(h->graph);
+            return makeUint32Array(spv.data(), spv.size());
+        });
+
+        proto.def("compilePtx", 0, [](Value self, std::span<const Value>) -> Value {
+            auto* h = unwrapSdfGraph(self);
+            if (!h) return ev::throwTypeError("SDFGraph.compilePtx: invalid instance");
+            std::string ptx = JitSdfCompiler::instance().compilePtx(h->graph);
+            return ev::fromUtf8(ptx);
+        });
+
         // Meshing methods on SDFGraph instance
         proto.def("marchingCubes", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapSdfGraph(self);
@@ -407,7 +486,8 @@ void initSdfGraph(HostClass& cls) {
             if (!parseMeshOptions(!a.empty() ? a[0] : ev::undefined(), opt)) return ev::undefined();
             MeshData m = marchingCubesFromSDF(h->graph, opt.dimX, opt.dimY, opt.dimZ,
                                               opt.bounds, opt.isoLevel,
-                                              opt.closeBoundary, opt.computeGradients);
+                                              opt.closeBoundary, opt.computeGradients,
+                                              opt.enableMacroBlockPruning);
             return wrapMesh(std::move(m));
         });
 
@@ -417,7 +497,24 @@ void initSdfGraph(HostClass& cls) {
             SdfMeshOptions opt;
             if (!parseMeshOptions(!a.empty() ? a[0] : ev::undefined(), opt)) return ev::undefined();
             MeshData m = surfaceNetsFromSDF(h->graph, opt.dimX, opt.dimY, opt.dimZ,
-                                           opt.bounds, opt.isoLevel);
+                                           opt.bounds, opt.isoLevel,
+                                           opt.enableMacroBlockPruning);
+            return wrapMesh(std::move(m));
+        });
+
+        proto.def("toMesh", 1, [](Value self, std::span<const Value> a) -> Value {
+            auto* h = unwrapSdfGraph(self);
+            if (!h) return ev::throwTypeError("SDFGraph.toMesh: invalid instance");
+            SdfMeshOptions opt;
+            if (!parseMeshOptions(!a.empty() ? a[0] : ev::undefined(), opt)) return ev::undefined();
+            MeshData m = (opt.algorithm == "surfaceNets")
+                             ? surfaceNetsFromSDF(h->graph, opt.dimX, opt.dimY, opt.dimZ,
+                                                  opt.bounds, opt.isoLevel,
+                                                  opt.enableMacroBlockPruning)
+                             : marchingCubesFromSDF(h->graph, opt.dimX, opt.dimY, opt.dimZ,
+                                                    opt.bounds, opt.isoLevel,
+                                                    opt.closeBoundary, opt.computeGradients,
+                                                    opt.enableMacroBlockPruning);
             return wrapMesh(std::move(m));
         });
     });
@@ -441,46 +538,61 @@ void initMeshSdf(ObjectBuilder&, HostClass& meshCls) {
             outGraph = h->graph;
             return parseMeshOptions(a.size() > 1 ? a[1] : ev::undefined(), outOpt) ? Extract::Ok : Extract::Threw;
         }
+        if (ev::isFunction(a[0])) {
+            std::string expr;
+            if (!extractCustomExprSource(a[0], expr)) return Extract::NoGraph;
+            try {
+                outGraph.customExpr(expr, 1.0f);
+            } catch (const std::exception& e) {
+                ev::throwRangeError(e.what());
+                return Extract::Threw;
+            }
+            return parseMeshOptions(a.size() > 1 ? a[1] : ev::undefined(), outOpt) ? Extract::Ok : Extract::Threw;
+        }
         if (ev::isObject(a[0])) {
-            Value gVal = ev::getProperty(a[0], "graph");
+            ev::Persistent obj(a[0]);
+            Value gVal = ev::getProperty(obj.get(), "graph");
             if (auto* h = unwrapSdfGraph(gVal)) {
                 outGraph = h->graph;
-                return parseMeshOptions(a[0], outOpt) ? Extract::Ok : Extract::Threw;
+                return parseMeshOptions(obj.get(), outOpt) ? Extract::Ok : Extract::Threw;
             }
             // Declarative shorthand: e.g. { type: "sphere", radius: 1.0 }
-            Value typeVal = ev::getProperty(a[0], "type");
-            if (!ev::isString(typeVal)) typeVal = ev::getProperty(a[0], "op");
+            Value typeVal = ev::getProperty(obj.get(), "type");
+            if (!ev::isString(typeVal)) typeVal = ev::getProperty(obj.get(), "op");
             if (ev::isString(typeVal)) {
                 std::string t = ev::toUtf8(typeVal);
                 if (t == "sphere") {
-                    Value rVal = ev::getProperty(a[0], "radius");
+                    Value rVal = ev::getProperty(obj.get(), "radius");
                     float r = finiteFloat(rVal, 1.0f);
                     outGraph.sphere(r);
                 } else if (t == "box") {
-                    Value extVal = ev::getProperty(a[0], "halfExtents");
+                    Value extVal = ev::getProperty(obj.get(), "halfExtents");
                     bromath::Vec3 ext = ev::isObject(extVal) ? readVec3Param(extVal) : bromath::Vec3{1.0f, 1.0f, 1.0f};
                     outGraph.box(ext);
                 } else if (t == "torus") {
-                    float majR = finiteFloat(ev::getProperty(a[0], "majorRadius"), 1.0f);
-                    float minR = finiteFloat(ev::getProperty(a[0], "minorRadius"), 0.3f);
+                    float majR = finiteFloat(ev::getProperty(obj.get(), "majorRadius"), 1.0f);
+                    float minR = finiteFloat(ev::getProperty(obj.get(), "minorRadius"), 0.3f);
                     outGraph.torus(majR > 0 ? majR : 1.0f, minR > 0 ? minR : 0.3f);
                 } else if (t == "cylinder") {
-                    float r = finiteFloat(ev::getProperty(a[0], "radius"), 0.5f);
-                    float hh = finiteFloat(ev::getProperty(a[0], "halfHeight"), 1.0f);
+                    float r = finiteFloat(ev::getProperty(obj.get(), "radius"), 0.5f);
+                    float hh = finiteFloat(ev::getProperty(obj.get(), "halfHeight"), 1.0f);
                     outGraph.cylinder(r > 0 ? r : 0.5f, hh > 0 ? hh : 1.0f);
-                } else if (t == "custom" || t == "customExpr") {
-                    Value exprVal = ev::getProperty(a[0], "expr");
-                    if (!ev::isString(exprVal)) exprVal = ev::getProperty(a[0], "formula");
-                    if (!ev::isString(exprVal)) return Extract::NoGraph;
-                    float lip = finiteFloat(ev::getProperty(a[0], "lipschitzBound"), 1.0f);
+                } else if (t == "custom" || t == "customExpr" || t == "customPrimitive") {
+                    Value exprVal = ev::getProperty(obj.get(), "expr");
+                    if (ev::isUndefined(exprVal)) exprVal = ev::getProperty(obj.get(), "formula");
+                    if (ev::isUndefined(exprVal)) exprVal = ev::getProperty(obj.get(), "fn");
+                    if (ev::isUndefined(exprVal)) exprVal = ev::getProperty(obj.get(), "callback");
+                    std::string expr;
+                    if (!extractCustomExprSource(exprVal, expr)) return Extract::NoGraph;
+                    float lip = finiteFloat(ev::getProperty(obj.get(), "lipschitzBound"), 1.0f);
                     try {
-                        outGraph.customExpr(ev::toUtf8(exprVal), lip);
+                        outGraph.customExpr(expr, lip);
                     } catch (const std::exception& e) {
                         ev::throwRangeError(e.what());
                         return Extract::Threw;
                     }
                 }
-                return parseMeshOptions(a[0], outOpt) ? Extract::Ok : Extract::Threw;
+                return parseMeshOptions(obj.get(), outOpt) ? Extract::Ok : Extract::Threw;
             }
         }
         return Extract::NoGraph;
@@ -497,7 +609,8 @@ void initMeshSdf(ObjectBuilder&, HostClass& meshCls) {
         }
         MeshData m = marchingCubesFromSDF(graph, opt.dimX, opt.dimY, opt.dimZ,
                                           opt.bounds, opt.isoLevel,
-                                          opt.closeBoundary, opt.computeGradients);
+                                          opt.closeBoundary, opt.computeGradients,
+                                          opt.enableMacroBlockPruning);
         return wrapMesh(std::move(m));
     });
 
@@ -511,7 +624,28 @@ void initMeshSdf(ObjectBuilder&, HostClass& meshCls) {
                 return ev::throwTypeError("Mesh.surfaceNetsSDF: valid SDFGraph or options required");
         }
         MeshData m = surfaceNetsFromSDF(graph, opt.dimX, opt.dimY, opt.dimZ,
-                                       opt.bounds, opt.isoLevel);
+                                       opt.bounds, opt.isoLevel,
+                                       opt.enableMacroBlockPruning);
+        return wrapMesh(std::move(m));
+    });
+
+    bindStatic("fromSDF", 2, [extractGraphAndOptions](Value, std::span<const Value> a) -> Value {
+        SdfGraph graph;
+        SdfMeshOptions opt;
+        switch (extractGraphAndOptions(a, graph, opt)) {
+            case Extract::Ok: break;
+            case Extract::Threw: return ev::undefined();
+            case Extract::NoGraph:
+                return ev::throwTypeError("Mesh.fromSDF: valid SDFGraph or options required");
+        }
+        MeshData m = (opt.algorithm == "surfaceNets")
+                         ? surfaceNetsFromSDF(graph, opt.dimX, opt.dimY, opt.dimZ,
+                                              opt.bounds, opt.isoLevel,
+                                              opt.enableMacroBlockPruning)
+                         : marchingCubesFromSDF(graph, opt.dimX, opt.dimY, opt.dimZ,
+                                                opt.bounds, opt.isoLevel,
+                                                opt.closeBoundary, opt.computeGradients,
+                                                opt.enableMacroBlockPruning);
         return wrapMesh(std::move(m));
     });
 }
