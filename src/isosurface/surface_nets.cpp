@@ -1,13 +1,15 @@
 #include "bromesh/isosurface/surface_nets.h"
 #include "bromesh/manipulation/normals.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
 namespace bromesh {
 
 MeshData surfaceNets(const float* field, int gridX, int gridY, int gridZ,
-                     float isoLevel, float cellSize) {
+                     float isoLevel, float cellSize,
+                     const uint8_t* activeBlockMask) {
     MeshData mesh;
     if (!field || gridX < 2 || gridY < 2 || gridZ < 2)
         return mesh;
@@ -42,10 +44,30 @@ MeshData surfaceNets(const float* field, int gridX, int gridY, int gridZ,
         {0, 4}, {1, 5}, {2, 6}, {3, 7}  // Z-aligned
     };
 
+    const int blocksX = (cellsX + 7) / 8;
+    const int blocksY = (cellsY + 7) / 8;
+
     // Phase 1: Place vertices
     for (int cz = 0; cz < cellsZ; ++cz) {
+        int bz = cz >> 3;
         for (int cy = 0; cy < cellsY; ++cy) {
+            int by = cy >> 3;
+            const uint8_t* rowBlocks = activeBlockMask ? (activeBlockMask + (static_cast<size_t>(bz) * blocksY + by) * blocksX) : nullptr;
+            if (rowBlocks) {
+                bool rowActive = false;
+                for (int bx = 0; bx < blocksX; ++bx) {
+                    if (rowBlocks[bx] != 0) {
+                        rowActive = true;
+                        break;
+                    }
+                }
+                if (!rowActive) continue;
+            }
             for (int cx = 0; cx < cellsX; ++cx) {
+                if (rowBlocks && rowBlocks[cx >> 3] == 0) {
+                    cx = std::min(((cx >> 3) + 1) * 8, cellsX) - 1;
+                    continue;
+                }
                 // Get corner values
                 float cornerVals[8];
                 for (int i = 0; i < 8; ++i) {
@@ -116,8 +138,36 @@ MeshData surfaceNets(const float* field, int gridX, int gridY, int gridZ,
     // We iterate over grid vertices and check the 3 edges in +X, +Y, +Z directions.
 
     for (int gz = 0; gz < gridZ; ++gz) {
+        int bz0 = (gz > 0) ? ((gz - 1) >> 3) : 0;
+        int bz1 = std::min(gz >> 3, ((cellsZ + 7) / 8) - 1);
         for (int gy = 0; gy < gridY; ++gy) {
+            int by0 = (gy > 0) ? ((gy - 1) >> 3) : 0;
+            int by1 = std::min(gy >> 3, blocksY - 1);
+            if (activeBlockMask) {
+                bool rowActive = false;
+                for (int bx = 0; bx < blocksX; ++bx) {
+                    if (activeBlockMask[(static_cast<size_t>(bz0) * blocksY + by0) * blocksX + bx] != 0 ||
+                        activeBlockMask[(static_cast<size_t>(bz0) * blocksY + by1) * blocksX + bx] != 0 ||
+                        activeBlockMask[(static_cast<size_t>(bz1) * blocksY + by0) * blocksX + bx] != 0 ||
+                        activeBlockMask[(static_cast<size_t>(bz1) * blocksY + by1) * blocksX + bx] != 0) {
+                        rowActive = true;
+                        break;
+                    }
+                }
+                if (!rowActive) continue;
+            }
             for (int gx = 0; gx < gridX; ++gx) {
+                if (activeBlockMask) {
+                    int bx = std::min(gx >> 3, blocksX - 1);
+                    bool blkActive = activeBlockMask[(static_cast<size_t>(bz0) * blocksY + by0) * blocksX + bx] != 0 ||
+                                     activeBlockMask[(static_cast<size_t>(bz0) * blocksY + by1) * blocksX + bx] != 0 ||
+                                     activeBlockMask[(static_cast<size_t>(bz1) * blocksY + by0) * blocksX + bx] != 0 ||
+                                     activeBlockMask[(static_cast<size_t>(bz1) * blocksY + by1) * blocksX + bx] != 0;
+                    if (!blkActive) {
+                        gx = std::min((bx + 1) * 8, gridX) - 1;
+                        continue;
+                    }
+                }
                 float v0 = field[fieldIdx(gx, gy, gz)];
 
                 // X-edge: (gx,gy,gz) -> (gx+1,gy,gz)

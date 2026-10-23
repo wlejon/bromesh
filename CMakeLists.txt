@@ -207,6 +207,9 @@ add_library(bromesh STATIC
     src/isosurface/transvoxel.cpp
     src/isosurface/jit/sdf_node.cpp
     src/isosurface/jit/sdf_compiler.cpp
+    src/isosurface/jit/sdf_autodiff.cpp
+    src/isosurface/jit/sdf_interval.cpp
+    src/isosurface/jit/sdf_custom_expr.cpp
     src/isosurface/jit/jit_mesher.cpp
 
     # Discrete voxel

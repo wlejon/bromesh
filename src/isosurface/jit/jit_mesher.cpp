@@ -9,8 +9,8 @@
 
 namespace bromesh {
 
-static void computeAnalyticalNormals(MeshData& mesh, SdfPointEvalFn pointFn, const float* cellSize) {
-    if (!pointFn || mesh.positions.empty()) {
+static void computeAnalyticalNormals(MeshData& mesh, const CompiledSdfKernel& kernel, const float* cellSize) {
+    if ((!kernel.gradFn && !kernel.pointFn) || mesh.positions.empty()) {
         computeNormals(mesh);
         return;
     }
@@ -20,27 +20,52 @@ static void computeAnalyticalNormals(MeshData& mesh, SdfPointEvalFn pointFn, con
     const float eps = std::max(1e-4f, 0.25f * minCell);
     const float inv2eps = 1.0f / (2.0f * eps);
     const int64_t numVerts = static_cast<int64_t>(mesh.positions.size() / 3);
+    SdfGradEvalFn gradFn = kernel.gradFn;
+    SdfPointEvalFn pointFn = kernel.pointFn;
 
     auto evalVertRange = [&](int64_t start, int64_t end) {
-        for (int64_t i = start; i < end; ++i) {
-            float x = mesh.positions[3 * i + 0];
-            float y = mesh.positions[3 * i + 1];
-            float z = mesh.positions[3 * i + 2];
+        if (gradFn) {
+            for (int64_t i = start; i < end; ++i) {
+                float x = mesh.positions[3 * i + 0];
+                float y = mesh.positions[3 * i + 1];
+                float z = mesh.positions[3 * i + 2];
 
-            float gx = (pointFn(x + eps, y, z) - pointFn(x - eps, y, z)) * inv2eps;
-            float gy = (pointFn(x, y + eps, z) - pointFn(x, y - eps, z)) * inv2eps;
-            float gz = (pointFn(x, y, z + eps) - pointFn(x, y, z - eps)) * inv2eps;
+                float gx = 0.0f, gy = 0.0f, gz = 0.0f;
+                gradFn(x, y, z, &gx, &gy, &gz);
 
-            float len = std::sqrt(gx * gx + gy * gy + gz * gz);
-            if (len > 1e-7f) {
-                float invLen = 1.0f / len;
-                mesh.normals[3 * i + 0] = gx * invLen;
-                mesh.normals[3 * i + 1] = gy * invLen;
-                mesh.normals[3 * i + 2] = gz * invLen;
-            } else {
-                mesh.normals[3 * i + 0] = 0.0f;
-                mesh.normals[3 * i + 1] = 1.0f;
-                mesh.normals[3 * i + 2] = 0.0f;
+                float len = std::sqrt(gx * gx + gy * gy + gz * gz);
+                if (len > 1e-7f) {
+                    float invLen = 1.0f / len;
+                    mesh.normals[3 * i + 0] = gx * invLen;
+                    mesh.normals[3 * i + 1] = gy * invLen;
+                    mesh.normals[3 * i + 2] = gz * invLen;
+                } else {
+                    mesh.normals[3 * i + 0] = 0.0f;
+                    mesh.normals[3 * i + 1] = 1.0f;
+                    mesh.normals[3 * i + 2] = 0.0f;
+                }
+            }
+        } else {
+            for (int64_t i = start; i < end; ++i) {
+                float x = mesh.positions[3 * i + 0];
+                float y = mesh.positions[3 * i + 1];
+                float z = mesh.positions[3 * i + 2];
+
+                float gx = (pointFn(x + eps, y, z) - pointFn(x - eps, y, z)) * inv2eps;
+                float gy = (pointFn(x, y + eps, z) - pointFn(x, y - eps, z)) * inv2eps;
+                float gz = (pointFn(x, y, z + eps) - pointFn(x, y, z - eps)) * inv2eps;
+
+                float len = std::sqrt(gx * gx + gy * gy + gz * gz);
+                if (len > 1e-7f) {
+                    float invLen = 1.0f / len;
+                    mesh.normals[3 * i + 0] = gx * invLen;
+                    mesh.normals[3 * i + 1] = gy * invLen;
+                    mesh.normals[3 * i + 2] = gz * invLen;
+                } else {
+                    mesh.normals[3 * i + 0] = 0.0f;
+                    mesh.normals[3 * i + 1] = 1.0f;
+                    mesh.normals[3 * i + 2] = 0.0f;
+                }
             }
         }
     };
@@ -62,14 +87,20 @@ MeshData marchingCubesFromSDF(
     const bromath::AABB3& bounds,
     float isoLevel,
     bool closeBoundary,
-    bool computeGradients
+    bool computeGradients,
+    bool enableMacroBlockPruning
 ) {
-    SDFVolume vol = JitSdfCompiler::instance().evaluateVolume(graph, dimX, dimY, dimZ, bounds);
+    SDFVolume vol = JitSdfCompiler::instance().evaluateVolume(
+        graph, dimX, dimY, dimZ, bounds, -1, true, isoLevel, enableMacroBlockPruning);
     if (vol.field.empty()) {
         return MeshData();
     }
 
-    MeshData mesh = marchingCubes(vol.field.data(), dimX, dimY, dimZ, isoLevel, 1.0f, closeBoundary);
+    const uint8_t* blockMask = (!vol.activeBlockMask.empty() && vol.activeBlockCount < vol.totalBlockCount)
+                                   ? vol.activeBlockMask.data()
+                                   : nullptr;
+
+    MeshData mesh = marchingCubes(vol.field.data(), dimX, dimY, dimZ, isoLevel, 1.0f, closeBoundary, blockMask);
     if (mesh.empty()) {
         return mesh;
     }
@@ -84,7 +115,7 @@ MeshData marchingCubesFromSDF(
 
     if (computeGradients) {
         CompiledSdfKernel kernel = JitSdfCompiler::instance().compile(graph);
-        computeAnalyticalNormals(mesh, kernel.pointFn, vol.cellSize);
+        computeAnalyticalNormals(mesh, kernel, vol.cellSize);
     } else {
         computeNormals(mesh);
     }
@@ -96,14 +127,20 @@ MeshData surfaceNetsFromSDF(
     const SdfGraph& graph,
     int dimX, int dimY, int dimZ,
     const bromath::AABB3& bounds,
-    float isoLevel
+    float isoLevel,
+    bool enableMacroBlockPruning
 ) {
-    SDFVolume vol = JitSdfCompiler::instance().evaluateVolume(graph, dimX, dimY, dimZ, bounds);
+    SDFVolume vol = JitSdfCompiler::instance().evaluateVolume(
+        graph, dimX, dimY, dimZ, bounds, -1, true, isoLevel, enableMacroBlockPruning);
     if (vol.field.empty()) {
         return MeshData();
     }
 
-    MeshData mesh = surfaceNets(vol.field.data(), dimX, dimY, dimZ, isoLevel, 1.0f);
+    const uint8_t* blockMask = (!vol.activeBlockMask.empty() && vol.activeBlockCount < vol.totalBlockCount)
+                                   ? vol.activeBlockMask.data()
+                                   : nullptr;
+
+    MeshData mesh = surfaceNets(vol.field.data(), dimX, dimY, dimZ, isoLevel, 1.0f, blockMask);
     if (mesh.empty()) {
         return mesh;
     }
@@ -117,7 +154,7 @@ MeshData surfaceNetsFromSDF(
     }
 
     CompiledSdfKernel kernel = JitSdfCompiler::instance().compile(graph);
-    computeAnalyticalNormals(mesh, kernel.pointFn, vol.cellSize);
+    computeAnalyticalNormals(mesh, kernel, vol.cellSize);
 
     return mesh;
 }

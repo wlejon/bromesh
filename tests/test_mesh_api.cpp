@@ -266,6 +266,34 @@ int main() {
         ev::destroyRealm(realm);
     }
 
+    // 7. Test SDFGraph customExpr, queryContact, and evalBlockBounds (#106, #107, #108)
+    {
+        auto r = bronze::eval::evalScript(R"JS(
+            const g = Mesh.createSDF();
+            const gyroid = g.customExpr("sin(x * 4.0) * cos(y * 4.0) + sin(y * 4.0) * cos(z * 4.0) + sin(z * 4.0) * cos(x * 4.0) - 0.2", 4.0);
+            const sph = g.sphere(1.2);
+            g.intersection(gyroid, sph);
+
+            const contact = g.queryContact(0.0, 2.0, 0.0);
+            if (!contact || Math.abs(contact.distance - 0.8) > 0.05) {
+                throw new Error("SDFGraph.queryContact returned unexpected distance: " + JSON.stringify(contact));
+            }
+            const b = g.evalBlockBounds({ min: { x: 2, y: 2, z: 2 }, max: { x: 3, y: 3, z: 3 } });
+            if (!b || !(b.min > 0.0) || !(b.max >= b.min)) {
+                throw new Error("SDFGraph.evalBlockBounds returned invalid interval: " + JSON.stringify(b));
+            }
+            const mesh = g.marchingCubes({ dims: 24, bounds: { size: 1.5 } });
+            if (!(mesh instanceof Mesh) || mesh.vertexCount <= 0) {
+                throw new Error("SDFGraph.marchingCubes on customExpr failed");
+            }
+            "SDF_OK";
+        )JS");
+        if (r.thrown) {
+            std::cerr << "SDF JS API test threw: " << ev::toUtf8(r.value) << std::endl;
+        }
+        CHECK(!r.thrown && ev::toUtf8(r.value) == "SDF_OK");
+    }
+
     std::cout << "========================================" << std::endl;
     std::cout << "All bromesh Bronze API tests PASSED!" << std::endl;
     std::cout << "========================================" << std::endl;

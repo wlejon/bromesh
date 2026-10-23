@@ -215,6 +215,23 @@ void initSdfGraph(HostClass& cls) {
             return ev::fromDouble(h->graph.plane(n, d));
         });
 
+        auto customExprFn = [](Value self, std::span<const Value> a) -> Value {
+            auto* h = unwrapSdfGraph(self);
+            if (!h) return ev::throwTypeError("SDFGraph.customExpr: invalid instance");
+            if (a.empty() || !ev::isString(a[0])) {
+                return ev::throwTypeError("SDFGraph.customExpr: formula string required");
+            }
+            std::string expr = ev::toUtf8(a[0]);
+            float lip = (a.size() > 1 && ev::isNumber(a[1])) ? finiteFloat(a[1], 1.0f) : 1.0f;
+            try {
+                return ev::fromDouble(h->graph.customExpr(expr, lip));
+            } catch (const std::exception& e) {
+                return ev::throwRangeError(e.what());
+            }
+        };
+        proto.def("customExpr", 2, customExprFn);
+        proto.def("customPrimitive", 2, customExprFn);
+
         // CSG Combinators
         auto bindCsg = [&](const char* name, auto fn) {
             proto.def(name, 2, [fn](Value self, std::span<const Value> a) -> Value {
@@ -329,6 +346,59 @@ void initSdfGraph(HostClass& cls) {
             return ev::fromDouble(static_cast<double>(h->graph.computeHash()));
         });
 
+        proto.def("evalPoint", 3, [](Value self, std::span<const Value> a) -> Value {
+            auto* h = unwrapSdfGraph(self);
+            if (!h) return ev::throwTypeError("SDFGraph.evalPoint: invalid instance");
+            size_t idx = 0;
+            bromath::Vec3 p = parseVec3(a, idx);
+            CompiledSdfKernel k = JitSdfCompiler::instance().compile(h->graph);
+            float d = k.pointFn ? k.pointFn(p.x, p.y, p.z) : 0.0f;
+            return ev::fromDouble(d);
+        });
+
+        proto.def("queryContact", 3, [](Value self, std::span<const Value> a) -> Value {
+            auto* h = unwrapSdfGraph(self);
+            if (!h) return ev::throwTypeError("SDFGraph.queryContact: invalid instance");
+            size_t idx = 0;
+            bromath::Vec3 p = parseVec3(a, idx);
+            CompiledSdfKernel k = JitSdfCompiler::instance().compile(h->graph);
+            SdfContact c = k.queryContact(p.x, p.y, p.z);
+
+            ObjectBuilder normObj;
+            normObj.set("x", c.normal.x);
+            normObj.set("y", c.normal.y);
+            normObj.set("z", c.normal.z);
+
+            ObjectBuilder ptObj;
+            ptObj.set("x", c.closestSurfacePoint.x);
+            ptObj.set("y", c.closestSurfacePoint.y);
+            ptObj.set("z", c.closestSurfacePoint.z);
+
+            ObjectBuilder gradObj;
+            gradObj.set("x", c.gradient.x);
+            gradObj.set("y", c.gradient.y);
+            gradObj.set("z", c.gradient.z);
+
+            ObjectBuilder res;
+            res.set("distance", c.distance);
+            res.set("normal", normObj.build());
+            res.set("closestSurfacePoint", ptObj.build());
+            res.set("gradient", gradObj.build());
+            return res.build();
+        });
+
+        proto.def("evalBlockBounds", 1, [](Value self, std::span<const Value> a) -> Value {
+            auto* h = unwrapSdfGraph(self);
+            if (!h) return ev::throwTypeError("SDFGraph.evalBlockBounds: invalid instance");
+            bromath::AABB3 b = parseBounds(!a.empty() ? a[0] : ev::undefined());
+            float dMin = 0.0f, dMax = 0.0f;
+            evalBlockBounds(h->graph, -1, b, dMin, dMax);
+            ObjectBuilder res;
+            res.set("min", dMin);
+            res.set("max", dMax);
+            return res.build();
+        });
+
         // Meshing methods on SDFGraph instance
         proto.def("marchingCubes", 1, [](Value self, std::span<const Value> a) -> Value {
             auto* h = unwrapSdfGraph(self);
@@ -398,6 +468,17 @@ void initMeshSdf(ObjectBuilder&, HostClass& meshCls) {
                     float r = finiteFloat(ev::getProperty(a[0], "radius"), 0.5f);
                     float hh = finiteFloat(ev::getProperty(a[0], "halfHeight"), 1.0f);
                     outGraph.cylinder(r > 0 ? r : 0.5f, hh > 0 ? hh : 1.0f);
+                } else if (t == "custom" || t == "customExpr") {
+                    Value exprVal = ev::getProperty(a[0], "expr");
+                    if (!ev::isString(exprVal)) exprVal = ev::getProperty(a[0], "formula");
+                    if (!ev::isString(exprVal)) return Extract::NoGraph;
+                    float lip = finiteFloat(ev::getProperty(a[0], "lipschitzBound"), 1.0f);
+                    try {
+                        outGraph.customExpr(ev::toUtf8(exprVal), lip);
+                    } catch (const std::exception& e) {
+                        ev::throwRangeError(e.what());
+                        return Extract::Threw;
+                    }
                 }
                 return parseMeshOptions(a[0], outOpt) ? Extract::Ok : Extract::Threw;
             }

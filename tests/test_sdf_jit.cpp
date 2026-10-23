@@ -275,3 +275,208 @@ TEST(sdf_jit_gpu_spirv_and_ptx_codegen_99) {
     ASSERT(ptx.find("st.global") != std::string::npos, "PTX must contain global store to output volume grid");
 #endif
 }
+
+TEST(sdf_jit_interval_macro_block_pruning_106) {
+    bromesh::SdfGraph g;
+    int s1 = g.translate(g.sphere(0.75f), {-0.6f, 0.0f, 0.0f});
+    int b1 = g.translate(g.roundedBox({0.5f, 0.5f, 0.5f}, 0.08f), {0.6f, 0.0f, 0.0f});
+    int u = g.opSmoothUnion(s1, b1, 0.15f);
+    int cyl = g.cylinder(0.25f, 1.0f);
+    g.opSubtraction(u, cyl);
+
+    auto kernel = bromesh::SdfCompiler::instance().compile(g);
+    ASSERT(kernel.blockBoundsFn != nullptr, "CompiledSdfKernel must provide JIT blockBoundsFn");
+
+    // 1. Verify interval soundness over macro-blocks against dense samples
+    bromath::AABB3 testBlock{{-1.5f, -1.5f, -1.5f}, {-1.1f, -1.1f, -1.1f}};
+    float dMin = 0.0f, dMax = 0.0f;
+    int domNode = -1;
+    bromesh::evalBlockBounds(g, -1, testBlock, dMin, dMax, &domNode);
+
+    float jitMin = 0.0f, jitMax = 0.0f;
+    kernel.evalBlockBounds(testBlock, jitMin, jitMax);
+    ASSERT(std::fabs(dMin - jitMin) < 1e-4f && std::fabs(dMax - jitMax) < 1e-4f,
+           "JIT blockBoundsFn matches C++ interval bounds");
+    ASSERT(dMin > 0.0f, "Far corner block must be provably outside (> 0)");
+
+    for (int iz = 0; iz <= 4; ++iz) {
+        for (int iy = 0; iy <= 4; ++iy) {
+            for (int ix = 0; ix <= 4; ++ix) {
+                float px = testBlock.min.x + (testBlock.max.x - testBlock.min.x) * (ix / 4.0f);
+                float py = testBlock.min.y + (testBlock.max.y - testBlock.min.y) * (iy / 4.0f);
+                float pz = testBlock.min.z + (testBlock.max.z - testBlock.min.z) * (iz / 4.0f);
+                float d = kernel.pointFn(px, py, pz);
+                ASSERT(d >= dMin - 1e-4f && d <= dMax + 1e-4f,
+                       "Point sample must lie inside [dMin, dMax] interval");
+            }
+        }
+    }
+
+    // 2. Verify CSG branch pruning when one branch provably dominates another
+    bromesh::SdfGraph gDisjoint;
+    int leftSphere = gDisjoint.translate(gDisjoint.sphere(0.5f), {-2.0f, 0.0f, 0.0f});
+    int rightSphere = gDisjoint.translate(gDisjoint.sphere(0.5f), {2.0f, 0.0f, 0.0f});
+    int rootUnion = gDisjoint.opSmoothUnion(leftSphere, rightSphere, 0.2f);
+
+    bromath::AABB3 leftBlock{{-2.5f, -0.5f, -0.5f}, {-1.5f, 0.5f, 0.5f}};
+    int activeSubtree = -1;
+    float lbMin = 0.0f, lbMax = 0.0f;
+    bromesh::evalBlockBounds(gDisjoint, rootUnion, leftBlock, lbMin, lbMax, &activeSubtree);
+    ASSERT(activeSubtree == leftSphere, "CSG pruning must select leftSphere as dominating branch in leftBlock");
+
+    bromesh::SdfGraph prunedLeft = bromesh::pruneCsgGraphForBlock(gDisjoint, leftBlock);
+    ASSERT(prunedLeft.size() < gDisjoint.size(), "Pruned graph has fewer nodes than full CSG graph");
+    auto kFull = bromesh::SdfCompiler::instance().compile(gDisjoint);
+    auto kPruned = bromesh::SdfCompiler::instance().compile(prunedLeft);
+    ASSERT(std::fabs(kFull.pointFn(-2.0f, 0.1f, -0.1f) - kPruned.pointFn(-2.0f, 0.1f, -0.1f)) < 1e-6f,
+           "Pruned CSG graph evaluates identically inside macro-block");
+
+    // 3. Verify 100% identical mesh topology & geometry vs dense evaluation
+    bromath::AABB3 bounds{{-2.0f, -2.0f, -2.0f}, {2.0f, 2.0f, 2.0f}};
+    int dim = 64;
+    bromesh::MeshData mcPruned = bromesh::marchingCubesFromSDF(g, dim, dim, dim, bounds, 0.0f, true, true, true);
+    bromesh::MeshData mcDense = bromesh::marchingCubesFromSDF(g, dim, dim, dim, bounds, 0.0f, true, true, false);
+    ASSERT(!mcPruned.empty(), "Pruned MC mesh is non-empty");
+    ASSERT(mcPruned.positions.size() == mcDense.positions.size(), "MC pruned vs dense vertex count identical");
+    ASSERT(mcPruned.indices.size() == mcDense.indices.size(), "MC pruned vs dense index count identical");
+    for (size_t i = 0; i < mcPruned.positions.size(); ++i) {
+        ASSERT(std::fabs(mcPruned.positions[i] - mcDense.positions[i]) < 1e-6f, "MC vertex positions match");
+        ASSERT(std::fabs(mcPruned.normals[i] - mcDense.normals[i]) < 1e-6f, "MC vertex normals match");
+    }
+    for (size_t i = 0; i < mcPruned.indices.size(); ++i) {
+        ASSERT(mcPruned.indices[i] == mcDense.indices[i], "MC triangle indices match");
+    }
+
+    bromesh::MeshData snPruned = bromesh::surfaceNetsFromSDF(g, dim, dim, dim, bounds, 0.0f, true);
+    bromesh::MeshData snDense = bromesh::surfaceNetsFromSDF(g, dim, dim, dim, bounds, 0.0f, false);
+    ASSERT(snPruned.positions.size() == snDense.positions.size(), "SN pruned vs dense vertex count identical");
+    ASSERT(snPruned.indices.size() == snDense.indices.size(), "SN pruned vs dense index count identical");
+    for (size_t i = 0; i < snPruned.positions.size(); ++i) {
+        ASSERT(std::fabs(snPruned.positions[i] - snDense.positions[i]) < 1e-6f, "SN vertex positions match");
+    }
+
+    // 4. Measure pruning ratio and speedup on 128^3 and 256^3 volumes
+    auto t0 = std::chrono::high_resolution_clock::now();
+    auto vol128Pruned = bromesh::SdfCompiler::instance().evaluateVolume(g, 128, 128, 128, bounds, -1, true, 0.0f, true);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    auto vol128Dense = bromesh::SdfCompiler::instance().evaluateVolume(g, 128, 128, 128, bounds, -1, true, 0.0f, false);
+    auto t2 = std::chrono::high_resolution_clock::now();
+
+    double ms128Pruned = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    double ms128Dense = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    ASSERT(vol128Pruned.activeBlockCount < vol128Pruned.totalBlockCount / 2,
+           "More than 50% of 8x8x8 macro-blocks must be pruned on 128^3 volume");
+
+    auto t3 = std::chrono::high_resolution_clock::now();
+    auto vol256Pruned = bromesh::SdfCompiler::instance().evaluateVolume(g, 256, 256, 256, bounds, -1, true, 0.0f, true);
+    auto t4 = std::chrono::high_resolution_clock::now();
+    double ms256Pruned = std::chrono::duration<double, std::milli>(t4 - t3).count();
+    ASSERT(vol256Pruned.activeBlockCount < vol256Pruned.totalBlockCount / 3,
+           "More than 66% of 8x8x8 macro-blocks must be pruned on 256^3 volume");
+
+    std::cout << "\n  [PRUNING #106] 128^3 active blocks: " << vol128Pruned.activeBlockCount
+              << "/" << vol128Pruned.totalBlockCount << " (" << ms128Pruned << " ms pruned vs "
+              << ms128Dense << " ms dense); 256^3 active blocks: " << vol256Pruned.activeBlockCount
+              << "/" << vol256Pruned.totalBlockCount << " (" << ms256Pruned << " ms)" << std::endl;
+}
+
+TEST(sdf_jit_symbolic_autodiff_and_contact_107) {
+    // 1. Verify exact analytical gradient on Sphere, Torus, and Transforms
+    bromesh::SdfGraph gSphere;
+    gSphere.sphere(1.2f);
+    auto kSphere = bromesh::SdfCompiler::instance().compile(gSphere);
+    ASSERT(kSphere.gradFn != nullptr, "CompiledSdfKernel must provide 1-pass symbolic gradFn");
+
+    float gx = 0.0f, gy = 0.0f, gz = 0.0f;
+    float d = kSphere.gradFn(0.6f, -0.8f, 1.0f, &gx, &gy, &gz);
+    float r = std::sqrt(0.6f * 0.6f + 0.8f * 0.8f + 1.0f * 1.0f);
+    ASSERT(std::fabs(d - (r - 1.2f)) < 1e-5f, "gradFn returns exact SDF value");
+    ASSERT(std::fabs(gx - 0.6f / r) < 1e-5f, "gradFn exact d/dx on sphere");
+    ASSERT(std::fabs(gy - (-0.8f / r)) < 1e-5f, "gradFn exact d/dy on sphere");
+    ASSERT(std::fabs(gz - 1.0f / r) < 1e-5f, "gradFn exact d/dz on sphere");
+
+    // 2. Verify O(1) contact query (distance, normal, closestSurfacePoint)
+    bromesh::SdfContact contact = kSphere.queryContact(0.0f, 2.0f, 0.0f);
+    ASSERT(std::fabs(contact.distance - 0.8f) < 1e-5f, "Contact distance is 2.0 - 1.2 = 0.8");
+    ASSERT(std::fabs(contact.normal.x) < 1e-5f &&
+           std::fabs(contact.normal.y - 1.0f) < 1e-5f &&
+           std::fabs(contact.normal.z) < 1e-5f, "Contact normal is (0, 1, 0)");
+    ASSERT(std::fabs(contact.closestSurfacePoint.x) < 1e-5f &&
+           std::fabs(contact.closestSurfacePoint.y - 1.2f) < 1e-5f &&
+           std::fabs(contact.closestSurfacePoint.z) < 1e-5f,
+           "Closest surface point lies on sphere of radius 1.2");
+
+    // 3. Sharp CSG crease preservation: two intersecting planes p1 = x, p2 = y
+    // Near the crease (e.g. x = 0.001, y = 0.0), Union(p1, p2) = min(x, y) = y (since 0.0 < 0.001).
+    // Symbolic auto-diff gives exact normal (0, 1, 0) right up to the crease, whereas finite
+    // differences with eps > 0.001 straddle x = y and blur the normal!
+    bromesh::SdfGraph gCrease;
+    int p1 = gCrease.plane({1.0f, 0.0f, 0.0f}, 0.0f);
+    int p2 = gCrease.plane({0.0f, 1.0f, 0.0f}, 0.0f);
+    gCrease.opUnion(p1, p2);
+    auto kCrease = bromesh::SdfCompiler::instance().compile(gCrease);
+    auto creaseContact = kCrease.queryContact(0.0005f, 0.0f, 0.0f);
+    ASSERT(std::fabs(creaseContact.normal.x - 0.0f) < 1e-5f &&
+           std::fabs(creaseContact.normal.y - 1.0f) < 1e-5f,
+           "Symbolic auto-diff preserves sharp CSG crease normal without finite-difference blurring");
+}
+
+TEST(sdf_jit_custom_expression_gyroid_and_gpu_108) {
+    bromesh::SdfGraph g;
+    // Gyroid TPMS lattice intersected with a bounding sphere
+    int gyroid = g.customExpr(
+        "sin(x * 4.0) * cos(y * 4.0) + sin(y * 4.0) * cos(z * 4.0) + sin(z * 4.0) * cos(x * 4.0) - 0.2",
+        4.0f
+    );
+    int boundSphere = g.sphere(1.3f);
+    g.opIntersection(gyroid, boundSphere);
+
+    auto kernel = bromesh::SdfCompiler::instance().compile(g);
+    ASSERT(kernel.isJit && kernel.pointFn && kernel.gradFn && kernel.blockBoundsFn,
+           "Custom expression SDF compiles to native CPU point, grid, grad, and interval kernels");
+
+    // Verify point evaluation and symbolic gradient against analytical formula for the gyroid alone
+    auto kGyroid = bromesh::SdfCompiler::instance().compile(g, gyroid);
+    float x = 0.3f, y = -0.4f, z = 0.25f;
+    float gx = 0.0f, gy = 0.0f, gz = 0.0f;
+    float d = kGyroid.gradFn(x, y, z, &gx, &gy, &gz);
+
+    float expectedD = std::sin(x * 4.0f) * std::cos(y * 4.0f) +
+                      std::sin(y * 4.0f) * std::cos(z * 4.0f) +
+                      std::sin(z * 4.0f) * std::cos(x * 4.0f) - 0.2f;
+    float expectedGx = 4.0f * std::cos(x * 4.0f) * std::cos(y * 4.0f) -
+                       4.0f * std::sin(z * 4.0f) * std::sin(x * 4.0f);
+    float expectedGy = -4.0f * std::sin(x * 4.0f) * std::sin(y * 4.0f) +
+                       4.0f * std::cos(y * 4.0f) * std::cos(z * 4.0f);
+    float expectedGz = -4.0f * std::sin(y * 4.0f) * std::sin(z * 4.0f) +
+                       4.0f * std::cos(z * 4.0f) * std::cos(x * 4.0f);
+
+    ASSERT(std::fabs(d - expectedD) < 1e-4f, "Gyroid customExpr value matches analytical formula");
+    ASSERT(std::fabs(gx - expectedGx) < 1e-3f, "Gyroid customExpr d/dx matches analytical derivative");
+    ASSERT(std::fabs(gy - expectedGy) < 1e-3f, "Gyroid customExpr d/dy matches analytical derivative");
+    ASSERT(std::fabs(gz - expectedGz) < 1e-3f, "Gyroid customExpr d/dz matches analytical derivative");
+
+    // Verify JS arrow function syntax with Math.* intrinsics
+    bromesh::SdfGraph gJs;
+    gJs.customExpr("(x, y, z) => Math.sqrt(x*x + y*y + z*z) - 1.0");
+    auto kJs = bromesh::SdfCompiler::instance().compile(gJs);
+    ASSERT(std::fabs(kJs.pointFn(2.0f, 0.0f, 0.0f) - 1.0f) < 1e-5f, "JS arrow expression evaluates accurately");
+
+    // Verify Marching Cubes meshing of the bounded Gyroid
+    bromath::AABB3 bounds{{-1.6f, -1.6f, -1.6f}, {1.6f, 1.6f, 1.6f}};
+    bromesh::MeshData mesh = bromesh::marchingCubesFromSDF(g, 40, 40, 40, bounds, 0.0f, true, true);
+    ASSERT(!mesh.empty() && mesh.positions.size() > 300, "Bounded Gyroid custom SDF produces valid triangle mesh");
+
+#if BROMESH_HAS_BRASS_JIT
+    // Verify SPIR-V and PTX GPU codegen for custom expressions
+    std::vector<uint32_t> spv = bromesh::SdfCompiler::instance().compile_spirv(g);
+    ASSERT(!spv.empty() && spv[0] == 0x07230203u, "CustomExpr SPIR-V binary generated");
+    std::string spvErr;
+    ASSERT(brass::spirv::verify_spirv_module(spv, &spvErr), "CustomExpr SPIR-V passes verification");
+
+    std::string ptx = bromesh::SdfCompiler::instance().compile_ptx(g);
+    ASSERT(ptx.find(".visible .entry eval_sdf_gpu") != std::string::npos, "CustomExpr PTX entry generated");
+    ASSERT(ptx.find("sin.approx.f32") != std::string::npos || ptx.find("cos.approx.f32") != std::string::npos,
+           "CustomExpr PTX emits native hardware sin/cos instructions");
+#endif
+}

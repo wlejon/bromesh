@@ -1,7 +1,9 @@
 #include "bromesh/isosurface/jit/sdf_node.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 namespace bromesh {
 
@@ -69,6 +71,27 @@ int SdfGraph::plane(bromath::Vec3 normal, float d) {
     node.op = SdfOp::Plane;
     node.v0 = normal;
     node.f0 = d;
+    m_nodes.push_back(node);
+    m_root = static_cast<int>(m_nodes.size() - 1);
+    return m_root;
+}
+
+int SdfGraph::customExpr(std::string_view expr, float lipschitzBound) {
+    return customExpr(parseCustomSdfExpr(expr, lipschitzBound));
+}
+
+int SdfGraph::customExpr(SdfCustomExpr compiledExpr) {
+    float lip = std::isfinite(compiledExpr.lipschitzBound) && compiledExpr.lipschitzBound > 0.0f
+                    ? compiledExpr.lipschitzBound
+                    : 1.0f;
+    compiledExpr.lipschitzBound = lip;
+    int exprIdx = static_cast<int>(m_customExprs.size());
+    m_customExprs.push_back(std::move(compiledExpr));
+
+    SdfNode node;
+    node.op = SdfOp::CustomExpr;
+    node.left = exprIdx;
+    node.f0 = lip;
     m_nodes.push_back(node);
     m_root = static_cast<int>(m_nodes.size() - 1);
     return m_root;
@@ -200,6 +223,7 @@ void SdfGraph::setRoot(int root) {
 
 void SdfGraph::clear() {
     m_nodes.clear();
+    m_customExprs.clear();
     m_root = -1;
 }
 
@@ -231,6 +255,23 @@ uint64_t SdfGraph::computeHash() const {
         mix(&n.v1.z, sizeof(float));
         mix(&n.f0, sizeof(float));
         mix(&n.f1, sizeof(float));
+    }
+
+    uint64_t exprCount = static_cast<uint64_t>(m_customExprs.size());
+    mix(&exprCount, sizeof(exprCount));
+    for (const auto& expr : m_customExprs) {
+        mix(&expr.resultReg, sizeof(expr.resultReg));
+        mix(&expr.lipschitzBound, sizeof(expr.lipschitzBound));
+        uint64_t instCount = static_cast<uint64_t>(expr.instructions.size());
+        mix(&instCount, sizeof(instCount));
+        for (const auto& inst : expr.instructions) {
+            uint8_t eop = static_cast<uint8_t>(inst.op);
+            mix(&eop, sizeof(eop));
+            mix(&inst.a, sizeof(inst.a));
+            mix(&inst.b, sizeof(inst.b));
+            mix(&inst.c, sizeof(inst.c));
+            mix(&inst.imm, sizeof(inst.imm));
+        }
     }
 
     return h;

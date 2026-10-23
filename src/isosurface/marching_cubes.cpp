@@ -1,6 +1,7 @@
 #include "bromesh/isosurface/marching_cubes.h"
 #include "bromesh/manipulation/normals.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
@@ -346,7 +347,8 @@ static float vertexInterp(float isoLevel, float v1, float v2, float p1, float p2
 }
 
 MeshData marchingCubes(const float* field, int gridX, int gridY, int gridZ,
-                       float isoLevel, float cellSize, bool closeBoundary) {
+                       float isoLevel, float cellSize, bool closeBoundary,
+                       const uint8_t* activeBlockMask) {
     MeshData mesh;
 
     if (!field || gridX < 2 || gridY < 2 || gridZ < 2)
@@ -432,9 +434,43 @@ MeshData marchingCubes(const float* field, int gridX, int gridY, int gridZ,
         return idx;
     };
 
+    const int cellsX = gridX - 1;
+    const int cellsY = gridY - 1;
+    const int cellsZ = gridZ - 1;
+    const int blocksX = (cellsX + 7) / 8;
+    const int blocksY = (cellsY + 7) / 8;
+    const int blocksZ = (cellsZ + 7) / 8;
+
+    auto isCellActive = [&](int cx, int cy, int cz) -> bool {
+        if (!activeBlockMask) return true;
+        int bx = std::clamp(cx, 0, cellsX - 1) >> 3;
+        int by = std::clamp(cy, 0, cellsY - 1) >> 3;
+        int bz = std::clamp(cz, 0, cellsZ - 1) >> 3;
+        return activeBlockMask[(static_cast<size_t>(bz) * blocksY + by) * blocksX + bx] != 0;
+    };
+    (void)blocksZ;
+
     for (int z = zLo; z < zHi; ++z) {
+        int bz = std::clamp(z, 0, cellsZ - 1) >> 3;
         for (int y = yLo; y < yHi; ++y) {
+            int by = std::clamp(y, 0, cellsY - 1) >> 3;
+            if (activeBlockMask) {
+                bool rowActive = false;
+                const uint8_t* rowBlocks = activeBlockMask + (static_cast<size_t>(bz) * blocksY + by) * blocksX;
+                for (int bx = 0; bx < blocksX; ++bx) {
+                    if (rowBlocks[bx] != 0) {
+                        rowActive = true;
+                        break;
+                    }
+                }
+                if (!rowActive) continue;
+            }
             for (int x = xLo; x < xHi; ++x) {
+                if (activeBlockMask && x >= 0 && x < cellsX && !isCellActive(x, y, z)) {
+                    int bx = x >> 3;
+                    x = std::min((bx + 1) * 8, cellsX) - 1;
+                    continue;
+                }
                 // Sample 8 corners (sentinel for out-of-range when closing).
                 float cornerVals[8];
                 for (int c = 0; c < 8; ++c) {

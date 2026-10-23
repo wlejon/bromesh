@@ -1,4 +1,4 @@
-#include "bromesh/isosurface/jit/sdf_compiler.h"
+#include "sdf_compiler_internal.h"
 
 #if BROMESH_HAS_BRASS_JIT
 #include <brass/mir/scalar_opt.hpp>
@@ -17,7 +17,7 @@ namespace bromesh {
 using namespace brass;
 using namespace brass::codegen;
 
-static Value* lowerNoise3d(SdfKernelBuilder& kb, Value* px, Value* py, Value* pz) {
+Value* lowerNoise3d(SdfKernelBuilder& kb, Value* px, Value* py, Value* pz) {
     Value* flr_x = kb.floor_f32(px);
     Value* flr_y = kb.floor_f32(py);
     Value* flr_z = kb.floor_f32(pz);
@@ -77,8 +77,8 @@ static Value* lowerNoise3d(SdfKernelBuilder& kb, Value* px, Value* py, Value* pz
     return kb.lerp_f32(y0, y1, w);
 }
 
-static Value* lowerToMir(SdfKernelBuilder& kb, const SdfGraph& graph, int nodeId,
-                         Value* px, Value* py, Value* pz) {
+Value* lowerToMir(SdfKernelBuilder& kb, const SdfGraph& graph, int nodeId,
+                  Value* px, Value* py, Value* pz, bool gpuTarget) {
     if (nodeId < 0 || nodeId >= static_cast<int>(graph.size())) {
         return kb.const_f32(1e9f);
     }
@@ -129,35 +129,35 @@ static Value* lowerToMir(SdfKernelBuilder& kb, const SdfGraph& graph, int nodeId
             return kb.sdf_plane(px, py, pz, nx, ny, nz, d);
         }
         case SdfOp::Union: {
-            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz);
-            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz);
+            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz, gpuTarget);
+            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz, gpuTarget);
             return kb.op_union(d1, d2);
         }
         case SdfOp::Intersection: {
-            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz);
-            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz);
+            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz, gpuTarget);
+            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz, gpuTarget);
             return kb.op_intersection(d1, d2);
         }
         case SdfOp::Subtraction: {
-            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz);
-            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz);
+            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz, gpuTarget);
+            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz, gpuTarget);
             return kb.op_subtraction(d1, d2);
         }
         case SdfOp::SmoothUnion: {
-            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz);
-            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz);
+            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz, gpuTarget);
+            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz, gpuTarget);
             Value* k = kb.const_f32(node.f0);
             return kb.op_smooth_union(d1, d2, k);
         }
         case SdfOp::SmoothIntersection: {
-            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz);
-            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz);
+            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz, gpuTarget);
+            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz, gpuTarget);
             Value* k = kb.const_f32(node.f0);
             return kb.op_smooth_intersection(d1, d2, k);
         }
         case SdfOp::SmoothSubtraction: {
-            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz);
-            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz);
+            Value* d1 = lowerToMir(kb, graph, node.left, px, py, pz, gpuTarget);
+            Value* d2 = lowerToMir(kb, graph, node.right, px, py, pz, gpuTarget);
             Value* k = kb.const_f32(node.f0);
             return kb.op_smooth_subtraction(d1, d2, k);
         }
@@ -165,27 +165,22 @@ static Value* lowerToMir(SdfKernelBuilder& kb, const SdfGraph& graph, int nodeId
             Value* ox = kb.const_f32(node.v0.x);
             Value* oy = kb.const_f32(node.v0.y);
             Value* oz = kb.const_f32(node.v0.z);
-            Value* tx = nullptr;
-            Value* ty = nullptr;
-            Value* tz = nullptr;
+            Value* tx = nullptr, *ty = nullptr, *tz = nullptr;
             kb.translate(px, py, pz, ox, oy, oz, tx, ty, tz);
-            return lowerToMir(kb, graph, node.left, tx, ty, tz);
+            return lowerToMir(kb, graph, node.left, tx, ty, tz, gpuTarget);
         }
         case SdfOp::RotateY: {
-            Value* angle = kb.const_f32(node.f0);
-            Value* rx = nullptr;
-            Value* ry = nullptr;
-            Value* rz = nullptr;
-            kb.rotate_y(px, py, pz, angle, rx, ry, rz);
-            return lowerToMir(kb, graph, node.left, rx, ry, rz);
+            Value* c = kb.const_f32(std::cos(node.f0));
+            Value* s = kb.const_f32(std::sin(node.f0));
+            Value* rx = kb.sub(kb.mul(px, c), kb.mul(pz, s));
+            Value* rz = kb.add(kb.mul(px, s), kb.mul(pz, c));
+            return lowerToMir(kb, graph, node.left, rx, py, rz, gpuTarget);
         }
         case SdfOp::ScaleUniform: {
             Value* s = kb.const_f32(node.f0);
-            Value* sx = nullptr;
-            Value* sy = nullptr;
-            Value* sz = nullptr;
+            Value* sx = nullptr, *sy = nullptr, *sz = nullptr;
             kb.scale_uniform(px, py, pz, s, sx, sy, sz);
-            Value* dist = lowerToMir(kb, graph, node.left, sx, sy, sz);
+            Value* dist = lowerToMir(kb, graph, node.left, sx, sy, sz, gpuTarget);
             return kb.scale_uniform_dist(dist, s);
         }
         case SdfOp::Noise3D: {
@@ -196,10 +191,12 @@ static Value* lowerToMir(SdfKernelBuilder& kb, const SdfGraph& graph, int nodeId
             return kb.mul(n, kb.const_f32(node.f0));
         }
         case SdfOp::Displace: {
-            Value* d = lowerToMir(kb, graph, node.left, px, py, pz);
-            Value* n = lowerToMir(kb, graph, node.right, px, py, pz);
+            Value* d = lowerToMir(kb, graph, node.left, px, py, pz, gpuTarget);
+            Value* n = lowerToMir(kb, graph, node.right, px, py, pz, gpuTarget);
             return kb.add(d, n);
         }
+        case SdfOp::CustomExpr:
+            return lowerCustomExprToMir(kb, graph.customExprData(node.left), px, py, pz, gpuTarget);
     }
     return kb.const_f32(1e9f);
 }
@@ -248,7 +245,7 @@ static Function* buildGpuSdfKernel(Module& mod, const SdfGraph& graph, int rootN
         Value* py = kb.fma(kb.to_f32(iy), stepY, minY);
         Value* pz = kb.fma(kb.to_f32(iz), stepZ, minZ);
 
-        Value* sdf_val = lowerToMir(kb, graph, root, px, py, pz);
+        Value* sdf_val = lowerToMir(kb, graph, root, px, py, pz, true);
         kb.store_f32_indexed(out_grid, idx, sdf_val, 4, 0);
     });
     kb.builder().build_ret_void();
@@ -261,78 +258,58 @@ static Function* buildGpuSdfKernel(Module& mod, const SdfGraph& graph, int rootN
 }
 #endif
 
-static float evalScalarNode(const SdfGraph& graph, int nodeId, float px, float py, float pz) {
+float evalScalarNode(const SdfGraph& graph, int nodeId, float px, float py, float pz) {
     if (nodeId < 0 || nodeId >= static_cast<int>(graph.size())) {
         return 1e9f;
     }
     const SdfNode& node = graph.node(nodeId);
     switch (node.op) {
-        case SdfOp::Sphere: {
+        case SdfOp::Sphere:
             return std::sqrt(px * px + py * py + pz * pz) - node.f0;
-        }
         case SdfOp::Box: {
             float qx = std::fabs(px) - node.v0.x;
             float qy = std::fabs(py) - node.v0.y;
             float qz = std::fabs(pz) - node.v0.z;
-            float ox = std::max(qx, 0.0f);
-            float oy = std::max(qy, 0.0f);
-            float oz = std::max(qz, 0.0f);
-            float outside = std::sqrt(ox * ox + oy * oy + oz * oz);
-            float inside = std::min(std::max({qx, qy, qz}), 0.0f);
-            return outside + inside;
+            float ox = std::max(qx, 0.0f), oy = std::max(qy, 0.0f), oz = std::max(qz, 0.0f);
+            return std::sqrt(ox * ox + oy * oy + oz * oz) + std::min(std::max({qx, qy, qz}), 0.0f);
         }
         case SdfOp::RoundedBox: {
-            float qx = std::fabs(px) - node.v0.x;
-            float qy = std::fabs(py) - node.v0.y;
-            float qz = std::fabs(pz) - node.v0.z;
-            float ox = std::max(qx, 0.0f);
-            float oy = std::max(qy, 0.0f);
-            float oz = std::max(qz, 0.0f);
-            float outside = std::sqrt(ox * ox + oy * oy + oz * oz);
-            float inside = std::min(std::max({qx, qy, qz}), 0.0f);
-            return outside + inside - node.f0;
+            float r = node.f0;
+            float qx = std::fabs(px) - node.v0.x + r;
+            float qy = std::fabs(py) - node.v0.y + r;
+            float qz = std::fabs(pz) - node.v0.z + r;
+            float ox = std::max(qx, 0.0f), oy = std::max(qy, 0.0f), oz = std::max(qz, 0.0f);
+            return std::sqrt(ox * ox + oy * oy + oz * oz) + std::min(std::max({qx, qy, qz}), 0.0f) - r;
         }
         case SdfOp::Cylinder: {
             float dx = std::sqrt(px * px + pz * pz) - node.f0;
             float dy = std::fabs(py) - node.f1;
-            float ox = std::max(dx, 0.0f);
-            float oy = std::max(dy, 0.0f);
+            float ox = std::max(dx, 0.0f), oy = std::max(dy, 0.0f);
             return std::sqrt(ox * ox + oy * oy) + std::min(std::max(dx, dy), 0.0f);
         }
         case SdfOp::Capsule: {
             float pax = px - node.v0.x, pay = py - node.v0.y, paz = pz - node.v0.z;
             float bax = node.v1.x - node.v0.x, bay = node.v1.y - node.v0.y, baz = node.v1.z - node.v0.z;
             float ba_len2 = bax * bax + bay * bay + baz * baz;
-            float h = 0.0f;
-            if (ba_len2 > 1e-12f) {
-                h = std::clamp((pax * bax + pay * bay + paz * baz) / ba_len2, 0.0f, 1.0f);
-            }
+            float h = (ba_len2 > 1e-12f) ? std::clamp((pax * bax + pay * bay + paz * baz) / ba_len2, 0.0f, 1.0f) : 0.0f;
             float rx = pax - bax * h, ry = pay - bay * h, rz = paz - baz * h;
             return std::sqrt(rx * rx + ry * ry + rz * rz) - node.f0;
         }
         case SdfOp::Torus: {
             float qx = std::sqrt(px * px + pz * pz) - node.f0;
-            float qy = py;
-            return std::sqrt(qx * qx + qy * qy) - node.f1;
+            return std::sqrt(qx * qx + py * py) - node.f1;
         }
-        case SdfOp::Plane: {
+        case SdfOp::Plane:
             return (px * node.v0.x + py * node.v0.y + pz * node.v0.z) + node.f0;
-        }
-        case SdfOp::Union: {
-            float d1 = evalScalarNode(graph, node.left, px, py, pz);
-            float d2 = evalScalarNode(graph, node.right, px, py, pz);
-            return std::min(d1, d2);
-        }
-        case SdfOp::Intersection: {
-            float d1 = evalScalarNode(graph, node.left, px, py, pz);
-            float d2 = evalScalarNode(graph, node.right, px, py, pz);
-            return std::max(d1, d2);
-        }
-        case SdfOp::Subtraction: {
-            float d1 = evalScalarNode(graph, node.left, px, py, pz);
-            float d2 = evalScalarNode(graph, node.right, px, py, pz);
-            return std::max(d1, -d2);
-        }
+        case SdfOp::Union:
+            return std::min(evalScalarNode(graph, node.left, px, py, pz),
+                            evalScalarNode(graph, node.right, px, py, pz));
+        case SdfOp::Intersection:
+            return std::max(evalScalarNode(graph, node.left, px, py, pz),
+                            evalScalarNode(graph, node.right, px, py, pz));
+        case SdfOp::Subtraction:
+            return std::max(evalScalarNode(graph, node.left, px, py, pz),
+                            -evalScalarNode(graph, node.right, px, py, pz));
         case SdfOp::SmoothUnion: {
             float d1 = evalScalarNode(graph, node.left, px, py, pz);
             float d2 = evalScalarNode(graph, node.right, px, py, pz);
@@ -351,41 +328,28 @@ static float evalScalarNode(const SdfGraph& graph, int nodeId, float px, float p
             float h = std::clamp(0.5f - 0.5f * (d2 + d1) / node.f0, 0.0f, 1.0f);
             return (d1 + (-d2 - d1) * h) + node.f0 * h * (1.0f - h);
         }
-        case SdfOp::Translate: {
+        case SdfOp::Translate:
             return evalScalarNode(graph, node.left, px - node.v0.x, py - node.v0.y, pz - node.v0.z);
-        }
         case SdfOp::RotateY: {
-            float c = std::cos(node.f0);
-            float s = std::sin(node.f0);
-            float rx = px * c - pz * s;
-            float ry = py;
-            float rz = px * s + pz * c;
-            return evalScalarNode(graph, node.left, rx, ry, rz);
+            float c = std::cos(node.f0), s = std::sin(node.f0);
+            return evalScalarNode(graph, node.left, px * c - pz * s, py, px * s + pz * c);
         }
         case SdfOp::ScaleUniform: {
             float s = node.f0;
-            float dist = evalScalarNode(graph, node.left, px / s, py / s, pz / s);
-            return dist * s;
+            return evalScalarNode(graph, node.left, px / s, py / s, pz / s) * s;
         }
         case SdfOp::Noise3D: {
-            float nx = px * node.v0.x;
-            float ny = py * node.v0.y;
-            float nz = pz * node.v0.z;
+            float nx = px * node.v0.x, ny = py * node.v0.y, nz = pz * node.v0.z;
             float flrx = std::floor(nx), flry = std::floor(ny), flrz = std::floor(nz);
-            int32_t i0 = static_cast<int32_t>(flrx);
-            int32_t j0 = static_cast<int32_t>(flry);
-            int32_t k0 = static_cast<int32_t>(flrz);
+            int32_t i0 = static_cast<int32_t>(flrx), j0 = static_cast<int32_t>(flry), k0 = static_cast<int32_t>(flrz);
             float fx = nx - flrx, fy = ny - flry, fz = nz - flrz;
-            float u = fx * fx * (3.0f - 2.0f * fx);
-            float v = fy * fy * (3.0f - 2.0f * fy);
-            float w = fz * fz * (3.0f - 2.0f * fz);
+            float u = fx * fx * (3.0f - 2.0f * fx), v = fy * fy * (3.0f - 2.0f * fy), w = fz * fz * (3.0f - 2.0f * fz);
             auto hashc = [](int32_t ix, int32_t iy, int32_t iz) -> float {
                 uint32_t h = static_cast<uint32_t>(ix) ^ (static_cast<uint32_t>(iy) * 374761393u);
                 h ^= static_cast<uint32_t>(iz) * 668265263u;
                 h = (h ^ (h >> 13)) * 1274126177u;
                 h ^= h >> 16;
-                uint32_t m = h & 0x7FFFu;
-                return static_cast<float>(m) * (2.0f / 32767.0f) - 1.0f;
+                return static_cast<float>(h & 0x7FFFu) * (2.0f / 32767.0f) - 1.0f;
             };
             float h000 = hashc(i0, j0, k0), h100 = hashc(i0 + 1, j0, k0);
             float h010 = hashc(i0, j0 + 1, k0), h110 = hashc(i0 + 1, j0 + 1, k0);
@@ -394,14 +358,12 @@ static float evalScalarNode(const SdfGraph& graph, int nodeId, float px, float p
             float x00 = h000 + (h100 - h000) * u, x10 = h010 + (h110 - h010) * u;
             float x01 = h001 + (h101 - h001) * u, x11 = h011 + (h111 - h011) * u;
             float y0 = x00 + (x10 - x00) * v, y1 = x01 + (x11 - x01) * v;
-            float n = y0 + (y1 - y0) * w;
-            return n * node.f0;
+            return (y0 + (y1 - y0) * w) * node.f0;
         }
-        case SdfOp::Displace: {
-            float d = evalScalarNode(graph, node.left, px, py, pz);
-            float n = evalScalarNode(graph, node.right, px, py, pz);
-            return d + n;
-        }
+        case SdfOp::Displace:
+            return evalScalarNode(graph, node.left, px, py, pz) + evalScalarNode(graph, node.right, px, py, pz);
+        case SdfOp::CustomExpr:
+            return evalCustomExprScalar(graph.customExprData(node.left), px, py, pz);
     }
     return 1e9f;
 }
@@ -446,18 +408,12 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
             opts.enable_superopt = true;
             opts.enable_avx2 = true;
             opts.enable_fma = true;
-            opts.enable_parallel = true;
+            opts.enable_parallel = false;
 
             // 1. Grid Evaluation Function
-            std::string gridModName = "sdf_grid_" + std::to_string(hash);
-            Module modGrid(gridModName);
+            Module modGrid("sdf_grid_" + std::to_string(hash));
             Function* fnGrid = modGrid.create_function("eval_grid", Type::void_type(), {
-                Type::ptr(), // float* out_field
-                Type::ptr(), // const float* bounds_min
-                Type::ptr(), // const float* cell_size
-                Type::i32(), // int32_t dim_x
-                Type::i32(), // int32_t dim_y
-                Type::i32()  // int32_t dim_z
+                Type::ptr(), Type::ptr(), Type::ptr(), Type::i32(), Type::i32(), Type::i32()
             });
 
             SdfKernelBuilder kbGrid(modGrid, fnGrid);
@@ -483,7 +439,7 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
 
             kbGrid.emit_grid_eval_loop(outField, dimX64, dimY64, dimZ64, ox, oy, oz, sx, sy, sz,
                                       [&](Value* px, Value* py, Value* pz) {
-                return lowerToMir(kbGrid, graph, root, px, py, pz);
+                return lowerToMir(kbGrid, graph, root, px, py, pz, false);
             });
             kbGrid.builder().build_ret_void();
 
@@ -493,9 +449,37 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
                 kernel.gridFn = kernel.gridKernel.as<SdfGridEvalFn>();
             }
 
+            // 1b. Span Evaluation Function (bit-exact global X indexing for macro-block pruning)
+            Module modSpan("sdf_span_" + std::to_string(hash));
+            Function* fnSpan = modSpan.create_function("eval_span", Type::void_type(), {
+                Type::ptr(), Type::f32(), Type::f32(), Type::f32(), Type::f32(), Type::i64(), Type::i64()
+            });
+            SdfKernelBuilder kbSpan(modSpan, fnSpan);
+            BasicBlock* entrySpan = kbSpan.builder().append_block("entry");
+            Value* outRow = kbSpan.builder().add_block_param(entrySpan, Type::ptr());
+            Value* oxSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
+            Value* pySpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
+            Value* pzSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
+            Value* sxSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
+            Value* xStart = kbSpan.builder().add_block_param(entrySpan, Type::i64());
+            Value* xEnd = kbSpan.builder().add_block_param(entrySpan, Type::i64());
+
+            kbSpan.position_at_end(entrySpan);
+            kbSpan.for_range(xStart, xEnd, kbSpan.const_i64(1), [&](Value* x) {
+                Value* px = kbSpan.fma(kbSpan.to_f32(x), sxSpan, oxSpan);
+                Value* dist = lowerToMir(kbSpan, graph, root, px, pySpan, pzSpan, false);
+                kbSpan.store_f32_indexed(outRow, x, dist, 4, 0);
+            });
+            kbSpan.builder().build_ret_void();
+
+            KernelJit jitSpan(opts);
+            kernel.spanKernel = jitSpan.compile(*fnSpan);
+            if (kernel.spanKernel.is_valid()) {
+                kernel.spanFn = kernel.spanKernel.as<SdfSpanEvalFn>();
+            }
+
             // 2. Point Evaluation Function
-            std::string pointModName = "sdf_point_" + std::to_string(hash);
-            Module modPoint(pointModName);
+            Module modPoint("sdf_point_" + std::to_string(hash));
             Function* fnPoint = modPoint.create_function("eval_point", Type::f32(), {
                 Type::f32(), Type::f32(), Type::f32()
             });
@@ -507,7 +491,7 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
             Value* pz = kbPoint.builder().add_block_param(entryPoint, Type::f32());
 
             kbPoint.position_at_end(entryPoint);
-            Value* d = lowerToMir(kbPoint, graph, root, px, py, pz);
+            Value* d = lowerToMir(kbPoint, graph, root, px, py, pz, false);
             kbPoint.builder().build_ret(d);
 
             KernelJit jitPoint(opts);
@@ -516,7 +500,26 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
                 kernel.pointFn = kernel.pointKernel.as<SdfPointEvalFn>();
             }
 
-            kernel.isJit = (kernel.gridFn != nullptr && kernel.pointFn != nullptr);
+            // 3. 1-Pass Symbolic Auto-Diff Gradient Function (#107)
+            Module modGrad("sdf_grad_" + std::to_string(hash));
+            Function* fnGrad = buildSdfGradFunction(modGrad, graph, root);
+            KernelJit jitGrad(opts);
+            kernel.gradKernel = jitGrad.compile(*fnGrad);
+            if (kernel.gradKernel.is_valid()) {
+                kernel.gradFn = kernel.gradKernel.as<SdfGradEvalFn>();
+            }
+
+            // 4. Interval / Lipschitz Macro-Block Bounds Function (#106)
+            Module modBounds("sdf_bounds_" + std::to_string(hash));
+            Function* fnBounds = buildSdfBlockBoundsFunction(modBounds, graph, root);
+            KernelJit jitBounds(opts);
+            kernel.blockBoundsKernel = jitBounds.compile(*fnBounds);
+            if (kernel.blockBoundsKernel.is_valid()) {
+                kernel.blockBoundsFn = kernel.blockBoundsKernel.as<SdfBlockBoundsFn>();
+            }
+
+            kernel.isJit = (kernel.gridFn != nullptr && kernel.pointFn != nullptr &&
+                            kernel.gradFn != nullptr && kernel.blockBoundsFn != nullptr);
         } catch (const std::exception& e) {
             std::cerr << "JitSdfCompiler compilation failed: " << e.what() << std::endl;
         }
@@ -558,7 +561,8 @@ std::string JitSdfCompiler::compile_ptx(const SdfGraph& graph, int rootNode) {
 }
 
 SDFVolume JitSdfCompiler::evaluateVolume(const SdfGraph& graph, int dimX, int dimY, int dimZ,
-                                        const bromath::AABB3& bounds, int rootNode, bool parallel) {
+                                        const bromath::AABB3& bounds, int rootNode, bool parallel,
+                                        float isoLevel, bool enableMacroBlockPruning) {
     SDFVolume vol;
     if (dimX <= 0 || dimY <= 0 || dimZ <= 0) {
         return vol;
@@ -578,16 +582,161 @@ SDFVolume JitSdfCompiler::evaluateVolume(const SdfGraph& graph, int dimX, int di
     int root = rootNode >= 0 ? rootNode : graph.root();
     CompiledSdfKernel kernel = compile(graph, root);
 
+    const int cellsX = std::max(1, dimX - 1);
+    const int cellsY = std::max(1, dimY - 1);
+    const int cellsZ = std::max(1, dimZ - 1);
+    const int blocksX = (cellsX + 7) / 8;
+    const int blocksY = (cellsY + 7) / 8;
+    const int blocksZ = (cellsZ + 7) / 8;
+    const size_t totalBlocks = static_cast<size_t>(blocksX) * blocksY * blocksZ;
+
+    vol.blocksX = blocksX;
+    vol.blocksY = blocksY;
+    vol.blocksZ = blocksZ;
+    vol.totalBlockCount = totalBlocks;
+
+    std::vector<float> blockFillVal;
+    bool usePrunedEval = false;
+
+    if (enableMacroBlockPruning && blocksX >= 2 && blocksY >= 2 && blocksZ >= 2) {
+        vol.activeBlockMask.assign(totalBlocks, 0);
+        blockFillVal.resize(totalBlocks, 0.0f);
+
+        auto evalBlockSliceRange = [&](int64_t bzStart, int64_t bzEnd) {
+            const float margin = 1e-4f;
+            for (int64_t bz = bzStart; bz < bzEnd; ++bz) {
+                int gz0 = static_cast<int>(bz) * 8;
+                int gz1 = std::min(gz0 + 8, cellsZ);
+                float minZ = bounds.min.z + static_cast<float>(gz0) * vol.cellSize[2];
+                float maxZ = bounds.min.z + static_cast<float>(gz1) * vol.cellSize[2];
+
+                for (int by = 0; by < blocksY; ++by) {
+                    int gy0 = by * 8;
+                    int gy1 = std::min(gy0 + 8, cellsY);
+                    float minY = bounds.min.y + static_cast<float>(gy0) * vol.cellSize[1];
+                    float maxY = bounds.min.y + static_cast<float>(gy1) * vol.cellSize[1];
+
+                    for (int bx = 0; bx < blocksX; ++bx) {
+                        int gx0 = bx * 8;
+                        int gx1 = std::min(gx0 + 8, cellsX);
+                        float minX = bounds.min.x + static_cast<float>(gx0) * vol.cellSize[0];
+                        float maxX = bounds.min.x + static_cast<float>(gx1) * vol.cellSize[0];
+
+                        float dMin = 0.0f, dMax = 0.0f;
+                        if (kernel.blockBoundsFn) {
+                            kernel.blockBoundsFn(minX, minY, minZ, maxX, maxY, maxZ, &dMin, &dMax);
+                        } else {
+                            ::bromesh::evalBlockBounds(graph, root, {{minX, minY, minZ}, {maxX, maxY, maxZ}}, dMin, dMax);
+                        }
+
+                        bool isBoundary = (bx == 0 || bx == blocksX - 1 ||
+                                           by == 0 || by == blocksY - 1 ||
+                                           bz == 0 || bz == blocksZ - 1);
+                        size_t bIdx = (static_cast<size_t>(bz) * blocksY + by) * blocksX + bx;
+                        if (dMin > isoLevel + margin) {
+                            vol.activeBlockMask[bIdx] = 0;
+                            blockFillVal[bIdx] = dMin;
+                        } else if (dMax < isoLevel - margin && !isBoundary) {
+                            vol.activeBlockMask[bIdx] = 0;
+                            blockFillVal[bIdx] = dMax;
+                        } else {
+                            vol.activeBlockMask[bIdx] = 1;
+                            blockFillVal[bIdx] = 0.0f;
+                        }
+                    }
+                }
+            }
+        };
+
+#if BROMESH_HAS_BRASS_JIT
+        if (parallel && blocksZ >= 4) {
+            brass::codegen::parallel_for(0, static_cast<int64_t>(blocksZ), evalBlockSliceRange);
+        } else {
+            evalBlockSliceRange(0, static_cast<int64_t>(blocksZ));
+        }
+#else
+        evalBlockSliceRange(0, static_cast<int64_t>(blocksZ));
+#endif
+
+        size_t activeCount = 0;
+        for (uint8_t m : vol.activeBlockMask) activeCount += m;
+        vol.activeBlockCount = activeCount;
+        usePrunedEval = (activeCount < totalBlocks);
+    } else {
+        vol.activeBlockCount = totalBlocks;
+    }
+
     if (kernel.gridFn) {
         auto evalSliceRange = [&](int64_t zStart, int64_t zEnd) {
+            if (!usePrunedEval) {
+                for (int64_t z = zStart; z < zEnd; ++z) {
+                    float sliceBoundsMin[3] = {
+                        bounds.min.x,
+                        bounds.min.y,
+                        bounds.min.z + static_cast<float>(z) * vol.cellSize[2]
+                    };
+                    float* sliceOut = vol.field.data() + static_cast<size_t>(z) * static_cast<size_t>(dimY) * static_cast<size_t>(dimX);
+                    kernel.gridFn(sliceOut, sliceBoundsMin, vol.cellSize, dimX, dimY, 1);
+                }
+                return;
+            }
+
             for (int64_t z = zStart; z < zEnd; ++z) {
-                float sliceBoundsMin[3] = {
-                    bounds.min.x,
-                    bounds.min.y,
-                    bounds.min.z + static_cast<float>(z) * vol.cellSize[2]
-                };
-                float* sliceOut = vol.field.data() + static_cast<size_t>(z) * static_cast<size_t>(dimY) * static_cast<size_t>(dimX);
-                kernel.gridFn(sliceOut, sliceBoundsMin, vol.cellSize, dimX, dimY, 1);
+                int bz0 = (z > 0) ? static_cast<int>((z - 1) >> 3) : 0;
+                int bz1 = std::min(static_cast<int>(z >> 3), blocksZ - 1);
+                float pz = bounds.min.z + static_cast<float>(z) * vol.cellSize[2];
+
+                for (int y = 0; y < dimY; ++y) {
+                    int by0 = (y > 0) ? ((y - 1) >> 3) : 0;
+                    int by1 = std::min(y >> 3, blocksY - 1);
+                    float py = std::fma(static_cast<float>(y), vol.cellSize[1], bounds.min.y);
+                    float* rowOut = vol.field.data() + (static_cast<size_t>(z) * dimY + y) * dimX;
+
+                    auto isColActive = [&](int bx) -> bool {
+                        return vol.activeBlockMask[(static_cast<size_t>(bz0) * blocksY + by0) * blocksX + bx] != 0 ||
+                               vol.activeBlockMask[(static_cast<size_t>(bz0) * blocksY + by1) * blocksX + bx] != 0 ||
+                               vol.activeBlockMask[(static_cast<size_t>(bz1) * blocksY + by0) * blocksX + bx] != 0 ||
+                               vol.activeBlockMask[(static_cast<size_t>(bz1) * blocksY + by1) * blocksX + bx] != 0;
+                    };
+
+                    int nextFillX = 0;
+                    int bx = 0;
+                    while (bx < blocksX) {
+                        if (!isColActive(bx)) {
+                            int fillEnd = std::min((bx + 1) * 8, dimX);
+                            if (bx + 1 < blocksX && isColActive(bx + 1)) {
+                                fillEnd = (bx + 1) * 8;
+                            }
+                            if (fillEnd > nextFillX) {
+                                float fillVal = blockFillVal[(static_cast<size_t>(bz1) * blocksY + by1) * blocksX + bx];
+                                std::fill(rowOut + nextFillX, rowOut + fillEnd, fillVal);
+                                nextFillX = fillEnd;
+                            }
+                            ++bx;
+                        } else {
+                            int bxStart = bx;
+                            while (bx + 1 < blocksX && isColActive(bx + 1)) {
+                                ++bx;
+                            }
+                            int gxStart = bxStart * 8;
+                            int gxEnd = std::min((bx + 1) * 8, dimX - 1);
+                            if (kernel.spanFn) {
+                                kernel.spanFn(rowOut, bounds.min.x, py, pz, vol.cellSize[0],
+                                              static_cast<int64_t>(gxStart), static_cast<int64_t>(gxEnd + 1));
+                            } else {
+                                int gxCount = gxEnd - gxStart + 1;
+                                float segBoundsMin[3] = {
+                                    bounds.min.x + static_cast<float>(gxStart) * vol.cellSize[0],
+                                    py,
+                                    pz
+                                };
+                                kernel.gridFn(rowOut + gxStart, segBoundsMin, vol.cellSize, gxCount, 1, 1);
+                            }
+                            nextFillX = gxEnd + 1;
+                            ++bx;
+                        }
+                    }
+                }
             }
         };
 #if BROMESH_HAS_BRASS_JIT
@@ -601,7 +750,6 @@ SDFVolume JitSdfCompiler::evaluateVolume(const SdfGraph& graph, int dimX, int di
         evalSliceRange(0, static_cast<int64_t>(dimZ));
 #endif
     } else {
-        // Fallback scalar evaluation
         #pragma omp parallel for
         for (int z = 0; z < dimZ; ++z) {
             float pz = bounds.min.z + z * vol.cellSize[2];

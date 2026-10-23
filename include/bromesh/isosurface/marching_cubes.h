@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bromesh/mesh_data.h"
+#include <cstdint>
 
 namespace bromesh {
 
@@ -21,8 +22,10 @@ namespace bromesh {
 ///   terrain chunks where the surface naturally extends past the chunk
 ///   boundary. Set to false to keep the surface open at the grid edge —
 ///   useful when stitching chunks together explicitly.
+/// activeBlockMask: optional 8x8x8 cell macro-block activity mask (1 = active, 0 = skip).
 MeshData marchingCubes(const float* field, int gridX, int gridY, int gridZ,
                        float isoLevel = 0.0f, float cellSize = 1.0f,
-                       bool closeBoundary = true);
+                       bool closeBoundary = true,
+                       const uint8_t* activeBlockMask = nullptr);
 
 } // namespace bromesh

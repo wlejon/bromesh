@@ -13,6 +13,14 @@ struct SDFVolume {
     bromath::AABB3 bounds;
     float cellSize[3] = {1.0f, 1.0f, 1.0f};
 
+    // 8x8x8 cell macro-block activity mask populated by interval-pruned evaluation.
+    std::vector<uint8_t> activeBlockMask;
+    int blocksX = 0;
+    int blocksY = 0;
+    int blocksZ = 0;
+    size_t activeBlockCount = 0;
+    size_t totalBlockCount = 0;
+
     float value(int x, int y, int z) const {
         if (x < 0 || x >= dimX || y < 0 || y >= dimY || z < 0 || z >= dimZ)
             return 1e9f;

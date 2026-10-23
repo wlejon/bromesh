@@ -3,6 +3,8 @@
 #include <bromath/vec.h>
 #include <cstdint>
 #include <cstddef>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace bromesh {
@@ -25,8 +27,51 @@ enum class SdfOp : uint8_t {
     RotateY,
     ScaleUniform,
     Noise3D,
-    Displace
+    Displace,
+    CustomExpr
 };
+
+enum class SdfExprOp : uint8_t {
+    VarX,
+    VarY,
+    VarZ,
+    Const,
+    Neg,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Sin,
+    Cos,
+    Abs,
+    Sqrt,
+    Floor,
+    Min,
+    Max,
+    Clamp,
+    Fma
+};
+
+struct SdfExprInst {
+    SdfExprOp op = SdfExprOp::Const;
+    int a = -1;
+    int b = -1;
+    int c = -1;
+    float imm = 0.0f;
+};
+
+struct SdfCustomExpr {
+    std::string source;
+    std::vector<SdfExprInst> instructions;
+    int resultReg = -1;
+    float lipschitzBound = 1.0f;
+};
+
+/// Parse a mathematical formula or JS expression string (variables x, y, z;
+/// operators +, -, *, /, ^; functions sin, cos, abs, sqrt, floor, min, max,
+/// clamp, fma, lerp, mix, length) into an SSA-like SdfCustomExpr program.
+/// Throws std::invalid_argument on syntax error.
+SdfCustomExpr parseCustomSdfExpr(std::string_view expr, float lipschitzBound = 1.0f);
 
 struct SdfNode {
     SdfOp op = SdfOp::Sphere;
@@ -51,6 +96,10 @@ public:
     int torus(float majorR, float minorR);
     int plane(bromath::Vec3 normal, float d);
 
+    // Custom mathematical / JS expression primitive
+    int customExpr(std::string_view expr, float lipschitzBound = 1.0f);
+    int customExpr(SdfCustomExpr compiledExpr);
+
     // CSG operations
     int opUnion(int a, int b);
     int opIntersection(int a, int b);
@@ -74,6 +123,8 @@ public:
     // Node inspection
     const std::vector<SdfNode>& nodes() const { return m_nodes; }
     const SdfNode& node(int id) const { return m_nodes.at(static_cast<size_t>(id)); }
+    const std::vector<SdfCustomExpr>& customExprs() const { return m_customExprs; }
+    const SdfCustomExpr& customExprData(int exprId) const { return m_customExprs.at(static_cast<size_t>(exprId)); }
     size_t size() const { return m_nodes.size(); }
     bool empty() const { return m_nodes.empty(); }
     void clear();
@@ -83,6 +134,7 @@ public:
 
 private:
     std::vector<SdfNode> m_nodes;
+    std::vector<SdfCustomExpr> m_customExprs;
     int m_root = -1;
 };
 
