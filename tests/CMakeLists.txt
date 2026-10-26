@@ -44,7 +44,21 @@ add_test(NAME bromesh_test COMMAND bromesh_test)
 
 if(BROMESH_ENABLE_API AND TARGET bromesh_api)
     add_executable(test_mesh_api test_mesh_api.cpp test_mesh_api_restored.cpp test_mesh_api_validation.cpp)
-    target_link_libraries(test_mesh_api PRIVATE bromesh_api bromesh bromath::bromath bronze_runtime_shared)
+    # bromesh's SDF JIT calls brass's parallel-loop runtime, which brass.lib
+    # defines AND bronze_runtime_shared.dll exports in part (brass_parallel_for
+    # and its reductions, not brass_set_parallel_workers): pulled from both,
+    # LNK2005. Naming brass first and /INCLUDE-ing a symbol only brass's
+    # parallel_runtime object defines forces that object in before any
+    # reference reaches the DLL's import library, so the DLL's members are
+    # never pulled. The recipe brogameagent's api tests use for brass's GC.
+    set(_bromesh_brass "")
+    if(TARGET brass)
+        set(_bromesh_brass brass)
+    endif()
+    target_link_libraries(test_mesh_api PRIVATE ${_bromesh_brass} bromesh_api bromesh bromath::bromath bronze_runtime_shared)
+    if(MSVC AND _bromesh_brass)
+        target_link_options(test_mesh_api PRIVATE "/INCLUDE:brass_set_parallel_workers")
+    endif()
     # bronze's shared runtime is built into BRONZE_SHARED_RUNTIME_DIR, not
     # beside this executable, and the PE loader only looks beside the .exe
     # (0xc0000135 + a modal "dll was not found" otherwise). Stage it next to
