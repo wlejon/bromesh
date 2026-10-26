@@ -41,6 +41,28 @@ const bromesh::Animation* animationOf(bronze::Value v);
 /// means to the app. Process-wide: every realm shares the host's filesystem.
 void setPathResolver(std::function<std::string(const std::string&)> resolver);
 
+// ---- Access -----------------------------------------------------------------
+//
+// Which files a program may touch is the host's decision, not bromesh's: every
+// native that takes a path asks the host's one access gate,
+// bronze::embed::checkAccess (embed/embed_access.h), with the path resolved
+// (setPathResolver), absolute and lexically normal (UTF-8), on the JS thread
+// that made the call, before the file is opened. With no gate installed every
+// path is allowed and nothing below changes.
+//
+// What each native asks:
+///   Mesh.loadOBJ / loadPLY / loadSTL / loadFBX / loadVOX / loadSplatPLY,
+///   Mesh.loadGLTF (bro.mesh.loadGLTF), Rig.specFromFile (bro.rigging.specFromFile)
+///                 the path Read (a glTF's buffers and images beside it are the
+///                 library's to open: the file the app named is what is asked)
+///   mesh.saveOBJ / savePLY / saveSTL / saveGLTF, Mesh.saveSplatPLY
+///                 the path Write
+//
+// A refusal is bronze::embed::newAccessError, thrown: an Error whose `message`
+// is the gate's sentence (named PermissionRevoked for a grant taken back),
+// `code` is "EACCES" and `path` the absolute path asked about. Nothing is read
+// or written.
+
 } // namespace bromesh::api
 
 using bromesh::api::installMesh;

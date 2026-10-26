@@ -569,7 +569,7 @@ void initRiggingMesh(HostClass& meshCls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.saveGLTF: not a Mesh instance");
         if (a.empty()) return ev::throwTypeError("Mesh.saveGLTF: path required");
-        std::string path = resolveMeshWritePath(ev::toUtf8(a[0]));
+        std::string path = meshWritePath(ev::toUtf8(a[0]));
         const bromesh::SkinData* skinPtr = nullptr;
         const bromesh::Skeleton* skelPtr = nullptr;
         std::vector<bromesh::Animation> anims;
@@ -595,7 +595,7 @@ void initRiggingMesh(HostClass& meshCls) {
 
     meshCls.setStatic("loadGLTF", hostFunction([](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Mesh.loadGLTF: path required");
-        std::string path = resolveMeshPath(ev::toUtf8(a[0]));
+        std::string path = meshReadPath(ev::toUtf8(a[0]));
         auto scene = bromesh::loadGLTF(path);
         ObjectBuilder res;
         res.set("meshes", hostArrayOf(scene.meshes.size(), [&](size_t i) {

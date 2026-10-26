@@ -487,12 +487,15 @@ void initPolyMesh(HostClass& cls);
 void initMeshSdf(ObjectBuilder& proto, HostClass& cls);
 void initSdfGraph(HostClass& cls);
 
-// A file path as the host's resolver sees it (api.h setPathResolver), or as
-// given when no resolver is set (native_mesh_io.cpp).
-std::string resolveMeshPath(const std::string& path);
-// The same for a file about to be written: its parent directory is what
-// gets resolved, since the file itself does not exist yet.
-std::string resolveMeshWritePath(const std::string& path);
+// A path the app handed a loader, as the host's resolver sees it (api.h
+// setPathResolver; as given when none is set), after the host's access gate
+// allowed reading it (embed/embed_access.h, asked with the path absolute and
+// lexically normal). A refusal is thrown (an Error, code EACCES, the path) and
+// never returns, so nothing is opened (native_mesh_io.cpp).
+std::string meshReadPath(const std::string& path);
+// The same for a file about to be written, asked as a Write: its parent
+// directory is what gets resolved, since the file itself does not exist yet.
+std::string meshWritePath(const std::string& path);
 
 void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls,
                      HostClass& rigCls, HostClass& voxelCls);

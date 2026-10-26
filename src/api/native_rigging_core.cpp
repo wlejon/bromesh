@@ -664,7 +664,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
 
     bindRigStatic("specFromFile", 1, [](Value, std::span<const Value> a) -> Value {
         if (a.empty()) return ev::throwTypeError("Rig.specFromFile: path required");
-        std::string path = resolveMeshPath(ev::toUtf8(a[0]));
+        std::string path = meshReadPath(ev::toUtf8(a[0]));
         return wrapSkeletonRig(bromesh::loadRigSpecFile(path));
     });
 

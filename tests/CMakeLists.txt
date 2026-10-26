@@ -43,7 +43,8 @@ target_compile_definitions(bromesh_test PRIVATE
 add_test(NAME bromesh_test COMMAND bromesh_test)
 
 if(BROMESH_ENABLE_API AND TARGET bromesh_api)
-    add_executable(test_mesh_api test_mesh_api.cpp test_mesh_api_restored.cpp test_mesh_api_validation.cpp)
+    add_executable(test_mesh_api test_mesh_api.cpp test_mesh_api_restored.cpp test_mesh_api_validation.cpp
+                   test_mesh_api_gate.cpp)
     # bromesh's SDF JIT calls brass's parallel-loop runtime, which brass.lib
     # defines AND bronze_runtime_shared.dll exports in part (brass_parallel_for
     # and its reductions, not brass_set_parallel_workers): pulled from both,

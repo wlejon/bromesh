@@ -29,6 +29,8 @@ void bromeshTestRestoredSurface();
 void bromeshTestBindingFixes();
 // tests/test_mesh_api_validation.cpp — counts, sizes and indices throw.
 void bromeshTestValidation();
+// tests/test_mesh_api_gate.cpp — loaders and savers ask the host's access gate.
+void bromeshTestAccessGate();
 
 int main() {
     std::cout << "========================================" << std::endl;
@@ -196,6 +198,7 @@ int main() {
 
     bromeshTestRestoredSurface();
     bromeshTestBindingFixes();
+    bromeshTestAccessGate();
     bromeshTestValidation();
 
     // 5. Test Rig.specFromFile with setPathResolver

@@ -6,9 +6,11 @@
 //
 // Paths go through the host's resolver when one is set (setPathResolver):
 // a relative path then means what it means to the host's `fs`, anchored at
-// the app, rather than at the process's working directory.
+// the app, rather than at the process's working directory. Then the host's
+// access gate is asked (meshReadPath / meshWritePath; api.h, "Access").
 
 #include "host_mesh_internal.h"
+#include "embed/embed_access.h"
 
 #include <bromesh/io/obj.h>
 #include <bromesh/io/ply.h>
@@ -185,12 +187,32 @@ void setPathResolver(std::function<std::string(const std::string&)> resolver) {
     pathResolver() = std::move(resolver);
 }
 
-std::string resolveMeshPath(const std::string& path) {
-    return resolvePath(path);
+namespace {
+
+// `resolved` once the host's gate allows `kind` on it; throws the refusal.
+std::string gated(std::string resolved, ev::AccessKind kind) {
+    if (!ev::accessGateActive()) return resolved;
+    namespace fs = std::filesystem;
+    fs::path p(std::u8string(resolved.begin(), resolved.end()));
+    std::error_code ec;
+    fs::path abs = fs::absolute(p, ec);
+    if (ec) abs = p;
+    const std::u8string u8 = abs.lexically_normal().u8string();
+    const std::string subject(u8.begin(), u8.end());
+    if (std::string refused = ev::checkAccess(kind, subject); !refused.empty()) {
+        ev::throwAccessError(refused, "EACCES", subject);
+    }
+    return resolved;
 }
 
-std::string resolveMeshWritePath(const std::string& path) {
-    return resolveWritePath(path);
+}  // namespace
+
+std::string meshReadPath(const std::string& path) {
+    return gated(resolvePath(path), ev::AccessKind::Read);
+}
+
+std::string meshWritePath(const std::string& path) {
+    return gated(resolveWritePath(path), ev::AccessKind::Write);
 }
 
 void initMeshIo(ObjectBuilder& proto, HostClass& cls) {
@@ -201,20 +223,20 @@ void initMeshIo(ObjectBuilder& proto, HostClass& cls) {
     // ---- Loaders: one Mesh per file for the single-mesh formats ---------
     bindStatic("loadOBJ", 1, [](Value, std::span<const Value> a) -> Value {
         if (a.empty() || !ev::isString(a[0])) return ev::throwTypeError("Mesh.loadOBJ: path required");
-        return wrapMesh(bromesh::loadOBJ(resolvePath(ev::toUtf8(a[0]))));
+        return wrapMesh(bromesh::loadOBJ(meshReadPath(ev::toUtf8(a[0]))));
     });
     bindStatic("loadPLY", 1, [](Value, std::span<const Value> a) -> Value {
         if (a.empty() || !ev::isString(a[0])) return ev::throwTypeError("Mesh.loadPLY: path required");
-        return wrapMesh(bromesh::loadPLY(resolvePath(ev::toUtf8(a[0]))));
+        return wrapMesh(bromesh::loadPLY(meshReadPath(ev::toUtf8(a[0]))));
     });
     bindStatic("loadSTL", 1, [](Value, std::span<const Value> a) -> Value {
         if (a.empty() || !ev::isString(a[0])) return ev::throwTypeError("Mesh.loadSTL: path required");
-        return wrapMesh(bromesh::loadSTL(resolvePath(ev::toUtf8(a[0]))));
+        return wrapMesh(bromesh::loadSTL(meshReadPath(ev::toUtf8(a[0]))));
     });
     // An FBX is a scene: every mesh it holds, in file order.
     bindStatic("loadFBX", 1, [](Value, std::span<const Value> a) -> Value {
         if (a.empty() || !ev::isString(a[0])) return ev::throwTypeError("Mesh.loadFBX: path required");
-        auto meshes = bromesh::loadFBX(resolvePath(ev::toUtf8(a[0])));
+        auto meshes = bromesh::loadFBX(meshReadPath(ev::toUtf8(a[0])));
         return hostArrayOf(meshes.size(), [&](size_t i) { return wrapMesh(std::move(meshes[i])); });
     });
     // A .vox is a voxel grid, not a mesh: {sizeX, sizeY, sizeZ, voxels:
@@ -222,7 +244,7 @@ void initMeshIo(ObjectBuilder& proto, HostClass& cls) {
     // x 256}. Mesh it with Mesh.greedyMesh.
     bindStatic("loadVOX", 1, [](Value, std::span<const Value> a) -> Value {
         if (a.empty() || !ev::isString(a[0])) return ev::throwTypeError("Mesh.loadVOX: path required");
-        bromesh::VoxData vox = bromesh::loadVOX(resolvePath(ev::toUtf8(a[0])));
+        bromesh::VoxData vox = bromesh::loadVOX(meshReadPath(ev::toUtf8(a[0])));
         ObjectBuilder o;
         o.set("sizeX", static_cast<double>(vox.sizeX));
         o.set("sizeY", static_cast<double>(vox.sizeY));
@@ -237,7 +259,7 @@ void initMeshIo(ObjectBuilder& proto, HostClass& cls) {
     // opacities, sh, shDegree, count}), and the same shape saves back.
     bindStatic("loadSplatPLY", 1, [](Value, std::span<const Value> a) -> Value {
         if (a.empty() || !ev::isString(a[0])) return ev::throwTypeError("Mesh.loadSplatPLY: path required");
-        return makeSplatCloud(bromesh::loadSplatPLY(resolvePath(ev::toUtf8(a[0]))));
+        return makeSplatCloud(bromesh::loadSplatPLY(meshReadPath(ev::toUtf8(a[0]))));
     });
     bindStatic("saveSplatPLY", 2, [](Value, std::span<const Value> a) -> Value {
         if (a.size() < 2 || !ev::isString(a[0])) return ev::throwTypeError("Mesh.saveSplatPLY: (path, cloud) required");
@@ -247,7 +269,7 @@ void initMeshIo(ObjectBuilder& proto, HostClass& cls) {
             if (err.empty()) return ev::undefined();
             return ev::throwTypeError(("Mesh.saveSplatPLY: " + err).c_str());
         }
-        return ev::fromBool(bromesh::saveSplatPLY(cloud, resolveWritePath(ev::toUtf8(a[0]))));
+        return ev::fromBool(bromesh::saveSplatPLY(cloud, meshWritePath(ev::toUtf8(a[0]))));
     });
 
     // ---- Savers: true when the file was written --------------------------
@@ -255,19 +277,19 @@ void initMeshIo(ObjectBuilder& proto, HostClass& cls) {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.saveOBJ: not a Mesh instance");
         if (a.empty() || !ev::isString(a[0])) return ev::throwTypeError("Mesh.saveOBJ: path required");
-        return ev::fromBool(bromesh::saveOBJ(m->mesh, resolveWritePath(ev::toUtf8(a[0]))));
+        return ev::fromBool(bromesh::saveOBJ(m->mesh, meshWritePath(ev::toUtf8(a[0]))));
     });
     proto.def("savePLY", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.savePLY: not a Mesh instance");
         if (a.empty() || !ev::isString(a[0])) return ev::throwTypeError("Mesh.savePLY: path required");
-        return ev::fromBool(bromesh::savePLY(m->mesh, resolveWritePath(ev::toUtf8(a[0]))));
+        return ev::fromBool(bromesh::savePLY(m->mesh, meshWritePath(ev::toUtf8(a[0]))));
     });
     proto.def("saveSTL", 1, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.saveSTL: not a Mesh instance");
         if (a.empty() || !ev::isString(a[0])) return ev::throwTypeError("Mesh.saveSTL: path required");
-        return ev::fromBool(bromesh::saveSTL(m->mesh, resolveWritePath(ev::toUtf8(a[0]))));
+        return ev::fromBool(bromesh::saveSTL(m->mesh, meshWritePath(ev::toUtf8(a[0]))));
     });
 }
 
