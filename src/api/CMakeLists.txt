@@ -1,6 +1,5 @@
 add_library(bromesh_api STATIC
     api.cpp
-    host_class.cpp
     native_mesh_core.cpp
     native_mesh_ops.cpp
     native_mesh_analysis.cpp
