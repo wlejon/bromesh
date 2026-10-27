@@ -496,9 +496,6 @@ void initRiggingAnim(HostClass& poseCls, HostClass& animCls, HostClass& meshCls,
         return wrapAnimation(std::move(retargeted));
     }, 3, "retarget"));
 
-    animCls.alias("Animation");
-    animCls.alias("SkeletalAnimation");
-
     initRiggingMesh(meshCls);
 }
 

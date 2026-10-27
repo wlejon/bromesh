@@ -362,6 +362,12 @@ void recomputeVertexNormals(MeshData& m) {
 MeshData remeshIsotropic(const MeshData& mesh, float targetEdgeLength,
                          int iterations) {
     if (mesh.empty() || mesh.indices.empty() || iterations <= 0) return mesh;
+    // A position at infinity or NaN is no surface to resample, and the
+    // surgery below never settled on one (remesh after translate(1e308)).
+    for (float p : mesh.positions) {
+        if (!std::isfinite(p)) return mesh;
+    }
+    if (!std::isfinite(targetEdgeLength)) targetEdgeLength = 0.0f;
 
     // Weld first: PolyMesh's surgery operates on vertex-identity manifolds.
     // Position-duplicate vertices (e.g. UV-seam splits in `sphere()`) get

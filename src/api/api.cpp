@@ -93,8 +93,6 @@ Value makeRiggingNamespace() {
     ns.set("Rig", g_skeletonRigClass.constructor());
     ns.set("Pose", g_poseClass.constructor());
     ns.set("AnimationClip", g_animationClass.constructor());
-    ns.set("Animation", g_animationClass.constructor());
-    ns.set("SkeletalAnimation", g_animationClass.constructor());
     ns.set("VoxelChunk", g_voxelChunkClass.constructor());
 
     auto ikGlobal = ev::globalValue("IK");
@@ -209,8 +207,6 @@ void installRigging() {
     publishGlobal(globalThis, "Rig", g_skeletonRigClass);
     publishGlobal(globalThis, "Pose", g_poseClass);
     publishGlobal(globalThis, "AnimationClip", g_animationClass);
-    publishGlobal(globalThis, "Animation", g_animationClass);
-    publishGlobal(globalThis, "SkeletalAnimation", g_animationClass);
     publishGlobal(globalThis, "VoxelChunk", g_voxelChunkClass);
 }
 
