@@ -104,8 +104,6 @@ This is the one area where the separation of modules matters because it spans ma
    - `Auto` — `autoSelectWeightingMethod(mesh)` picks BoneHeat vs VoxelBind based on manifoldness.
 5. **Runtime animation** (`animation/pose.h`): `bindPose` → `evaluateAnimation` → `blendPoses` (two-way, in place) or `blendPosesN` (weighted N-way into an out-pose, for blend spaces) → `computeSkinningMatrices` → `manipulation/skin.h::applySkinning`. IK (`ik.h`) mutates `Pose` in place between evaluation and skinning.
 
-The strategy doc at `docs/auto-rig-strategy.md` is the north star for this subsystem.
-
 ### Optional-dependency pattern
 
 The **one hard dependency** is `bromath` (header-only, linked as

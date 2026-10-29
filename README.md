@@ -88,8 +88,7 @@ bromesh::saveGLTF(mesh, "sphere.glb");
 Worked examples for every subsystem — isosurfaces, subdivision, sweeps,
 PolyMesh editing, procedural foliage, auto-rigging, animation/IK, baking,
 progressive LOD, CSG, splats, and more — live in the
-[usage cookbook](docs/usage.md). The auto-rigging design is documented in
-[docs/auto-rig-strategy.md](docs/auto-rig-strategy.md).
+[usage cookbook](docs/usage.md).
 
 ## Dependencies
 
