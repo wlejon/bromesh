@@ -29,11 +29,11 @@ inline void refuseList(std::string message) {
     if (t_listRefusal.empty()) t_listRefusal = std::move(message);
 }
 
-/// ev::makeFunction for every bromesh binding: the same function, with an
-/// oversized list met anywhere inside it raised as a RangeError. A binding
-/// that re-enters another through user code keeps its own record.
-inline Value hostFunction(ev::NativeFn fn, uint32_t arity, std::string_view name) {
-    ev::NativeFn guarded = [fn = std::move(fn)](Value self, std::span<const Value> args) -> Value {
+/// A binding body with an oversized list met anywhere inside it raised as a
+/// RangeError once it returns. A binding that re-enters another through user
+/// code keeps its own record.
+inline ev::NativeFn guardListRefusal(ev::NativeFn fn) {
+    return [fn = std::move(fn)](Value self, std::span<const Value> args) -> Value {
         std::string outer = std::move(t_listRefusal);
         t_listRefusal.clear();
         Value r;
@@ -50,7 +50,11 @@ inline Value hostFunction(ev::NativeFn fn, uint32_t arity, std::string_view name
         if (!mine.empty()) return ev::throwRangeError(mine);
         return r;
     };
-    return ev::makeFunction(std::move(guarded), arity, name);
+}
+
+/// ev::makeFunction for every bromesh binding, guarded by guardListRefusal.
+inline Value hostFunction(ev::NativeFn fn, uint32_t arity, std::string_view name) {
+    return ev::makeFunction(guardListRefusal(std::move(fn)), arity, name);
 }
 
 /// Helper to build objects and namespaces property by property using bronze::embed.

@@ -20,15 +20,17 @@ using Value = bronze::Value;
 // thread; the realms of one thread then shared a class's mutable prototype,
 // so one realm could change what another's instances do.
 //
-// The one thing added here is the decorate callback's builder: bromesh's own
-// ObjectBuilder (object_builder.h), whose every method goes through
-// hostFunction so an oversized list met inside it is raised as a RangeError.
-// It decorates the prototype embed's install minted, and hands the object's
-// final address back.
+// What is added here is the list-refusal guard (object_builder.h) on every
+// native: the constructor body is wrapped in guardListRefusal, and the
+// decorate callback's builder is bromesh's own ObjectBuilder, whose every
+// method goes through hostFunction, so an oversized list met inside either
+// is raised as a RangeError. The builder decorates the prototype embed's
+// install minted, and hands the object's final address back.
 class HostClass : public bronze::embed::HostClass {
 public:
     void install(const char* name, uint32_t arity, ev::NativeFn body,
                  const std::function<void(ObjectBuilder&)>& decorate = nullptr) {
+        if (body) body = guardListRefusal(std::move(body));
         bronze::embed::HostClass::install(
             name, arity, std::move(body), [&decorate](ev::ObjectBuilder& proto) {
                 if (!decorate) return;
