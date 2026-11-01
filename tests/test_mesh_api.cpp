@@ -22,10 +22,10 @@ using bronze::Value;
         }                                                                        \
     } while (0)
 
-// tests/test_mesh_api_restored.cpp — the Mesh / Skeleton members the bronze
-// port dropped.
-void bromeshTestRestoredSurface();
-// Same file: the bindings fixed in the GC-rooting audit.
+// tests/test_mesh_api_restored.cpp — Mesh / Skeleton member behaviour.
+void bromeshTestMemberSurface();
+// Same file: SkinData aliases, alias forwarding, transvoxel neighborLods, the
+// IK option-object wrappers and applyMorphTarget's object form.
 void bromeshTestBindingFixes();
 // tests/test_mesh_api_validation.cpp — counts, sizes and indices throw.
 void bromeshTestValidation();
@@ -196,7 +196,7 @@ int main() {
     std::cout << "  Bronze eval returned: " << evalOut << std::endl;
     CHECK(evalOut == "SUCCESS");
 
-    bromeshTestRestoredSurface();
+    bromeshTestMemberSurface();
     bromeshTestBindingFixes();
     bromeshTestAccessGate();
     bromeshTestValidation();

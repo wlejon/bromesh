@@ -542,7 +542,7 @@ void initRiggingCore(HostClass& skinCls, HostClass& skelCls, HostClass& jointCls
         // addRigifySockets() -> number — append the standard attachment
         // sockets (hands, feet, head, spine) for a Rigify / Mixamo-named
         // skeleton, matching "ORG-"/"DEF-"/bare/"mixamorig:" bone spellings.
-        // Returns how many were added. Dropped by the bronze port.
+        // Returns how many were added.
         proto.def("addRigifySockets", 0, [](Value self, std::span<const Value>) -> Value {
             auto* s = unwrapSkeleton(self);
             if (!s) return ev::throwTypeError("Skeleton.addRigifySockets: not an instance");

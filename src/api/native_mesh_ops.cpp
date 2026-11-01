@@ -59,8 +59,7 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
     });
 
     // Per-vertex tangents as a flat Float32Array (xyzw per vertex, w = the
-    // bitangent sign). Needed for normal-mapped materials; dropped by the
-    // bronze port.
+    // bitangent sign). Needed for normal-mapped materials.
     proto.def("computeTangents", 0, [](Value self, std::span<const Value>) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.computeTangents: not a Mesh instance");
@@ -328,10 +327,10 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
     proto.def("convexDecomposition", 4, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.convexDecomposition: not a Mesh instance");
-        // Two call forms: the pre-transition options object
-        // ({maxHulls, maxVerticesPerHull, resolution, minVolumePerHull}) and
-        // the bronze-era positional one. The object form was the documented
-        // shape and the only one the old binding read.
+        // Two call forms: an options object
+        // ({maxHulls, maxVerticesPerHull, resolution, minVolumePerHull}),
+        // the documented shape, and positional
+        // (maxHulls, maxVerticesPerHull, resolution, minVolumePerHull).
         int maxHulls = 16;
         int maxVerts = 32;
         double res = 100000.0;

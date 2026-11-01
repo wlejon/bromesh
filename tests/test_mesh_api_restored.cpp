@@ -1,6 +1,7 @@
-// Behavioural coverage for the Mesh / Skeleton members that the QuickJS →
-// bronze port dropped or narrowed (the mesh rows of
-// build/binding-audit/shape_all.txt).
+// Behavioural coverage for Mesh / Skeleton members: computeTangents,
+// simplifyWithAttributes, subdivideMidpoint, the self-intersection queries,
+// intersectsMesh, convexDecomposition's two call forms, buildMeshlets' cull
+// cones and Skeleton.addRigifySockets.
 //
 // Linked into test_mesh_api; called from its main(). The checks run real
 // geometry rather than probing for names, so a stub would still fail them.
@@ -18,8 +19,8 @@ namespace ev = bronze::embed;
 
 // Failures exit the process: assert() is a no-op in the Release configuration
 // this test actually runs in, so a thrown script must not be allowed to pass.
-void bromeshTestRestoredSurface() {
-    std::cout << "[restored] Exercising the members the bronze port dropped..." << std::endl;
+void bromeshTestMemberSurface() {
+    std::cout << "[members] Exercising Mesh / Skeleton members..." << std::endl;
 
     const char* script = R"JS(
         // ── computeTangents(): 4 floats per vertex, finite, non-degenerate ──
@@ -91,8 +92,7 @@ void bromeshTestRestoredSurface() {
         if (!threw) throw new Error("intersectsMesh should reject a non-Mesh argument");
 
         // ── convexDecomposition(optionsObject) ──────────────────────────────
-        // The object form is what the pre-transition binding read; the
-        // positional form has to keep working alongside it.
+        // Both the object form and the positional form work.
         const cd = Mesh.sphere(1, 16, 16);
         const hullsObj = cd.convexDecomposition({ maxHulls: 4, maxVerticesPerHull: 16, resolution: 10000, minVolumePerHull: 0.001 });
         if (!Array.isArray(hullsObj)) throw new Error("convexDecomposition should return an array");
@@ -140,21 +140,20 @@ void bromeshTestRestoredSurface() {
 
     auto res = bronze::eval::evalScript(script);
     if (res.thrown) {
-        std::cerr << "  restored-surface script threw: " << ev::toUtf8(res.value) << std::endl;
+        std::cerr << "  member-surface script threw: " << ev::toUtf8(res.value) << std::endl;
         std::exit(1);
     }
     if (ev::toUtf8(res.value) != "SUCCESS") {
-        std::cerr << "  restored-surface script returned: " << ev::toUtf8(res.value) << std::endl;
+        std::cerr << "  member-surface script returned: " << ev::toUtf8(res.value) << std::endl;
         std::exit(1);
     }
-    std::cout << "  restored Mesh/Skeleton members OK." << std::endl;
+    std::cout << "  Mesh/Skeleton members OK." << std::endl;
 }
 
-// Bindings fixed during the GC-rooting audit. Every path here reads several
-// properties or calls back into JS, so under BRONZE_GC_STRESS=1 a raw Value
-// held across one of those allocations would crash or misread.
+// Members that read several properties or call back into JS, so under
+// BRONZE_GC_STRESS=1 a collection runs between those reads.
 void bromeshTestBindingFixes() {
-    std::cout << "[fixes] Exercising the bindings fixed in the GC audit..." << std::endl;
+    std::cout << "[fixes] Exercising multi-read and callback members..." << std::endl;
 
     const char* script = R"JS(
         // ── SkinData weights/indices aliases return the arrays ─────────────
