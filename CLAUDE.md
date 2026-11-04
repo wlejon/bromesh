@@ -31,7 +31,13 @@ CMake 3.24+, C++20 (MSVC 2022, GCC 12+, Clang 15+). MSVC uses static CRT (`/MT[d
 
 The test harness is custom (`tests/test_framework.h`) — not GoogleTest. Tests self-register through the `TEST(name) { ... }` macro at static-init time, and `main()` in `test_main.cpp` walks the registry afterwards (deferring execution out of static init avoids cross-TU init-order failures on Windows). Assertions use `ASSERT(cond, msg)`, which counts rather than aborts, so a run reports `passed/run` and exits non-zero if they differ.
 
-There is no filter flag and no `RUN_TEST` list to edit. To run a single test, temporarily filter inside `main()`'s registry loop on `t.name`, or comment out the `TEST` bodies you don't want.
+Pass `--filter=<substr>` (or `-f <substr>`, or a bare positional `<substr>`) to run only tests whose name contains `<substr>`, or `--list` (`-l`) to list registered test names:
+
+```bash
+./build/tests/bromesh_test --filter=sphere
+./build/tests/bromesh_test sphere
+./build/tests/bromesh_test --list
+```
 
 Test sources: `test_mesh.cpp`, `test_animation.cpp`, `test_rigging.cpp`, `test_procedural.cpp`, `test_splat.cpp`, `test_coverage.cpp`, `test_coverage2.cpp` (shared rig fixtures in `synthetic_rigs.h`).
 
