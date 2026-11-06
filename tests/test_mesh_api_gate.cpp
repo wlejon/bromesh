@@ -70,10 +70,10 @@ std::string refusal(const fs::path& p) {
 void bromeshTestAccessGate() {
     std::cout << "[gate] Loaders and savers under the access gate..." << std::endl;
 
-    const fs::path root = fs::temp_directory_path() / "bromesh_gate";
+    std::error_code ec;
+    const fs::path root = fs::canonical(fs::temp_directory_path(), ec) / "bromesh_gate";
     const fs::path ok = root / "ok";
     const fs::path hidden = root / "hidden";
-    std::error_code ec;
     fs::remove_all(root, ec);
     fs::create_directories(ok);
     fs::create_directories(hidden);
