@@ -9,7 +9,7 @@
 
 namespace bromesh {
 
-MeshData simplify(const MeshData& mesh, float targetRatio, float targetError) {
+MeshData simplify(const MeshData& mesh, float targetRatio, float targetError, const uint8_t* lock) {
 #ifdef BROMESH_HAS_MESHOPTIMIZER
     if (mesh.empty() || mesh.indices.empty()) return {};
 
@@ -21,20 +21,24 @@ MeshData simplify(const MeshData& mesh, float targetRatio, float targetError) {
     targetIndexCount = (targetIndexCount / 3) * 3;
     if (targetIndexCount < 3) targetIndexCount = 3;
 
-    // Run meshopt_simplify
     std::vector<uint32_t> newIndices(indexCount);
-    size_t newIndexCount = meshopt_simplify(
-        newIndices.data(),
-        mesh.indices.data(),
-        indexCount,
-        mesh.positions.data(),
-        vertexCount,
-        sizeof(float) * 3,
-        targetIndexCount,
-        targetError,
-        0,
-        nullptr
-    );
+    size_t newIndexCount = 0;
+    if (lock) {
+        // Locked vertices: meshopt's vertex_lock flags, one byte a vertex.
+        std::vector<unsigned char> flags(vertexCount);
+        for (size_t v = 0; v < vertexCount; ++v)
+            flags[v] = lock[v] ? meshopt_SimplifyVertex_Lock : 0;
+        newIndexCount = meshopt_simplifyWithAttributes(
+            newIndices.data(), mesh.indices.data(), indexCount,
+            mesh.positions.data(), vertexCount, sizeof(float) * 3,
+            nullptr, 0, nullptr, 0, flags.data(),
+            targetIndexCount, targetError, 0, nullptr);
+    } else {
+        newIndexCount = meshopt_simplify(
+            newIndices.data(), mesh.indices.data(), indexCount,
+            mesh.positions.data(), vertexCount, sizeof(float) * 3,
+            targetIndexCount, targetError, 0, nullptr);
+    }
     newIndices.resize(newIndexCount);
 
     // Build a new mesh with only the referenced vertices
@@ -107,13 +111,13 @@ MeshData simplify(const MeshData& mesh, float targetRatio, float targetError) {
 
     return result;
 #else
-    (void)mesh; (void)targetRatio; (void)targetError;
+    (void)mesh; (void)targetRatio; (void)targetError; (void)lock;
     return {};
 #endif
 }
 
 MeshData simplifyToTriangleCount(const MeshData& mesh, size_t targetTriangles,
-                                 float targetError) {
+                                 float targetError, const uint8_t* lock) {
     if (mesh.empty() || mesh.indices.empty()) return {};
 
     size_t currentTriangles = mesh.triangleCount();
@@ -121,7 +125,7 @@ MeshData simplifyToTriangleCount(const MeshData& mesh, size_t targetTriangles,
     if (targetTriangles < 1) targetTriangles = 1;
 
     float ratio = static_cast<float>(targetTriangles) / static_cast<float>(currentTriangles);
-    return simplify(mesh, ratio, targetError);
+    return simplify(mesh, ratio, targetError, lock);
 }
 
 std::vector<MeshData> generateLODChain(const MeshData& mesh,

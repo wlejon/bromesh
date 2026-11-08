@@ -173,6 +173,27 @@ TEST(simplify_target_count) {
     ASSERT(result.triangleCount() > 0, "target_count: should have triangles");
 }
 
+TEST(simplify_lock_keeps_region) {
+    // Lock the cap above y = 0.6: every locked vertex survives a heavy
+    // reduction, and the cap keeps far more vertices than unlocked.
+    auto mesh = bromesh::sphere(1.0f, 32, 24);
+    size_t nv = mesh.vertexCount();
+    std::vector<uint8_t> lock(nv, 0);
+    size_t locked = 0;
+    for (size_t v = 0; v < nv; ++v)
+        if (mesh.positions[3 * v + 1] > 0.6f) { lock[v] = 1; locked++; }
+    auto capCount = [](const bromesh::MeshData& m) {
+        size_t n = 0;
+        for (size_t v = 0; v < m.vertexCount(); ++v) if (m.positions[3 * v + 1] > 0.6f) n++;
+        return n;
+    };
+    auto free = bromesh::simplifyToTriangleCount(mesh, mesh.triangleCount() / 8, 1.0f);
+    auto kept = bromesh::simplifyToTriangleCount(mesh, mesh.triangleCount() / 8, 1.0f, lock.data());
+    ASSERT(kept.triangleCount() < mesh.triangleCount() / 2, "lock: the rest is still reduced");
+    ASSERT(capCount(kept) >= locked, "lock: every locked vertex survives");
+    ASSERT(capCount(free) < locked / 2, "lock: unlocked, the cap is reduced too");
+}
+
 TEST(simplify_target_count_identity) {
     auto mesh = bromesh::sphere(1.0f, 8, 6);
     size_t origTris = mesh.triangleCount();

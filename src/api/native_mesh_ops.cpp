@@ -133,13 +133,35 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
     });
 
     // ---- Simplification / LOD ----------------------------------------------
-    proto.def("simplify", 2, [](Value self, std::span<const Value> a) -> Value {
+    // The optional lock (a Uint8Array, a byte a vertex: nonzero keeps the
+    // vertex) of simplify / simplifyToTriangleCount. Null with nothing given;
+    // false (with an exception thrown) when it is not one byte a vertex.
+    static auto lockArg = [](std::span<const Value> a, size_t i, const MeshData& mesh, const char* what,
+                             const uint8_t*& out) -> bool {
+        out = nullptr;
+        if (a.size() <= i || a[i].isUndefined() || a[i].isNull()) return true;
+        size_t n = 0;
+        if (!readUint8Array(a[i], out, n)) {
+            ev::throwTypeError(std::string(what) + ": lock must be a Uint8Array");
+            return false;
+        }
+        if (n != mesh.vertexCount()) {
+            ev::throwRangeError(std::string(what) + ": lock has " + std::to_string(n) + " bytes for " +
+                                std::to_string(mesh.vertexCount()) + " vertices");
+            return false;
+        }
+        return true;
+    };
+
+    proto.def("simplify", 3, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.simplify: not a Mesh instance");
         ArgReader r(a);
         float ratio = static_cast<float>(r.getDouble(0, 0.5));
         float targetError = static_cast<float>(r.getDouble(1, 1e-3));
-        m->mesh = bromesh::simplify(m->mesh, ratio, targetError);
+        const uint8_t* lock = nullptr;
+        if (!lockArg(a, 2, m->mesh, "Mesh.simplify", lock)) return ev::undefined();
+        m->mesh = bromesh::simplify(m->mesh, ratio, targetError, lock);
         return self;
     });
 
@@ -158,14 +180,16 @@ void initMeshOps(ObjectBuilder& proto, HostClass& cls) {
         return self;
     });
 
-    proto.def("simplifyToTriangleCount", 2, [](Value self, std::span<const Value> a) -> Value {
+    proto.def("simplifyToTriangleCount", 3, [](Value self, std::span<const Value> a) -> Value {
         auto* m = unwrapMesh(self);
         if (!m) return ev::throwTypeError("Mesh.simplifyToTriangleCount: not a Mesh instance");
         ArgReader r(a);
         size_t count = 100;
         if (!countArg(a, 0, "Mesh.simplifyToTriangleCount: count", 0, kMaxUint32, count)) return ev::undefined();
         float targetError = static_cast<float>(r.getDouble(1, 1e-3));
-        m->mesh = bromesh::simplifyToTriangleCount(m->mesh, count, targetError);
+        const uint8_t* lock = nullptr;
+        if (!lockArg(a, 2, m->mesh, "Mesh.simplifyToTriangleCount", lock)) return ev::undefined();
+        m->mesh = bromesh::simplifyToTriangleCount(m->mesh, count, targetError, lock);
         return self;
     });
 

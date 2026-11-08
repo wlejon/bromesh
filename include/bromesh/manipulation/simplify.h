@@ -7,9 +7,12 @@ namespace bromesh {
 /// Simplify a mesh using quadric error metrics.
 /// targetRatio: fraction of triangles to keep (0.0 to 1.0).
 /// targetError: maximum allowed error (0 = no limit).
+/// lock: null, or one byte a vertex; a vertex whose byte is nonzero is kept
+/// where it is (no edge collapses into or out of it), so a region worth its
+/// detail keeps it while the rest is reduced.
 /// Returns a new simplified mesh.
 MeshData simplify(const MeshData& mesh, float targetRatio,
-                  float targetError = 0.01f);
+                  float targetError = 0.01f, const uint8_t* lock = nullptr);
 
 /// Simplify a mesh using quadric error metrics with attribute preservation.
 /// Incorporates UV and normal attributes into the error metric so that
@@ -24,8 +27,9 @@ MeshData simplifyWithAttributes(const MeshData& mesh, float targetRatio,
 /// Internally computes the ratio from the mesh's current triangle count.
 /// targetTriangles: desired number of triangles (clamped to [1, current]).
 /// targetError: maximum allowed error (0 = no limit).
+/// lock: as simplify's.
 MeshData simplifyToTriangleCount(const MeshData& mesh, size_t targetTriangles,
-                                 float targetError = 0.01f);
+                                 float targetError = 0.01f, const uint8_t* lock = nullptr);
 
 /// Generate an LOD chain: multiple simplification levels.
 /// ratios: array of target ratios (e.g. {0.5, 0.25, 0.125}).
