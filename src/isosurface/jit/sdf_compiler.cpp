@@ -1,11 +1,16 @@
 #include "sdf_compiler_internal.h"
 
 #if BROMESH_HAS_BRASS_JIT
+#include <brass/cache/artifact_cache.hpp>
+#include <brass/cache/native_module_cache.hpp>
 #include <brass/mir/gpu_opt.hpp>
 #endif
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 
@@ -375,6 +380,199 @@ void JitSdfCompiler::clearCache() {
     m_cache.clear();
 }
 
+#if BROMESH_HAS_BRASS_JIT
+namespace {
+
+std::filesystem::path bromesh_cache_directory() {
+    if (const char* env_dir = std::getenv("BROMESH_CACHE_DIR"); env_dir && env_dir[0] != '\0') {
+        return std::filesystem::path(env_dir);
+    }
+#if defined(_WIN32)
+    if (const char* local_app = std::getenv("LOCALAPPDATA"); local_app && local_app[0] != '\0') {
+        return std::filesystem::path(local_app) / "bromesh" / "kernels";
+    }
+    if (const char* user_prof = std::getenv("USERPROFILE"); user_prof && user_prof[0] != '\0') {
+        return std::filesystem::path(user_prof) / ".cache" / "bromesh" / "kernels";
+    }
+#else
+    if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && xdg[0] != '\0') {
+        return std::filesystem::path(xdg) / "bromesh" / "kernels";
+    }
+    if (const char* home = std::getenv("HOME"); home && home[0] != '\0') {
+        return std::filesystem::path(home) / ".cache" / "bromesh" / "kernels";
+    }
+#endif
+    std::error_code ec;
+    auto tmp = std::filesystem::temp_directory_path(ec);
+    if (!ec && !tmp.empty()) {
+        return tmp / "bromesh" / "kernels";
+    }
+    return std::filesystem::path(".cache") / "bromesh" / "kernels";
+}
+
+brass::cache::NativeModuleCache& bromesh_native_cache() {
+    static constexpr uint64_t kMaxBytes = 64ULL * 1024 * 1024;
+    static auto* store = new brass::cache::ArtifactCache(bromesh_cache_directory(), kMaxBytes);
+    static auto* cache = new brass::cache::NativeModuleCache(*store);
+    return *cache;
+}
+
+uint32_t f32_bits(float v) noexcept {
+    uint32_t u = 0;
+    std::memcpy(&u, &v, sizeof(u));
+    return u;
+}
+
+brass::cache::CacheKey build_sdf_cache_key(const SdfGraph& graph, int root, const KernelOptions& opts) {
+    brass::cache::KeyBuilder kb("bromesh.sdf/1");
+    kb.add_u64("root", static_cast<uint64_t>(static_cast<int64_t>(root)));
+    kb.add_u64("node_count", static_cast<uint64_t>(graph.size()));
+    for (const auto& node : graph.nodes()) {
+        kb.add_u64("op", static_cast<uint64_t>(node.op));
+        kb.add_u64("left", static_cast<uint64_t>(static_cast<int64_t>(node.left)));
+        kb.add_u64("right", static_cast<uint64_t>(static_cast<int64_t>(node.right)));
+        kb.add_u64("v0x", f32_bits(node.v0.x));
+        kb.add_u64("v0y", f32_bits(node.v0.y));
+        kb.add_u64("v0z", f32_bits(node.v0.z));
+        kb.add_u64("v1x", f32_bits(node.v1.x));
+        kb.add_u64("v1y", f32_bits(node.v1.y));
+        kb.add_u64("v1z", f32_bits(node.v1.z));
+        kb.add_u64("f0", f32_bits(node.f0));
+        kb.add_u64("f1", f32_bits(node.f1));
+    }
+    const auto& exprs = graph.customExprs();
+    kb.add_u64("custom_expr_count", static_cast<uint64_t>(exprs.size()));
+    for (const auto& ex : exprs) {
+        kb.add_u64("result_reg", static_cast<uint64_t>(static_cast<int64_t>(ex.resultReg)));
+        kb.add_u64("lipschitz", f32_bits(ex.lipschitzBound));
+        kb.add_u64("inst_count", static_cast<uint64_t>(ex.instructions.size()));
+        for (const auto& inst : ex.instructions) {
+            kb.add_u64("inst_op", static_cast<uint64_t>(inst.op));
+            kb.add_u64("inst_a", static_cast<uint64_t>(static_cast<int64_t>(inst.a)));
+            kb.add_u64("inst_b", static_cast<uint64_t>(static_cast<int64_t>(inst.b)));
+            kb.add_u64("inst_c", static_cast<uint64_t>(static_cast<int64_t>(inst.c)));
+            kb.add_u64("inst_imm", f32_bits(inst.imm));
+        }
+    }
+    kb.add_u64("opt_level", static_cast<uint64_t>(opts.opt_level));
+    kb.add_bool("enable_optimizations", opts.enable_optimizations);
+    kb.add_bool("enable_sroa", opts.enable_sroa);
+    kb.add_bool("enable_bce", opts.enable_bce);
+    kb.add_bool("enable_smt_guard_elim", opts.enable_smt_guard_elim);
+    kb.add_bool("enable_superopt", opts.enable_superopt);
+    kb.add_bool("enable_avx2", opts.enable_avx2);
+    kb.add_bool("enable_fma", opts.enable_fma);
+    kb.add_bool("enable_fp_reassociation", opts.enable_fp_reassociation);
+    kb.add_bool("enable_vectorize", opts.enable_vectorize);
+    kb.add_bool("enable_slp", opts.enable_slp);
+    kb.add_bool("enable_unroll", opts.enable_unroll);
+    kb.add_u64("unroll_factor", static_cast<uint64_t>(opts.unroll_factor));
+    kb.add_bool("enable_parallel", opts.enable_parallel);
+    kb.add_u64("parallel_threshold", opts.parallel_threshold);
+    kb.add_u64("parallel_workers", static_cast<uint64_t>(opts.parallel_workers));
+    kb.add_bool("enable_ftz_daz", opts.enable_ftz_daz);
+    return kb.finish();
+}
+
+void build_sdf_bundle_module(Module& mod, const SdfGraph& graph, int root) {
+    // 1. Grid Evaluation Function
+    Function* fnGrid = mod.create_function("eval_grid", Type::void_type(), {
+        Type::ptr(), Type::ptr(), Type::ptr(), Type::i32(), Type::i32(), Type::i32()
+    });
+    {
+        SdfKernelBuilder kbGrid(mod, fnGrid);
+        BasicBlock* entryGrid = kbGrid.builder().append_block("entry");
+        Value* outField = kbGrid.builder().add_block_param(entryGrid, Type::ptr());
+        Value* boundsMin = kbGrid.builder().add_block_param(entryGrid, Type::ptr());
+        Value* cellSize = kbGrid.builder().add_block_param(entryGrid, Type::ptr());
+        Value* dimX = kbGrid.builder().add_block_param(entryGrid, Type::i32());
+        Value* dimY = kbGrid.builder().add_block_param(entryGrid, Type::i32());
+        Value* dimZ = kbGrid.builder().add_block_param(entryGrid, Type::i32());
+
+        kbGrid.position_at_end(entryGrid);
+        Value* dimX64 = kbGrid.builder().build_sext_i64(dimX);
+        Value* dimY64 = kbGrid.builder().build_sext_i64(dimY);
+        Value* dimZ64 = kbGrid.builder().build_sext_i64(dimZ);
+
+        Value* ox = kbGrid.load_f32(boundsMin, 0);
+        Value* oy = kbGrid.load_f32(boundsMin, 4);
+        Value* oz = kbGrid.load_f32(boundsMin, 8);
+        Value* sx = kbGrid.load_f32(cellSize, 0);
+        Value* sy = kbGrid.load_f32(cellSize, 4);
+        Value* sz = kbGrid.load_f32(cellSize, 8);
+
+        kbGrid.emit_grid_eval_loop(outField, dimX64, dimY64, dimZ64, ox, oy, oz, sx, sy, sz,
+                                  [&](Value* px, Value* py, Value* pz) {
+            return lowerToMir(kbGrid, graph, root, px, py, pz, false);
+        });
+        kbGrid.builder().build_ret_void();
+    }
+
+    // 2. Span Evaluation Function (bit-exact global X indexing for macro-block pruning)
+    Function* fnSpan = mod.create_function("eval_span", Type::void_type(), {
+        Type::ptr(), Type::f32(), Type::f32(), Type::f32(), Type::f32(), Type::i64(), Type::i64()
+    });
+    {
+        SdfKernelBuilder kbSpan(mod, fnSpan);
+        BasicBlock* entrySpan = kbSpan.builder().append_block("entry");
+        Value* outRow = kbSpan.builder().add_block_param(entrySpan, Type::ptr());
+        Value* oxSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
+        Value* pySpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
+        Value* pzSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
+        Value* sxSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
+        Value* xStart = kbSpan.builder().add_block_param(entrySpan, Type::i64());
+        Value* xEnd = kbSpan.builder().add_block_param(entrySpan, Type::i64());
+
+        kbSpan.position_at_end(entrySpan);
+        kbSpan.for_range(xStart, xEnd, kbSpan.const_i64(1), [&](Value* x) {
+            Value* px = kbSpan.fma(kbSpan.to_f32(x), sxSpan, oxSpan);
+            Value* dist = lowerToMir(kbSpan, graph, root, px, pySpan, pzSpan, false);
+            kbSpan.store_f32_indexed(outRow, x, dist, 4, 0);
+        });
+        kbSpan.builder().build_ret_void();
+    }
+
+    // 3. Point Evaluation Function
+    Function* fnPoint = mod.create_function("eval_point", Type::f32(), {
+        Type::f32(), Type::f32(), Type::f32()
+    });
+    {
+        SdfKernelBuilder kbPoint(mod, fnPoint);
+        BasicBlock* entryPoint = kbPoint.builder().append_block("entry");
+        Value* px = kbPoint.builder().add_block_param(entryPoint, Type::f32());
+        Value* py = kbPoint.builder().add_block_param(entryPoint, Type::f32());
+        Value* pz = kbPoint.builder().add_block_param(entryPoint, Type::f32());
+
+        kbPoint.position_at_end(entryPoint);
+        Value* d = lowerToMir(kbPoint, graph, root, px, py, pz, false);
+        kbPoint.builder().build_ret(d);
+    }
+
+    // 4. 1-Pass Symbolic Auto-Diff Gradient Function (#107)
+    (void)buildSdfGradFunction(mod, graph, root);
+
+    // 5. Interval / Lipschitz Macro-Block Bounds Function (#106)
+    (void)buildSdfBlockBoundsFunction(mod, graph, root);
+}
+
+brass::cache::NativeOptions sdf_native_options() {
+    brass::cache::NativeOptions opts;
+    brass::target::ImportLibrary libm;
+#if defined(_WIN32)
+    libm.library = "ucrtbase.dll";
+#elif defined(__APPLE__)
+    libm.library = "/usr/lib/libSystem.B.dylib";
+#else
+    libm.library = "libm.so.6";
+#endif
+    libm.symbols = {"sinf", "cosf", "sqrtf", "floorf", "expf", "logf", "fabsf", "tanhf"};
+    opts.imports.push_back(std::move(libm));
+    return opts;
+}
+
+} // namespace
+#endif
+
 CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
     int root = rootNode >= 0 ? rootNode : graph.root();
     uint64_t hash = graph.computeHash();
@@ -407,112 +605,75 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
             opts.enable_fma = true;
             opts.enable_parallel = false;
 
-            // 1. Grid Evaluation Function
-            Module modGrid("sdf_grid_" + std::to_string(hash));
-            Function* fnGrid = modGrid.create_function("eval_grid", Type::void_type(), {
-                Type::ptr(), Type::ptr(), Type::ptr(), Type::i32(), Type::i32(), Type::i32()
-            });
+            const brass::cache::CacheKey client_key = build_sdf_cache_key(graph, root, opts);
+            const brass::cache::NativeOptions native_opts = sdf_native_options();
+            std::string cache_err;
+            std::shared_ptr<const brass::cache::NativeModule> native_mod =
+                bromesh_native_cache().get_or_build_object(
+                    client_key,
+                    [&](brass::object::ObjectFile& obj, std::string&) -> bool {
+                        Module mod("sdf_bundle_" + std::to_string(hash));
+                        build_sdf_bundle_module(mod, graph, root);
+                        KernelJit jit(opts);
+                        obj = jit.compile_object(mod);
+                        return true;
+                    },
+                    native_opts,
+                    &cache_err);
 
-            SdfKernelBuilder kbGrid(modGrid, fnGrid);
-            BasicBlock* entryGrid = kbGrid.builder().append_block("entry");
-            Value* outField = kbGrid.builder().add_block_param(entryGrid, Type::ptr());
-            Value* boundsMin = kbGrid.builder().add_block_param(entryGrid, Type::ptr());
-            Value* cellSize = kbGrid.builder().add_block_param(entryGrid, Type::ptr());
-            Value* dimX = kbGrid.builder().add_block_param(entryGrid, Type::i32());
-            Value* dimY = kbGrid.builder().add_block_param(entryGrid, Type::i32());
-            Value* dimZ = kbGrid.builder().add_block_param(entryGrid, Type::i32());
-
-            kbGrid.position_at_end(entryGrid);
-            Value* dimX64 = kbGrid.builder().build_sext_i64(dimX);
-            Value* dimY64 = kbGrid.builder().build_sext_i64(dimY);
-            Value* dimZ64 = kbGrid.builder().build_sext_i64(dimZ);
-
-            Value* ox = kbGrid.load_f32(boundsMin, 0);
-            Value* oy = kbGrid.load_f32(boundsMin, 4);
-            Value* oz = kbGrid.load_f32(boundsMin, 8);
-            Value* sx = kbGrid.load_f32(cellSize, 0);
-            Value* sy = kbGrid.load_f32(cellSize, 4);
-            Value* sz = kbGrid.load_f32(cellSize, 8);
-
-            kbGrid.emit_grid_eval_loop(outField, dimX64, dimY64, dimZ64, ox, oy, oz, sx, sy, sz,
-                                      [&](Value* px, Value* py, Value* pz) {
-                return lowerToMir(kbGrid, graph, root, px, py, pz, false);
-            });
-            kbGrid.builder().build_ret_void();
-
-            KernelJit jitGrid(opts);
-            kernel.gridKernel = jitGrid.compile(*fnGrid);
-            if (kernel.gridKernel.is_valid()) {
-                kernel.gridFn = kernel.gridKernel.as<SdfGridEvalFn>();
+            bool loaded_from_cache = false;
+            if (native_mod) {
+                void* p_grid = native_mod->symbol("eval_grid");
+                void* p_span = native_mod->symbol("eval_span");
+                void* p_point = native_mod->symbol("eval_point");
+                void* p_grad = native_mod->symbol("eval_point_and_grad");
+                void* p_bounds = native_mod->symbol("eval_block_bounds");
+                if (p_grid && p_span && p_point && p_grad && p_bounds) {
+                    kernel.gridKernel = KernelFunction::from_owner("eval_grid", p_grid, 0, native_mod);
+                    kernel.gridFn = kernel.gridKernel.as<SdfGridEvalFn>();
+                    kernel.spanKernel = KernelFunction::from_owner("eval_span", p_span, 0, native_mod);
+                    kernel.spanFn = kernel.spanKernel.as<SdfSpanEvalFn>();
+                    kernel.pointKernel = KernelFunction::from_owner("eval_point", p_point, 0, native_mod);
+                    kernel.pointFn = kernel.pointKernel.as<SdfPointEvalFn>();
+                    kernel.gradKernel = KernelFunction::from_owner("eval_point_and_grad", p_grad, 0, native_mod);
+                    kernel.gradFn = kernel.gradKernel.as<SdfGradEvalFn>();
+                    kernel.blockBoundsKernel = KernelFunction::from_owner("eval_block_bounds", p_bounds, 0, native_mod);
+                    kernel.blockBoundsFn = kernel.blockBoundsKernel.as<SdfBlockBoundsFn>();
+                    loaded_from_cache = true;
+                }
             }
 
-            // 1b. Span Evaluation Function (bit-exact global X indexing for macro-block pruning)
-            Module modSpan("sdf_span_" + std::to_string(hash));
-            Function* fnSpan = modSpan.create_function("eval_span", Type::void_type(), {
-                Type::ptr(), Type::f32(), Type::f32(), Type::f32(), Type::f32(), Type::i64(), Type::i64()
-            });
-            SdfKernelBuilder kbSpan(modSpan, fnSpan);
-            BasicBlock* entrySpan = kbSpan.builder().append_block("entry");
-            Value* outRow = kbSpan.builder().add_block_param(entrySpan, Type::ptr());
-            Value* oxSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
-            Value* pySpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
-            Value* pzSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
-            Value* sxSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
-            Value* xStart = kbSpan.builder().add_block_param(entrySpan, Type::i64());
-            Value* xEnd = kbSpan.builder().add_block_param(entrySpan, Type::i64());
+            if (!loaded_from_cache) {
+                Module mod("sdf_bundle_" + std::to_string(hash));
+                build_sdf_bundle_module(mod, graph, root);
 
-            kbSpan.position_at_end(entrySpan);
-            kbSpan.for_range(xStart, xEnd, kbSpan.const_i64(1), [&](Value* x) {
-                Value* px = kbSpan.fma(kbSpan.to_f32(x), sxSpan, oxSpan);
-                Value* dist = lowerToMir(kbSpan, graph, root, px, pySpan, pzSpan, false);
-                kbSpan.store_f32_indexed(outRow, x, dist, 4, 0);
-            });
-            kbSpan.builder().build_ret_void();
-
-            KernelJit jitSpan(opts);
-            kernel.spanKernel = jitSpan.compile(*fnSpan);
-            if (kernel.spanKernel.is_valid()) {
-                kernel.spanFn = kernel.spanKernel.as<SdfSpanEvalFn>();
-            }
-
-            // 2. Point Evaluation Function
-            Module modPoint("sdf_point_" + std::to_string(hash));
-            Function* fnPoint = modPoint.create_function("eval_point", Type::f32(), {
-                Type::f32(), Type::f32(), Type::f32()
-            });
-
-            SdfKernelBuilder kbPoint(modPoint, fnPoint);
-            BasicBlock* entryPoint = kbPoint.builder().append_block("entry");
-            Value* px = kbPoint.builder().add_block_param(entryPoint, Type::f32());
-            Value* py = kbPoint.builder().add_block_param(entryPoint, Type::f32());
-            Value* pz = kbPoint.builder().add_block_param(entryPoint, Type::f32());
-
-            kbPoint.position_at_end(entryPoint);
-            Value* d = lowerToMir(kbPoint, graph, root, px, py, pz, false);
-            kbPoint.builder().build_ret(d);
-
-            KernelJit jitPoint(opts);
-            kernel.pointKernel = jitPoint.compile(*fnPoint);
-            if (kernel.pointKernel.is_valid()) {
-                kernel.pointFn = kernel.pointKernel.as<SdfPointEvalFn>();
-            }
-
-            // 3. 1-Pass Symbolic Auto-Diff Gradient Function (#107)
-            Module modGrad("sdf_grad_" + std::to_string(hash));
-            Function* fnGrad = buildSdfGradFunction(modGrad, graph, root);
-            KernelJit jitGrad(opts);
-            kernel.gradKernel = jitGrad.compile(*fnGrad);
-            if (kernel.gradKernel.is_valid()) {
-                kernel.gradFn = kernel.gradKernel.as<SdfGradEvalFn>();
-            }
-
-            // 4. Interval / Lipschitz Macro-Block Bounds Function (#106)
-            Module modBounds("sdf_bounds_" + std::to_string(hash));
-            Function* fnBounds = buildSdfBlockBoundsFunction(modBounds, graph, root);
-            KernelJit jitBounds(opts);
-            kernel.blockBoundsKernel = jitBounds.compile(*fnBounds);
-            if (kernel.blockBoundsKernel.is_valid()) {
-                kernel.blockBoundsFn = kernel.blockBoundsKernel.as<SdfBlockBoundsFn>();
+                if (Function* fnGrid = mod.get_function("eval_grid")) {
+                    KernelJit jitGrid(opts);
+                    kernel.gridKernel = jitGrid.compile(*fnGrid);
+                    if (kernel.gridKernel.is_valid()) kernel.gridFn = kernel.gridKernel.as<SdfGridEvalFn>();
+                }
+                if (Function* fnSpan = mod.get_function("eval_span")) {
+                    KernelJit jitSpan(opts);
+                    kernel.spanKernel = jitSpan.compile(*fnSpan);
+                    if (kernel.spanKernel.is_valid()) kernel.spanFn = kernel.spanKernel.as<SdfSpanEvalFn>();
+                }
+                if (Function* fnPoint = mod.get_function("eval_point")) {
+                    KernelJit jitPoint(opts);
+                    kernel.pointKernel = jitPoint.compile(*fnPoint);
+                    if (kernel.pointKernel.is_valid()) kernel.pointFn = kernel.pointKernel.as<SdfPointEvalFn>();
+                }
+                if (Function* fnGrad = mod.get_function("eval_point_and_grad")) {
+                    KernelJit jitGrad(opts);
+                    kernel.gradKernel = jitGrad.compile(*fnGrad);
+                    if (kernel.gradKernel.is_valid()) kernel.gradFn = kernel.gradKernel.as<SdfGradEvalFn>();
+                }
+                if (Function* fnBounds = mod.get_function("eval_block_bounds")) {
+                    KernelJit jitBounds(opts);
+                    kernel.blockBoundsKernel = jitBounds.compile(*fnBounds);
+                    if (kernel.blockBoundsKernel.is_valid()) {
+                        kernel.blockBoundsFn = kernel.blockBoundsKernel.as<SdfBlockBoundsFn>();
+                    }
+                }
             }
 
             kernel.isJit = (kernel.gridFn != nullptr && kernel.pointFn != nullptr &&
