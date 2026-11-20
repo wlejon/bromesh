@@ -1,9 +1,7 @@
 #include "sdf_compiler_internal.h"
 
 #if BROMESH_HAS_BRASS_JIT
-#include <brass/mir/scalar_opt.hpp>
-#include <brass/mir/smt_guard_elim.hpp>
-#include <brass/mir/superopt.hpp>
+#include <brass/mir/gpu_opt.hpp>
 #endif
 
 #include <algorithm>
@@ -250,9 +248,8 @@ static Function* buildGpuSdfKernel(Module& mod, const SdfGraph& graph, int rootN
     });
     kb.builder().build_ret_void();
 
-    run_smt_guard_elimination(*fn, mod);
-    run_mir_superopt(*fn, mod);
-    eliminate_dead_code(*fn);
+    GpuOptOptions gpu_opts;
+    optimize_gpu_function(*fn, mod, gpu_opts);
 
     return fn;
 }

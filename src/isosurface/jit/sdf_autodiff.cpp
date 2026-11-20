@@ -1,10 +1,6 @@
 #include "sdf_compiler_internal.h"
 
 #if BROMESH_HAS_BRASS_JIT
-#include <brass/mir/gvn.hpp>
-#include <brass/mir/scalar_opt.hpp>
-#include <brass/mir/smt_guard_elim.hpp>
-#include <brass/mir/superopt.hpp>
 #endif
 
 #include <algorithm>
@@ -485,12 +481,6 @@ Function* buildSdfGradFunction(Module& mod, const SdfGraph& graph, int rootNode)
     kb.store_f32(outGy, res.dy, 0);
     kb.store_f32(outGz, res.dz, 0);
     kb.builder().build_ret(res.val);
-
-    dominator_cse(*fn);
-    gvn_function(*fn);
-    run_smt_guard_elimination(*fn, mod);
-    run_mir_superopt(*fn, mod);
-    eliminate_dead_code(*fn);
 
     return fn;
 }
