@@ -42,6 +42,19 @@ struct SparseBrick {
     std::array<AccumVoxel, 64> v{};
 };
 
+struct PackedBrick {
+    uint64_t key;
+    uint32_t solidLo, solidHi, carveLo, carveHi;
+    uint32_t attrFirst, attrCount;
+    int32_t same;    // an earlier brick it is identical to, or -1
+};
+
+struct PackedBricks {
+    int depth = 0;
+    std::vector<PackedBrick> bricks;
+    std::vector<DagVoxelAttr> attrs;
+};
+
 // The bricks a voxelization touches, found through a dense index over the
 // brick grid ((res / 4)^3 slots, at most 64^3), not a hash map: a mesh adds a
 // voxel several times over and each add is one array read.
@@ -151,20 +164,45 @@ public:
         }
     }
 
-    uint32_t commit(VoxelDagPool& pool) const {
-        if (bricks_.empty()) return kDagNullNode;
+    uint32_t commit(VoxelDagPool& pool) const { return commitPacked(pool, pack()); }
 
-        // Intern the 4^3 bricks (2^depth_ of them along each axis), then the
-        // nodes above them level by level.
-        std::unordered_map<uint64_t, uint32_t> curNodes;
-        curNodes.reserve(bricks_.size());
-
-        std::vector<DagVoxelAttr> solidAttrs;
+    // The bricks as the pool takes them: masks and packed attributes, no pool
+    // touched, so any thread. A brick whose 64 voxels are solid and alike (a
+    // filled inside) is packed once; the rest name it (`same`).
+    PackedBricks pack() const {
+        PackedBricks out;
+        out.depth = depth_;
+        out.bricks.reserve(bricks_.size());
+        std::unordered_map<uint64_t, int32_t> uniform;
         for (size_t i = 0; i < bricks_.size(); ++i) {
-            const uint64_t bkey = keys_[i];
             const SparseBrick& sb = bricks_[i];
+            const AccumVoxel& v0 = sb.v[0];
+            bool alike = v0.state == 1u;
+            for (int bit = 1; alike && bit < 64; ++bit) {
+                const AccumVoxel& av = sb.v[bit];
+                alike = av.state == v0.state && av.r == v0.r && av.g == v0.g && av.b == v0.b && av.a == v0.a &&
+                        av.nx == v0.nx && av.ny == v0.ny && av.nz == v0.nz && av.weight == v0.weight &&
+                        av.roughness == v0.roughness && av.emissive == v0.emissive;
+            }
+            PackedBrick pb{};
+            pb.key = keys_[i];
+            pb.same = -1;
+            uint64_t uniformKey = 0;
+            if (alike) {
+                const float w = std::max(v0.weight, 1.0f);
+                float nx = v0.nx, ny = v0.ny, nz = v0.nz;
+                if (nx * nx + ny * ny + nz * nz < 1e-6f) ny = 1.0f;
+                uniformKey = (static_cast<uint64_t>(dag_pack::packRgba8(v0.r / w, v0.g / w, v0.b / w, std::clamp(v0.a / w, 0.0f, 1.0f))) << 32u) |
+                             dag_pack::packNormalMat(nx, ny, nz, v0.roughness, v0.emissive);
+                if (const auto it = uniform.find(uniformKey); it != uniform.end()) {
+                    pb.same = it->second;
+                    out.bricks.push_back(pb);
+                    continue;
+                }
+                uniform.emplace(uniformKey, static_cast<int32_t>(out.bricks.size()));
+            }
             uint64_t solidBits = 0ull, carveBits = 0ull;
-            solidAttrs.clear();
+            pb.attrFirst = static_cast<uint32_t>(out.attrs.size());
             for (int bit = 0; bit < 64; ++bit) {
                 const AccumVoxel& av = sb.v[bit];
                 if (av.state & 2u) carveBits |= (1ull << bit);
@@ -179,28 +217,49 @@ public:
                     if (nx * nx + ny * ny + nz * nz < 1e-6f) {
                         ny = 1.0f;
                     }
-                    solidAttrs.push_back(DagVoxelAttr{
+                    out.attrs.push_back(DagVoxelAttr{
                         dag_pack::packRgba8(r, g, b, a),
                         dag_pack::packNormalMat(nx, ny, nz, av.roughness, av.emissive),
                     });
                 }
             }
-            const uint32_t brickIdx = pool.internBrick(
-                static_cast<uint32_t>(solidBits),
-                static_cast<uint32_t>(solidBits >> 32u),
-                static_cast<uint32_t>(carveBits),
-                static_cast<uint32_t>(carveBits >> 32u),
-                solidAttrs);
-            if (brickIdx != kDagNullNode) {
-                curNodes.emplace(bkey, brickIdx);
+            pb.solidLo = static_cast<uint32_t>(solidBits);
+            pb.solidHi = static_cast<uint32_t>(solidBits >> 32u);
+            pb.carveLo = static_cast<uint32_t>(carveBits);
+            pb.carveHi = static_cast<uint32_t>(carveBits >> 32u);
+            pb.attrCount = static_cast<uint32_t>(out.attrs.size()) - pb.attrFirst;
+            out.bricks.push_back(pb);
+        }
+        return out;
+    }
+
+    // Intern packed bricks (2^depth of them along each axis), then the nodes
+    // above them level by level; returns the root.
+    static uint32_t commitPacked(VoxelDagPool& pool, const PackedBricks& packed) {
+        if (packed.bricks.empty()) return kDagNullNode;
+        const int depth = packed.depth;
+        std::unordered_map<uint64_t, uint32_t> curNodes;
+        curNodes.reserve(packed.bricks.size());
+        std::vector<uint32_t> internedAt(packed.bricks.size(), kDagNullNode);
+        std::vector<DagVoxelAttr> solidAttrs;
+        for (size_t i = 0; i < packed.bricks.size(); ++i) {
+            const PackedBrick& pb = packed.bricks[i];
+            uint32_t brickIdx = kDagNullNode;
+            if (pb.same >= 0) {
+                brickIdx = internedAt[static_cast<size_t>(pb.same)];
+            } else {
+                solidAttrs.assign(packed.attrs.begin() + pb.attrFirst, packed.attrs.begin() + pb.attrFirst + pb.attrCount);
+                brickIdx = pool.internBrick(pb.solidLo, pb.solidHi, pb.carveLo, pb.carveHi, solidAttrs);
             }
+            internedAt[i] = brickIdx;
+            if (brickIdx != kDagNullNode) curNodes.emplace(pb.key, brickIdx);
         }
 
         if (curNodes.empty()) return kDagNullNode;
 
-        // Bubble up bottom-up through `depth_` internal levels (bricks are leaves at level == depth_).
-        for (int level = depth_ - 1; level >= 0; --level) {
-            const bool childrenAreLeaves = (level == depth_ - 1);
+        // Bubble up bottom-up through `depth` internal levels (bricks are leaves at level == depth).
+        for (int level = depth - 1; level >= 0; --level) {
+            const bool childrenAreLeaves = (level == depth - 1);
             struct ParentBucket {
                 uint32_t refs[8];
                 ParentBucket() {
@@ -429,8 +488,7 @@ uint32_t buildDagFromChunk(
 }
 
 struct DagBrickSet::Impl {
-    explicit Impl(int depth) : builder(depth) {}
-    SparseBrickBuilder builder;
+    PackedBricks packed;
 };
 
 DagBrickSet::DagBrickSet() = default;
@@ -439,11 +497,11 @@ DagBrickSet::~DagBrickSet() = default;
 DagBrickSet::DagBrickSet(DagBrickSet&&) noexcept = default;
 DagBrickSet& DagBrickSet::operator=(DagBrickSet&&) noexcept = default;
 
-int DagBrickSet::depth() const noexcept { return impl_ ? impl_->builder.depth() : 0; }
-bool DagBrickSet::empty() const noexcept { return !impl_ || impl_->builder.empty(); }
+int DagBrickSet::depth() const noexcept { return impl_ ? impl_->packed.depth : 0; }
+bool DagBrickSet::empty() const noexcept { return !impl_ || impl_->packed.bricks.empty(); }
 
 uint32_t commitVoxelBricks(VoxelDagPool& pool, const DagBrickSet& set) {
-    return set.impl() ? set.impl()->builder.commit(pool) : kDagNullNode;
+    return set.impl() ? SparseBrickBuilder::commitPacked(pool, set.impl()->packed) : kDagNullNode;
 }
 
 uint32_t voxelizeMeshToDag(
@@ -459,8 +517,7 @@ uint32_t voxelizeMeshToDag(
 DagBrickSet voxelizeMeshToBricks(const MeshData& mesh, const DagVoxelizeOptions& opts) {
     const int depth = roundDepthForResolution(opts.resolution);
     if (mesh.empty() || mesh.triangleCount() == 0) return DagBrickSet{};
-    DagBrickSet set(std::make_unique<DagBrickSet::Impl>(depth));
-    SparseBrickBuilder& builder = set.impl()->builder;
+    SparseBrickBuilder builder(depth);
     const int res = 4 << depth;
     float invRes = 1.0f, ox = 0.0f, oy = 0.0f, oz = 0.0f;
     if (opts.unitBounds) {
@@ -569,7 +626,9 @@ DagBrickSet voxelizeMeshToBricks(const MeshData& mesh, const DagVoxelizeOptions&
     }
 
     if (opts.fillInterior && opts.state == VoxelState::Solid) builder.fillInside(opts.roughness, opts.emissive);
-    return set;
+    auto impl = std::make_unique<DagBrickSet::Impl>();
+    impl->packed = builder.pack();
+    return DagBrickSet(std::move(impl));
 }
 
 uint32_t voxelizeSdfToDag(
