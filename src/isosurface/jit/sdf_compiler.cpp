@@ -235,7 +235,9 @@ static Function* buildGpuSdfKernel(Module& mod, const SdfGraph& graph, int rootN
     Value* idx = kb.global_tid_x();
     Value* stride_z = kb.mul(dimX, dimY);
     Value* total = kb.mul(stride_z, dimZ);
-    Value* in_bounds = kb.builder().build_slt(idx, total);
+    // Unsigned: a thread id is never negative, and `idx <u total` is what
+    // makes total, and so every factor the index is divided by below, non-zero.
+    Value* in_bounds = kb.builder().build_ult(idx, total);
 
     kb.if_then(in_bounds, [&]() {
         Value* iz = kb.div(idx, stride_z);
