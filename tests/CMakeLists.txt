@@ -26,6 +26,7 @@ add_executable(bromesh_test
     test_splat.cpp
     test_sdf.cpp
     test_sdf_jit.cpp
+    test_voxel_dag.cpp
 )
 target_link_libraries(bromesh_test PRIVATE bromesh)
 # Tests poke at edge cases by hand-crafting glTF models via tinygltf directly.
