@@ -228,15 +228,38 @@ public:
 
     uint32_t resolveChildRef(uint32_t rawRef, uint32_t animTick) const noexcept;
 
-    /// Keep `ref` (a node, or a brick when `isLeaf`) and all it reaches through
-    /// every `collect`: what a caller holds and places again (an archetype).
-    void pin(uint32_t ref, bool isLeaf);
+    /// Hold `ref` (a node, or a brick when `isLeaf`): it and all it reaches
+    /// stay until it is released as many times (a region's root, an archetype).
+    void retain(uint32_t ref, bool isLeaf);
 
-    /// Free what is reachable from none of `rootNodes`, the pinned refs, the
-    /// animation clips' frames: its slots in the arrays are reused by later
-    /// interning, so every index still reached stays valid (nothing moves).
-    /// Returns the nodes and bricks freed.
+    /// Drop a hold. What then nothing holds and no node reaches is freed at
+    /// once, so replacing a root costs what it alone reached.
+    void release(uint32_t ref, bool isLeaf);
+
+    /// Keep `ref` for good: `retain` never released.
+    void pin(uint32_t ref, bool isLeaf) { retain(ref, isLeaf); }
+
+    /// Free what interning made since the last sweep that nothing holds and
+    /// no node reaches (the spines an edit replaced, a result never kept).
+    /// Call after an edit has its result held. Returns nodes and bricks freed.
+    size_t sweep();
+
+    /// Free what is reachable from none of `rootNodes`, the held refs, the
+    /// animation clips' frames, whatever the holds say (a full mark and
+    /// sweep; `release` and `sweep` already free as they go). Slots are
+    /// reused by later interning, so every index still reached stays valid
+    /// (nothing moves). Returns the nodes and bricks freed.
     size_t collect(const std::vector<uint32_t>& rootNodes);
+
+    /// The arrays a copy of the pool (a GPU buffer) mirrors, by page.
+    enum class Array : uint32_t { Nodes, Children, Bricks, Attrs };
+    static constexpr uint32_t kPageElems = 4096;
+    /// The generation each page (`kPageElems` elements) of an array was last
+    /// written at: a copy made at generation g needs only the pages newer
+    /// than g (and the array's growth).
+    const std::vector<uint64_t>& pageGenerations(Array a) const noexcept {
+        return pageGen_[static_cast<uint32_t>(a)];
+    }
 
     /// Nodes and bricks in use (the arrays' sizes less their free slots).
     size_t liveNodes() const noexcept { return nodes_.size() - freeNodes_.size(); }
@@ -296,11 +319,14 @@ private:
         int iz,
         uint32_t childRef,
         bool childIsLeaf);
+    // `items` sorted by `keys`, the cell's octants from the root down (3 bits
+    // a level), so each octant's placements are one run at every level.
     uint32_t batchSetRecursive(
         uint32_t curNode,
         int curDepth,
         int targetDepth,
         const DagPlacement* items,
+        const uint64_t* keys,
         size_t count);
 
     std::vector<DagNode> nodes_;
@@ -315,8 +341,8 @@ private:
     std::unordered_map<uint64_t, uint32_t> uniformCarveNodes_;
     uint64_t generation_ = 1;
 
-    // What `collect` freed, reused by interning: node and brick slots, and
-    // runs of `children_` (by length 1..8) and `attrs_` (by length 1..64).
+    // What was freed, reused by interning: node and brick slots, and runs of
+    // `children_` (by length 1..8) and `attrs_` (by length 1..64).
     uint32_t allocNode();
     uint32_t allocBrick();
     uint32_t allocChildren(uint32_t count);
@@ -325,7 +351,25 @@ private:
     std::vector<uint32_t> freeBricks_;
     std::vector<std::vector<uint32_t>> freeChildren_;
     std::vector<std::vector<uint32_t>> freeAttrs_;
-    std::vector<std::pair<uint32_t, bool>> pinned_;
+
+    // References to each node and brick: from the nodes that hold it, and
+    // the outside holds (`retain`), which are also kept by ref in
+    // `heldNodes_` / `heldBricks_` for `collect`. A slot is free when its
+    // node has no children (its brick no bits).
+    std::vector<uint32_t> nodeRefs_;
+    std::vector<uint32_t> brickRefs_;
+    std::unordered_map<uint32_t, uint32_t> heldNodes_;
+    std::unordered_map<uint32_t, uint32_t> heldBricks_;
+    // Made since the last sweep.
+    std::vector<uint32_t> freshNodes_;
+    std::vector<uint32_t> freshBricks_;
+    size_t freeUnreferenced(uint32_t ref, bool isLeaf);
+    void freeNodeSlot(uint32_t i);
+    void freeBrickSlot(uint32_t i);
+    void recountRefs();
+
+    std::vector<uint64_t> pageGen_[4];
+    void touch(Array a, uint32_t first, uint32_t count);
 };
 
 /// Build a `VoxelDagPool` subtree from a dense `VoxelChunk`.

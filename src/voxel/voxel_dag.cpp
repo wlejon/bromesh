@@ -166,17 +166,34 @@ void VoxelDagPool::clear() {
     freeBricks_.clear();
     freeChildren_.clear();
     freeAttrs_.clear();
-    pinned_.clear();
+    nodeRefs_.clear();
+    brickRefs_.clear();
+    heldNodes_.clear();
+    heldBricks_.clear();
+    freshNodes_.clear();
+    freshBricks_.clear();
+    for (auto& p : pageGen_) p.clear();
     ++generation_;
+}
+
+void VoxelDagPool::touch(Array a, uint32_t first, uint32_t count) {
+    if (count == 0u) return;
+    auto& gens = pageGen_[static_cast<uint32_t>(a)];
+    const uint32_t p0 = first / kPageElems;
+    const uint32_t p1 = (first + count - 1u) / kPageElems;
+    if (gens.size() <= p1) gens.resize(p1 + 1u, 0u);
+    for (uint32_t p = p0; p <= p1; ++p) gens[p] = generation_;
 }
 
 uint32_t VoxelDagPool::allocNode() {
     if (!freeNodes_.empty()) {
         const uint32_t i = freeNodes_.back();
         freeNodes_.pop_back();
+        nodeRefs_[i] = 0u;
         return i;
     }
     nodes_.emplace_back();
+    nodeRefs_.push_back(0u);
     return static_cast<uint32_t>(nodes_.size() - 1);
 }
 
@@ -184,9 +201,11 @@ uint32_t VoxelDagPool::allocBrick() {
     if (!freeBricks_.empty()) {
         const uint32_t i = freeBricks_.back();
         freeBricks_.pop_back();
+        brickRefs_[i] = 0u;
         return i;
     }
     bricks_.emplace_back();
+    brickRefs_.push_back(0u);
     return static_cast<uint32_t>(bricks_.size() - 1);
 }
 
@@ -212,9 +231,139 @@ uint32_t VoxelDagPool::allocAttrs(uint32_t count) {
     return base;
 }
 
-void VoxelDagPool::pin(uint32_t ref, bool isLeaf) {
+void VoxelDagPool::retain(uint32_t ref, bool isLeaf) {
     if (ref == kDagNullNode || (!isLeaf && (ref & kDagAnimBit) != 0u)) return;
-    pinned_.emplace_back(ref, isLeaf);
+    if (isLeaf) {
+        if (ref >= bricks_.size()) return;
+        ++brickRefs_[ref];
+        ++heldBricks_[ref];
+    } else {
+        if (ref >= nodes_.size()) return;
+        ++nodeRefs_[ref];
+        ++heldNodes_[ref];
+    }
+}
+
+void VoxelDagPool::release(uint32_t ref, bool isLeaf) {
+    if (ref == kDagNullNode || (!isLeaf && (ref & kDagAnimBit) != 0u)) return;
+    auto& held = isLeaf ? heldBricks_ : heldNodes_;
+    auto it = held.find(ref);
+    if (it == held.end()) return;    // never held: not ours to drop
+    if (--it->second == 0u) held.erase(it);
+    uint32_t& refs = isLeaf ? brickRefs_[ref] : nodeRefs_[ref];
+    if (refs > 0u && --refs == 0u) freeUnreferenced(ref, isLeaf);
+}
+
+size_t VoxelDagPool::sweep() {
+    size_t freed = 0;
+    // A fresh slot may have been freed (and even reused) since it was made:
+    // whatever is in it now, it is garbage if it is live and unreferenced.
+    for (uint32_t b : freshBricks_) {
+        if (b < bricks_.size() && brickRefs_[b] == 0u) {
+            const DagBrick& br = bricks_[b];
+            if ((br.solidLo | br.solidHi | br.carveLo | br.carveHi) != 0u) freed += freeUnreferenced(b, true);
+        }
+    }
+    for (uint32_t n : freshNodes_) {
+        if (n < nodes_.size() && nodeRefs_[n] == 0u && dag_pack::validMaskOf(nodes_[n]) != 0u) {
+            freed += freeUnreferenced(n, false);
+        }
+    }
+    freshBricks_.clear();
+    freshNodes_.clear();
+    return freed;
+}
+
+// `ref` has no references left: free it, and what that leaves unreferenced.
+size_t VoxelDagPool::freeUnreferenced(uint32_t ref, bool isLeaf) {
+    size_t freed = 0;
+    std::vector<std::pair<uint32_t, bool>> stack{{ref, isLeaf}};
+    while (!stack.empty()) {
+        const auto [r, leaf] = stack.back();
+        stack.pop_back();
+        if (leaf) {
+            freeBrickSlot(r);
+            ++freed;
+            continue;
+        }
+        const DagNode node = nodes_[r];
+        const uint32_t vm = dag_pack::validMaskOf(node);
+        const uint32_t lm = dag_pack::leafMaskOf(node);
+        uint32_t slot = 0u;
+        for (uint32_t o = 0u; o < 8u; ++o) {
+            if ((vm & (1u << o)) == 0u) continue;
+            const uint32_t c = children_[node.childBase + slot++];
+            if (c == kDagNullNode || (c & kDagAnimBit) != 0u) continue;
+            const bool cl = (lm & (1u << o)) != 0u;
+            uint32_t& refs = cl ? brickRefs_[c] : nodeRefs_[c];
+            if (refs > 0u && --refs == 0u) stack.emplace_back(c, cl);
+        }
+        freeNodeSlot(r);
+        ++freed;
+    }
+    return freed;
+}
+
+void VoxelDagPool::freeNodeSlot(uint32_t i) {
+    DagNode& node = nodes_[i];
+    const uint32_t count = dag_pack::popcount8(dag_pack::validMaskOf(node));
+    if (count == 0u) return;    // already free
+    NodeKey key;
+    key.masks = node.masks;
+    key.count = count;
+    for (uint32_t k = 0; k < count; ++k) key.childRefs[k] = children_[node.childBase + k];
+    if (auto it = nodeMap_.find(key); it != nodeMap_.end() && it->second == i) nodeMap_.erase(it);
+    if (freeChildren_.size() < 9) freeChildren_.resize(9);
+    freeChildren_[count].push_back(node.childBase);
+    node = DagNode{};
+    freeNodes_.push_back(i);
+}
+
+void VoxelDagPool::freeBrickSlot(uint32_t i) {
+    DagBrick& b = bricks_[i];
+    if ((b.solidLo | b.solidHi | b.carveLo | b.carveHi) == 0u) return;    // already free
+    const uint32_t solid = dag_pack::popcount32(b.solidLo) + dag_pack::popcount32(b.solidHi);
+    const uint32_t attrCount = solid == 0u ? 0u : ((b.flags & kBrickFlagUniformAttr) ? 1u : solid);
+    BrickKey key;
+    key.solidLo = b.solidLo;
+    key.solidHi = b.solidHi;
+    key.carveLo = b.carveLo;
+    key.carveHi = b.carveHi;
+    key.packedColorOpacity = b.packedColorOpacity;
+    key.packedNormalMat = b.packedNormalMat;
+    key.flags = b.flags;
+    key.inlineAttrs.assign(attrs_.begin() + b.attrOffset, attrs_.begin() + b.attrOffset + attrCount);
+    uint32_t attrH = 0u;
+    for (const DagVoxelAttr& a : key.inlineAttrs) {
+        attrH = fnvMix(attrH, a.colorOpacity);
+        attrH = fnvMix(attrH, a.normalMat);
+    }
+    key.attrHash = attrH;
+    if (auto it = brickMap_.find(key); it != brickMap_.end() && it->second == i) brickMap_.erase(it);
+    if (freeAttrs_.size() < 65) freeAttrs_.resize(65);
+    if (attrCount > 0u) freeAttrs_[attrCount].push_back(b.attrOffset);
+    b = DagBrick{};
+    freeBricks_.push_back(i);
+}
+
+// Every live node's and brick's references, from the live nodes and the holds.
+void VoxelDagPool::recountRefs() {
+    std::fill(nodeRefs_.begin(), nodeRefs_.end(), 0u);
+    std::fill(brickRefs_.begin(), brickRefs_.end(), 0u);
+    for (const DagNode& node : nodes_) {
+        const uint32_t vm = dag_pack::validMaskOf(node);
+        if (vm == 0u) continue;
+        const uint32_t lm = dag_pack::leafMaskOf(node);
+        uint32_t slot = 0u;
+        for (uint32_t o = 0u; o < 8u; ++o) {
+            if ((vm & (1u << o)) == 0u) continue;
+            const uint32_t c = children_[node.childBase + slot++];
+            if (c == kDagNullNode || (c & kDagAnimBit) != 0u) continue;
+            if (lm & (1u << o)) ++brickRefs_[c]; else ++nodeRefs_[c];
+        }
+    }
+    for (const auto& [r, n] : heldNodes_) nodeRefs_[r] += n;
+    for (const auto& [r, n] : heldBricks_) brickRefs_[r] += n;
 }
 
 size_t VoxelDagPool::collect(const std::vector<uint32_t>& rootNodes) {
@@ -231,9 +380,8 @@ size_t VoxelDagPool::collect(const std::vector<uint32_t>& rootNodes) {
         }
     };
     for (uint32_t r : rootNodes) markNode(r);
-    for (const auto& [ref, isLeaf] : pinned_) {
-        if (isLeaf) markBrick(ref); else markNode(ref);
-    }
+    for (const auto& [r, _] : heldNodes_) markNode(r);
+    for (const auto& [r, _] : heldBricks_) markBrick(r);
     for (const auto& [_, n] : uniformCarveNodes_) markNode(n);
     // A clip's frames are kept whole, read either way (a frame of leaf
     // bricks or of nodes): keeping too much is safe, freeing a frame is not.
@@ -286,6 +434,9 @@ size_t VoxelDagPool::collect(const std::vector<uint32_t>& rootNodes) {
         freeBricks_.push_back(i);
         ++freed;
     }
+    freshNodes_.clear();
+    freshBricks_.clear();
+    recountRefs();
     if (freed > 0) ++generation_;
     return freed;
 }
@@ -435,6 +586,9 @@ uint32_t VoxelDagPool::internBrick(
     bricks_[idx] = brick;
     brickMap_.emplace(std::move(key), idx);
     ++generation_;
+    touch(Array::Bricks, idx, 1u);
+    touch(Array::Attrs, brick.attrOffset, static_cast<uint32_t>(storeAttrs.size()));
+    freshBricks_.push_back(idx);
     return idx;
 }
 
@@ -579,7 +733,18 @@ uint32_t VoxelDagPool::internNode(
     const uint32_t idx = allocNode();
     nodes_[idx] = node;
     nodeMap_.emplace(key, idx);
+    // The node holds each child (an animated child's frames are held by its clip).
+    uint32_t slot = 0u;
+    for (uint32_t o = 0u; o < 8u; ++o) {
+        if ((dag_pack::validMaskOf(node) & (1u << o)) == 0u) continue;
+        const uint32_t c = packedChildren[slot++];
+        if (c == kDagNullNode || (c & kDagAnimBit) != 0u) continue;
+        if (leafMask & (1u << o)) ++brickRefs_[c]; else ++nodeRefs_[c];
+    }
     ++generation_;
+    touch(Array::Nodes, idx, 1u);
+    touch(Array::Children, node.childBase, count);
+    freshNodes_.push_back(idx);
     return idx;
 }
 
@@ -610,6 +775,7 @@ uint32_t VoxelDagPool::internUniformCarveNode(int depthRemaining) {
     }
     const uint32_t nodeIdx = internNode(refs, leaves, solids, carves, uniCarve);
     uniformCarveNodes_.emplace(key, nodeIdx);
+    retain(nodeIdx, false);    // kept for good, as the map is
     return nodeIdx;
 }
 
@@ -639,6 +805,15 @@ uint32_t VoxelDagPool::registerAnimClip(const std::vector<uint32_t>& frameRoots)
     clip.frameOffset = static_cast<uint32_t>(animFrames_.size());
     clip.frameCount = static_cast<uint32_t>(frameRoots.size());
     animFrames_.insert(animFrames_.end(), frameRoots.begin(), frameRoots.end());
+    // A frame is read as a node or a brick, as it is placed: hold it as both
+    // that exists (keeping too much is safe, freeing a frame is not).
+    for (uint32_t f : frameRoots) {
+        if (f < nodes_.size() && dag_pack::validMaskOf(nodes_[f]) != 0u) retain(f, false);
+        if (f < bricks_.size()) {
+            const DagBrick& b = bricks_[f];
+            if ((b.solidLo | b.solidHi | b.carveLo | b.carveHi) != 0u) retain(f, true);
+        }
+    }
     const uint32_t idx = static_cast<uint32_t>(animClips_.size());
     animClips_.push_back(clip);
     ++generation_;
@@ -740,6 +915,7 @@ uint32_t VoxelDagPool::batchSetRecursive(
     int curDepth,
     int targetDepth,
     const DagPlacement* items,
+    const uint64_t* keys,
     size_t count) {
     if (count == 0u) return curNode;
 
@@ -783,19 +959,17 @@ uint32_t VoxelDagPool::batchSetRecursive(
             uni[oct] = u;
         }
     } else {
-        std::vector<DagPlacement> buckets[8];
-        for (size_t i = 0; i < count; ++i) {
-            const DagPlacement& p = items[i];
-            const uint32_t oct = static_cast<uint32_t>(
-                ((p.ix >> sh) & 1) | (((p.iy >> sh) & 1) << 1) | (((p.iz >> sh) & 1) << 2));
-            buckets[oct].push_back(p);
-        }
-        for (uint32_t oct = 0u; oct < 8u; ++oct) {
-            if (buckets[oct].empty()) continue;
+        // Sorted by key, so an octant's placements are one run.
+        const uint32_t keyShift = static_cast<uint32_t>(3 * sh);
+        for (size_t b = 0; b < count;) {
+            const uint32_t oct = static_cast<uint32_t>((keys[b] >> keyShift) & 7u);
+            size_t e = b + 1;
+            while (e < count && static_cast<uint32_t>((keys[e] >> keyShift) & 7u) == oct) ++e;
             uint32_t existing = refs[oct];
             if (leaves[oct] != 0) existing = promoteBrickToNode(existing);
             const uint32_t updated = batchSetRecursive(
-                existing, curDepth + 1, targetDepth, buckets[oct].data(), buckets[oct].size());
+                existing, curDepth + 1, targetDepth, items + b, keys + b, e - b);
+            b = e;
             refs[oct] = updated;
             leaves[oct] = 0u;
             uint8_t s, c, u;
@@ -815,7 +989,32 @@ uint32_t VoxelDagPool::setSubtreesBatch(
     int targetDepth,
     const std::vector<DagPlacement>& placements) {
     if (placements.empty() || targetDepth <= 0) return rootNode;
-    return batchSetRecursive(rootNode, 0, targetDepth, placements.data(), placements.size());
+    // Each cell's octants from the root down, 3 bits a level: sorted, a
+    // subtree's placements are one run at every level. Stable, so a cell
+    // placed twice keeps the later placement.
+    const size_t n = placements.size();
+    std::vector<uint64_t> cellKeys(n);
+    for (size_t i = 0; i < n; ++i) {
+        const DagPlacement& p = placements[i];
+        uint64_t k = 0u;
+        for (int s = targetDepth - 1; s >= 0; --s) {
+            const uint64_t oct = static_cast<uint64_t>(
+                ((p.ix >> s) & 1) | (((p.iy >> s) & 1) << 1) | (((p.iz >> s) & 1) << 2));
+            k = (k << 3u) | oct;
+        }
+        cellKeys[i] = k;
+    }
+    std::vector<uint32_t> order(n);
+    for (size_t i = 0; i < n; ++i) order[i] = static_cast<uint32_t>(i);
+    std::stable_sort(order.begin(), order.end(),
+                     [&](uint32_t a, uint32_t b) { return cellKeys[a] < cellKeys[b]; });
+    std::vector<DagPlacement> items(n);
+    std::vector<uint64_t> keys(n);
+    for (size_t i = 0; i < n; ++i) {
+        items[i] = placements[order[i]];
+        keys[i] = cellKeys[order[i]];
+    }
+    return batchSetRecursive(rootNode, 0, targetDepth, items.data(), keys.data(), n);
 }
 
 uint32_t VoxelDagPool::promoteBrickToNode(uint32_t brickIdx) {

@@ -181,6 +181,101 @@ TEST(voxel_dag_collect_reuses_unreached_slots) {
            "the pinned archetype still places after collects");
 }
 
+TEST(voxel_dag_release_and_sweep_free_as_they_go) {
+    bromesh::VoxelDagPool pool;
+    bromesh::DagVoxelizeOptions opts;
+    opts.resolution = 16;
+    const uint32_t arch = bromesh::voxelizeSdfToDag(
+        pool,
+        [](float x, float y, float z) { return std::sqrt(x * x + y * y + z * z) - 0.85f; },
+        bromath::AABB3{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}},
+        opts);
+    pool.pin(arch, false);
+    pool.sweep();
+    const size_t archLive = pool.liveNodes();
+
+    // Three regions rebuilt in turn, each root held, its old root released:
+    // no collect, yet the pool keeps to its working size.
+    uint32_t roots[3] = {bromesh::kDagNullNode, bromesh::kDagNullNode, bromesh::kDagNullNode};
+    size_t sizeAt12 = 0;
+    for (int build = 0; build < 24; ++build) {
+        std::vector<bromesh::DagPlacement> batch;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                if (((x * 7 + z * 3 + build) % 5) == 0) continue;
+                batch.push_back({x + build % 7, (x + z + build) & 3, z, arch, false});
+            }
+        }
+        // Built in two batches over the old root, as an incremental edit is.
+        const int r = build % 3;
+        const size_t half = batch.size() / 2;
+        uint32_t root = pool.setSubtreesBatch(bromesh::kDagNullNode, 6,
+            std::vector<bromesh::DagPlacement>(batch.begin(), batch.begin() + half));
+        root = pool.setSubtreesBatch(root, 6, std::vector<bromesh::DagPlacement>(batch.begin() + half, batch.end()));
+        pool.retain(root, false);
+        pool.release(roots[r], false);
+        roots[r] = root;
+        pool.sweep();
+        // Children runs are reused by length, so they settle a little later.
+        if (build == 12) sizeAt12 = pool.nodes().size() + pool.children().size();
+    }
+    ASSERT(pool.nodes().size() + pool.children().size() <= sizeAt12 + sizeAt12 / 10,
+           "released roots and swept spines are reused: the pool plateaus without collect");
+
+    // The counts agree with a full mark: collect finds nothing more to free,
+    // and every region still reads back.
+    std::vector<float> before;
+    const float cell = 1.0f / 64.0f;
+    for (uint32_t root : roots)
+        for (int z = 0; z < 16; ++z)
+            for (int x = 0; x < 24; ++x)
+                for (int y = 0; y < 4; ++y)
+                    before.push_back(static_cast<float>(pool.queryPoint(
+                        root, (x + 0.5f) * cell, (y + 0.5f) * cell, (z + 0.5f) * cell)));
+    ASSERT(pool.collect({}) == 0u, "collect frees nothing release and sweep left behind");
+    size_t k = 0;
+    bool same = true;
+    for (uint32_t root : roots)
+        for (int z = 0; z < 16; ++z)
+            for (int x = 0; x < 24; ++x)
+                for (int y = 0; y < 4; ++y)
+                    same &= before[k++] == static_cast<float>(pool.queryPoint(
+                        root, (x + 0.5f) * cell, (y + 0.5f) * cell, (z + 0.5f) * cell));
+    ASSERT(same, "held regions read back the same after a full collect");
+
+    // Releasing every region leaves the archetype alone.
+    for (uint32_t& root : roots) {
+        pool.release(root, false);
+        root = bromesh::kDagNullNode;
+    }
+    ASSERT(pool.liveNodes() == archLive, "released regions free all they alone reached");
+}
+
+TEST(voxel_dag_batch_places_as_single_sets_do) {
+    bromesh::VoxelDagPool pool;
+    const bromesh::DagVoxelAttr red{bromesh::dag_pack::packRgba8(1.0f, 0.1f, 0.1f, 1.0f),
+                                    bromesh::dag_pack::packNormalMat(0.0f, 1.0f, 0.0f, 0.8f)};
+    const bromesh::DagVoxelAttr blue{bromesh::dag_pack::packRgba8(0.1f, 0.1f, 1.0f, 1.0f),
+                                     bromesh::dag_pack::packNormalMat(0.0f, 1.0f, 0.0f, 0.8f)};
+    const uint32_t a = pool.internBrick(0xFFFFFFFFu, 0xFFFFFFFFu, 0u, 0u, {}, &red);
+    const uint32_t b = pool.internBrick(0x0000FFFFu, 0u, 0u, 0u, {}, &blue);
+    std::vector<bromesh::DagPlacement> batch;
+    uint32_t single = bromesh::kDagNullNode;
+    for (int i = 0; i < 400; ++i) {
+        const int x = (i * 37) % 32, y = (i * 11) % 32, z = (i * 23) % 32;
+        const bool useA = (i % 3) != 0;
+        batch.push_back({x, y, z, useA ? a : b, true});
+        single = pool.setSubtreeAt(single, 5, 5, x, y, z, useA ? a : b, true);
+    }
+    // A cell placed twice keeps its later placement, in either.
+    batch.push_back({1, 2, 3, b, true});
+    single = pool.setSubtreeAt(single, 5, 5, 1, 2, 3, b, true);
+    batch.push_back({1, 2, 3, a, true});
+    single = pool.setSubtreeAt(single, 5, 5, 1, 2, 3, a, true);
+    const uint32_t batched = pool.setSubtreesBatch(bromesh::kDagNullNode, 5, batch);
+    ASSERT(batched == single, "a sorted batch interns the very tree single sets make");
+}
+
 TEST(voxel_dag_stacked_carve_and_solid_overhang) {
     bromesh::VoxelDagPool pool;
 
