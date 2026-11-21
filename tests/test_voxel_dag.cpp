@@ -135,6 +135,52 @@ TEST(voxel_dag_dedup_and_pointer_instancing) {
     ASSERT(g > r && g > b && a > 0.9f, "unpacked green color matches archetype");
 }
 
+TEST(voxel_dag_collect_reuses_unreached_slots) {
+    bromesh::VoxelDagPool pool;
+    bromesh::DagVoxelizeOptions opts;
+    opts.resolution = 16;
+    int archDepth = 0;
+    const uint32_t arch = bromesh::voxelizeSdfToDag(
+        pool,
+        [](float x, float y, float z) { return std::sqrt(x * x + y * y + z * z) - 0.85f; },
+        bromath::AABB3{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}},
+        opts,
+        &archDepth);
+    pool.pin(arch, false);
+
+    // A world rebuilt again and again at shifting placements, as a ring
+    // recentring on a moving camera is: the pool must stop growing.
+    uint32_t root = bromesh::kDagNullNode;
+    size_t sizeAfterFirst = 0;
+    for (int build = 0; build < 12; ++build) {
+        std::vector<bromesh::DagPlacement> batch;
+        for (int z = 0; z < 12; ++z) {
+            for (int x = 0; x < 12; ++x) {
+                if (((x * 7 + z * 3 + build) % 5) == 0) continue;
+                batch.push_back({x + build, (x + z + build) & 3, z, arch, false});
+            }
+        }
+        root = pool.setSubtreesBatch(bromesh::kDagNullNode, 5, batch);
+        pool.collect({root});
+        if (build == 5) sizeAfterFirst = pool.nodes().size() + pool.children().size();
+    }
+    ASSERT(pool.nodes().size() + pool.children().size() <= sizeAfterFirst + sizeAfterFirst / 10,
+           "rebuilt worlds reuse collected slots: the pool plateaus instead of growing");
+    ASSERT(pool.liveNodes() < pool.nodes().size(), "the last collect left free node slots");
+
+    // What is placed now still reads back, and the pinned archetype survived.
+    const float cell = 1.0f / 32.0f;
+    const int lastBuild = 11;
+    const float cx = (static_cast<float>(1 + lastBuild) + 0.5f) * cell;
+    const float cy = (static_cast<float>((1 + 0 + lastBuild) & 3) + 0.5f) * cell;
+    const float cz = 0.5f * cell;
+    ASSERT(pool.queryPoint(root, cx, cy, cz) == bromesh::VoxelState::Solid,
+           "a placement of the last build queries Solid after collects");
+    const uint32_t again = pool.setSubtreesBatch(bromesh::kDagNullNode, 5, {{0, 0, 0, arch, false}});
+    ASSERT(pool.queryPoint(again, 0.5f * cell, 0.5f * cell, 0.5f * cell) == bromesh::VoxelState::Solid,
+           "the pinned archetype still places after collects");
+}
+
 TEST(voxel_dag_stacked_carve_and_solid_overhang) {
     bromesh::VoxelDagPool pool;
 

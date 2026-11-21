@@ -162,7 +162,132 @@ void VoxelDagPool::clear() {
     brickMap_.clear();
     nodeMap_.clear();
     uniformCarveNodes_.clear();
+    freeNodes_.clear();
+    freeBricks_.clear();
+    freeChildren_.clear();
+    freeAttrs_.clear();
+    pinned_.clear();
     ++generation_;
+}
+
+uint32_t VoxelDagPool::allocNode() {
+    if (!freeNodes_.empty()) {
+        const uint32_t i = freeNodes_.back();
+        freeNodes_.pop_back();
+        return i;
+    }
+    nodes_.emplace_back();
+    return static_cast<uint32_t>(nodes_.size() - 1);
+}
+
+uint32_t VoxelDagPool::allocBrick() {
+    if (!freeBricks_.empty()) {
+        const uint32_t i = freeBricks_.back();
+        freeBricks_.pop_back();
+        return i;
+    }
+    bricks_.emplace_back();
+    return static_cast<uint32_t>(bricks_.size() - 1);
+}
+
+uint32_t VoxelDagPool::allocChildren(uint32_t count) {
+    if (count < freeChildren_.size() && !freeChildren_[count].empty()) {
+        const uint32_t base = freeChildren_[count].back();
+        freeChildren_[count].pop_back();
+        return base;
+    }
+    const uint32_t base = static_cast<uint32_t>(children_.size());
+    children_.resize(children_.size() + count, kDagNullNode);
+    return base;
+}
+
+uint32_t VoxelDagPool::allocAttrs(uint32_t count) {
+    if (count < freeAttrs_.size() && !freeAttrs_[count].empty()) {
+        const uint32_t base = freeAttrs_[count].back();
+        freeAttrs_[count].pop_back();
+        return base;
+    }
+    const uint32_t base = static_cast<uint32_t>(attrs_.size());
+    attrs_.resize(attrs_.size() + count);
+    return base;
+}
+
+void VoxelDagPool::pin(uint32_t ref, bool isLeaf) {
+    if (ref == kDagNullNode || (!isLeaf && (ref & kDagAnimBit) != 0u)) return;
+    pinned_.emplace_back(ref, isLeaf);
+}
+
+size_t VoxelDagPool::collect(const std::vector<uint32_t>& rootNodes) {
+    std::vector<uint8_t> liveNode(nodes_.size(), 0u);
+    std::vector<uint8_t> liveBrick(bricks_.size(), 0u);
+    std::vector<uint32_t> stack;
+    const auto markBrick = [&](uint32_t b) {
+        if (b < liveBrick.size()) liveBrick[b] = 1u;
+    };
+    const auto markNode = [&](uint32_t n) {
+        if (n < liveNode.size() && !liveNode[n]) {
+            liveNode[n] = 1u;
+            stack.push_back(n);
+        }
+    };
+    for (uint32_t r : rootNodes) markNode(r);
+    for (const auto& [ref, isLeaf] : pinned_) {
+        if (isLeaf) markBrick(ref); else markNode(ref);
+    }
+    for (const auto& [_, n] : uniformCarveNodes_) markNode(n);
+    // A clip's frames are kept whole, read either way (a frame of leaf
+    // bricks or of nodes): keeping too much is safe, freeing a frame is not.
+    for (uint32_t f : animFrames_) {
+        markNode(f);
+        markBrick(f);
+    }
+    while (!stack.empty()) {
+        const uint32_t n = stack.back();
+        stack.pop_back();
+        const DagNode& node = nodes_[n];
+        const uint32_t vm = dag_pack::validMaskOf(node);
+        const uint32_t lm = dag_pack::leafMaskOf(node);
+        uint32_t slot = 0u;
+        for (uint32_t o = 0u; o < 8u; ++o) {
+            if ((vm & (1u << o)) == 0u) continue;
+            const uint32_t c = children_[node.childBase + slot++];
+            if (c == kDagNullNode || (c & kDagAnimBit) != 0u) continue;
+            if (lm & (1u << o)) markBrick(c); else markNode(c);
+        }
+    }
+
+    // The maps first, by what they point at: what the key held is not rebuilt.
+    std::erase_if(nodeMap_, [&](const auto& kv) { return !liveNode[kv.second]; });
+    std::erase_if(brickMap_, [&](const auto& kv) { return !liveBrick[kv.second]; });
+
+    std::vector<uint8_t> wasFree(nodes_.size(), 0u);
+    for (uint32_t i : freeNodes_) wasFree[i] = 1u;
+    if (freeChildren_.size() < 9) freeChildren_.resize(9);
+    size_t freed = 0;
+    for (uint32_t i = 0; i < nodes_.size(); ++i) {
+        if (liveNode[i] || wasFree[i]) continue;
+        DagNode& node = nodes_[i];
+        const uint32_t count = dag_pack::popcount8(dag_pack::validMaskOf(node));
+        if (count > 0u) freeChildren_[count].push_back(node.childBase);
+        node = DagNode{};
+        freeNodes_.push_back(i);
+        ++freed;
+    }
+    std::vector<uint8_t> brickWasFree(bricks_.size(), 0u);
+    for (uint32_t i : freeBricks_) brickWasFree[i] = 1u;
+    if (freeAttrs_.size() < 65) freeAttrs_.resize(65);
+    for (uint32_t i = 0; i < bricks_.size(); ++i) {
+        if (liveBrick[i] || brickWasFree[i]) continue;
+        DagBrick& b = bricks_[i];
+        const uint32_t solid = dag_pack::popcount32(b.solidLo) + dag_pack::popcount32(b.solidHi);
+        const uint32_t attrCount = solid == 0u ? 0u : ((b.flags & kBrickFlagUniformAttr) ? 1u : solid);
+        if (attrCount > 0u) freeAttrs_[attrCount].push_back(b.attrOffset);
+        b = DagBrick{};
+        freeBricks_.push_back(i);
+        ++freed;
+    }
+    if (freed > 0) ++generation_;
+    return freed;
 }
 
 uint32_t VoxelDagPool::internBrick(
@@ -296,17 +421,18 @@ uint32_t VoxelDagPool::internBrick(
     brick.solidHi = solidHi;
     brick.carveLo = carveLo;
     brick.carveHi = carveHi;
-    brick.attrOffset = static_cast<uint32_t>(attrs_.size());
+    brick.attrOffset = 0u;
     brick.packedColorOpacity = mipColorOpacity;
     brick.packedNormalMat = mipNormalMat;
     brick.flags = flags;
 
     if (!storeAttrs.empty()) {
-        attrs_.insert(attrs_.end(), storeAttrs.begin(), storeAttrs.end());
+        brick.attrOffset = allocAttrs(static_cast<uint32_t>(storeAttrs.size()));
+        std::copy(storeAttrs.begin(), storeAttrs.end(), attrs_.begin() + brick.attrOffset);
     }
 
-    const uint32_t idx = static_cast<uint32_t>(bricks_.size());
-    bricks_.push_back(brick);
+    const uint32_t idx = allocBrick();
+    bricks_[idx] = brick;
     brickMap_.emplace(std::move(key), idx);
     ++generation_;
     return idx;
@@ -432,7 +558,7 @@ uint32_t VoxelDagPool::internNode(
 
     DagNode node;
     node.masks = masks;
-    node.childBase = static_cast<uint32_t>(children_.size());
+    node.childBase = allocChildren(count);
     if (sumW > 0.0) {
         // Divide accumulated child opacity by 4 rather than 8 so planar surfaces remain opaque across mip levels.
         const float outA = std::clamp(static_cast<float>(sumW / 4.0), 1.0f / 255.0f, 1.0f);
@@ -449,9 +575,9 @@ uint32_t VoxelDagPool::internNode(
             static_cast<float>(maxEmis));
     }
 
-    children_.insert(children_.end(), packedChildren, packedChildren + count);
-    const uint32_t idx = static_cast<uint32_t>(nodes_.size());
-    nodes_.push_back(node);
+    std::copy(packedChildren, packedChildren + count, children_.begin() + node.childBase);
+    const uint32_t idx = allocNode();
+    nodes_[idx] = node;
     nodeMap_.emplace(key, idx);
     ++generation_;
     return idx;

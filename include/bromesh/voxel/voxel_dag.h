@@ -228,6 +228,20 @@ public:
 
     uint32_t resolveChildRef(uint32_t rawRef, uint32_t animTick) const noexcept;
 
+    /// Keep `ref` (a node, or a brick when `isLeaf`) and all it reaches through
+    /// every `collect`: what a caller holds and places again (an archetype).
+    void pin(uint32_t ref, bool isLeaf);
+
+    /// Free what is reachable from none of `rootNodes`, the pinned refs, the
+    /// animation clips' frames: its slots in the arrays are reused by later
+    /// interning, so every index still reached stays valid (nothing moves).
+    /// Returns the nodes and bricks freed.
+    size_t collect(const std::vector<uint32_t>& rootNodes);
+
+    /// Nodes and bricks in use (the arrays' sizes less their free slots).
+    size_t liveNodes() const noexcept { return nodes_.size() - freeNodes_.size(); }
+    size_t liveBricks() const noexcept { return bricks_.size() - freeBricks_.size(); }
+
     const std::vector<DagNode>& nodes() const noexcept { return nodes_; }
     const std::vector<uint32_t>& children() const noexcept { return children_; }
     const std::vector<DagBrick>& bricks() const noexcept { return bricks_; }
@@ -300,6 +314,18 @@ private:
     std::unordered_map<NodeKey, uint32_t, NodeKeyHash> nodeMap_;
     std::unordered_map<uint64_t, uint32_t> uniformCarveNodes_;
     uint64_t generation_ = 1;
+
+    // What `collect` freed, reused by interning: node and brick slots, and
+    // runs of `children_` (by length 1..8) and `attrs_` (by length 1..64).
+    uint32_t allocNode();
+    uint32_t allocBrick();
+    uint32_t allocChildren(uint32_t count);
+    uint32_t allocAttrs(uint32_t count);
+    std::vector<uint32_t> freeNodes_;
+    std::vector<uint32_t> freeBricks_;
+    std::vector<std::vector<uint32_t>> freeChildren_;
+    std::vector<std::vector<uint32_t>> freeAttrs_;
+    std::vector<std::pair<uint32_t, bool>> pinned_;
 };
 
 /// Build a `VoxelDagPool` subtree from a dense `VoxelChunk`.
