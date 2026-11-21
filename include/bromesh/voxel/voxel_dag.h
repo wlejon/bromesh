@@ -83,9 +83,11 @@ struct DagVoxelizeOptions {
     int resolution = 32; // Power of 2 in [8, 256]
     float defaultColor[4] = {0.72f, 0.72f, 0.72f, 1.0f};
     float roughness = 0.8f;
+    float emissive = 0.0f;
     bool fillInterior = false;
     VoxelState state = VoxelState::Solid;
     bool fitToCube = true;
+    bool unitBounds = false; // When true, map [-1, +1]^3 directly onto [0, res]^3 (matches voxelizeSdfToDag).
 };
 
 namespace dag_pack {

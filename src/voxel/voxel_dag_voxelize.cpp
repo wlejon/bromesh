@@ -33,6 +33,7 @@ struct AccumVoxel {
     float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.0f;
     float nx = 0.0f, ny = 0.0f, nz = 0.0f;
     float roughness = 0.8f;
+    float emissive = 0.0f;
     float weight = 0.0f;
 };
 
@@ -46,7 +47,8 @@ public:
 
     void addVoxel(int gx, int gy, int gz, VoxelState state,
                   float r, float g, float b, float a,
-                  float nx, float ny, float nz, float roughness) {
+                  float nx, float ny, float nz, float roughness,
+                  float emissive = 0.0f) {
         if (gx < 0 || gy < 0 || gz < 0 || gx >= res_ || gy >= res_ || gz >= res_) return;
         if (state == VoxelState::Empty) return;
 
@@ -64,6 +66,7 @@ public:
             av.ny += ny;
             av.nz += nz;
             av.roughness = (av.weight > 0.0f) ? ((av.roughness * av.weight + roughness) / (av.weight + 1.0f)) : roughness;
+            av.emissive = std::max(av.emissive, emissive);
             av.weight += 1.0f;
         } else if (state == VoxelState::Carve) {
             av.state |= 2u;
@@ -110,7 +113,7 @@ public:
                     }
                     solidAttrs.push_back(DagVoxelAttr{
                         dag_pack::packRgba8(r, g, b, a),
-                        dag_pack::packNormalMat(nx, ny, nz, av.roughness),
+                        dag_pack::packNormalMat(nx, ny, nz, av.roughness, av.emissive),
                     });
                 }
             }
@@ -352,15 +355,23 @@ uint32_t voxelizeMeshToDag(
 
     const int depth = roundDepthForResolution(opts.resolution);
     const int res = 4 << depth;
-    const bromath::AABB3 box = computeBBox(mesh);
-    const float extX = box.max.x - box.min.x;
-    const float extY = box.max.y - box.min.y;
-    const float extZ = box.max.z - box.min.z;
-    const float maxExt = std::max({extX, extY, extZ, 1e-5f});
-    const float invRes = maxExt / static_cast<float>(res - 2);
-    const float ox = 0.5f * (box.min.x + box.max.x) - 0.5f * static_cast<float>(res) * invRes;
-    const float oy = opts.fitToCube ? (box.min.y - invRes) : (0.5f * (box.min.y + box.max.y) - 0.5f * static_cast<float>(res) * invRes);
-    const float oz = 0.5f * (box.min.z + box.max.z) - 0.5f * static_cast<float>(res) * invRes;
+    float invRes = 1.0f, ox = 0.0f, oy = 0.0f, oz = 0.0f;
+    if (opts.unitBounds) {
+        invRes = 2.0f / static_cast<float>(res);
+        ox = -1.0f;
+        oy = -1.0f;
+        oz = -1.0f;
+    } else {
+        const bromath::AABB3 box = computeBBox(mesh);
+        const float extX = box.max.x - box.min.x;
+        const float extY = box.max.y - box.min.y;
+        const float extZ = box.max.z - box.min.z;
+        const float maxExt = std::max({extX, extY, extZ, 1e-5f});
+        invRes = maxExt / static_cast<float>(res - 2);
+        ox = 0.5f * (box.min.x + box.max.x) - 0.5f * static_cast<float>(res) * invRes;
+        oy = opts.fitToCube ? (box.min.y - invRes) : (0.5f * (box.min.y + box.max.y) - 0.5f * static_cast<float>(res) * invRes);
+        oz = 0.5f * (box.min.z + box.max.z) - 0.5f * static_cast<float>(res) * invRes;
+    }
 
     const bool hasNormals = mesh.hasNormals();
     const bool hasColors = mesh.hasColors();
@@ -405,12 +416,20 @@ uint32_t voxelizeMeshToDag(
             fN[1] = 1.0f;
         }
 
-        const int gx0 = std::clamp(static_cast<int>(std::floor(std::min({p0[0], p1[0], p2[0]}))), 0, res - 1);
-        const int gx1 = std::clamp(static_cast<int>(std::floor(std::max({p0[0], p1[0], p2[0]}))), 0, res - 1);
-        const int gy0 = std::clamp(static_cast<int>(std::floor(std::min({p0[1], p1[1], p2[1]}))), 0, res - 1);
-        const int gy1 = std::clamp(static_cast<int>(std::floor(std::max({p0[1], p1[1], p2[1]}))), 0, res - 1);
-        const int gz0 = std::clamp(static_cast<int>(std::floor(std::min({p0[2], p1[2], p2[2]}))), 0, res - 1);
-        const int gz1 = std::clamp(static_cast<int>(std::floor(std::max({p0[2], p1[2], p2[2]}))), 0, res - 1);
+        const float minX = std::min({p0[0], p1[0], p2[0]}), maxX = std::max({p0[0], p1[0], p2[0]});
+        const float minY = std::min({p0[1], p1[1], p2[1]}), maxY = std::max({p0[1], p1[1], p2[1]});
+        const float minZ = std::min({p0[2], p1[2], p2[2]}), maxZ = std::max({p0[2], p1[2], p2[2]});
+        if (maxX < 0.0f || minX >= static_cast<float>(res) ||
+            maxY < 0.0f || minY >= static_cast<float>(res) ||
+            maxZ < 0.0f || minZ >= static_cast<float>(res)) {
+            continue;
+        }
+        const int gx0 = std::clamp(static_cast<int>(std::floor(minX)), 0, res - 1);
+        const int gx1 = std::clamp(static_cast<int>(std::floor(maxX)), 0, res - 1);
+        const int gy0 = std::clamp(static_cast<int>(std::floor(minY)), 0, res - 1);
+        const int gy1 = std::clamp(static_cast<int>(std::floor(maxY)), 0, res - 1);
+        const int gz0 = std::clamp(static_cast<int>(std::floor(minZ)), 0, res - 1);
+        const int gz1 = std::clamp(static_cast<int>(std::floor(maxZ)), 0, res - 1);
 
         for (int gz = gz0; gz <= gz1; ++gz) {
             for (int gy = gy0; gy <= gy1; ++gy) {
@@ -437,7 +456,7 @@ uint32_t voxelizeMeshToDag(
                         cb = bu * mesh.colors[i0 * 4 + 2] + bv * mesh.colors[i1 * 4 + 2] + bw * mesh.colors[i2 * 4 + 2];
                         ca = bu * mesh.colors[i0 * 4 + 3] + bv * mesh.colors[i1 * 4 + 3] + bw * mesh.colors[i2 * 4 + 3];
                     }
-                    builder.addVoxel(gx, gy, gz, opts.state, cr, cg, cb, ca, nx, ny, nz, opts.roughness);
+                    builder.addVoxel(gx, gy, gz, opts.state, cr, cg, cb, ca, nx, ny, nz, opts.roughness, opts.emissive);
                 }
             }
         }
@@ -485,7 +504,7 @@ uint32_t voxelizeSdfToDag(
                 builder.addVoxel(
                     gx, gy, gz, opts.state,
                     opts.defaultColor[0], opts.defaultColor[1], opts.defaultColor[2], opts.defaultColor[3],
-                    nx, ny, nz, opts.roughness);
+                    nx, ny, nz, opts.roughness, opts.emissive);
             }
         }
     }
