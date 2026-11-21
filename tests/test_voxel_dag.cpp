@@ -333,6 +333,30 @@ TEST(voxel_dag_stacked_carve_and_solid_overhang) {
            "empty octant queries Empty");
 }
 
+TEST(voxel_dag_mesh_fill_interior_and_split_commit) {
+    bromesh::VoxelDagPool pool;
+    bromesh::MeshData sph = bromesh::sphere(0.8f, 24, 16);
+    bromesh::DagVoxelizeOptions opts;
+    opts.resolution = 64;
+    opts.unitBounds = true;
+    const uint32_t shell = bromesh::voxelizeMeshToDag(pool, sph, opts);
+    ASSERT(shell != bromesh::kDagNullNode, "shell voxelized");
+    ASSERT(pool.queryPoint(shell, 0.5f, 0.5f, 0.5f) == bromesh::VoxelState::Empty, "a shell is hollow");
+    const size_t shellBricks = pool.liveBricks();
+
+    opts.fillInterior = true;
+    // Made off the pool (any thread), committed after: the same as in one call.
+    bromesh::DagBrickSet set = bromesh::voxelizeMeshToBricks(sph, opts);
+    ASSERT(!set.empty() && set.depth() == 4, "brick set made without a pool");
+    const uint32_t solid = bromesh::commitVoxelBricks(pool, set);
+    ASSERT(solid == bromesh::voxelizeMeshToDag(pool, sph, opts), "split commit interns the same tree");
+    ASSERT(pool.queryPoint(solid, 0.5f, 0.5f, 0.5f) == bromesh::VoxelState::Solid, "filled at the centre");
+    ASSERT(pool.queryPoint(solid, 0.5f, 0.9f, 0.5f) == bromesh::VoxelState::Solid, "filled below the top");
+    ASSERT(pool.queryPoint(solid, 0.02f, 0.02f, 0.02f) == bromesh::VoxelState::Empty, "outside stays empty");
+    // The inside's full bricks are one colour, so they are one brick.
+    ASSERT(pool.liveBricks() < shellBricks * 2 + 8, "interior bricks dedupe");
+}
+
 TEST(voxel_dag_mesh_voxelize_chunk_and_vox_loader) {
     bromesh::VoxelDagPool pool;
 

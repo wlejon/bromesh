@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -84,6 +85,9 @@ struct DagVoxelizeOptions {
     float defaultColor[4] = {0.72f, 0.72f, 0.72f, 1.0f};
     float roughness = 0.8f;
     float emissive = 0.0f;
+    /// A closed mesh's inside is solid too (flood-filled from the grid's
+    /// boundary), one colour, the surface's mean, so its full bricks are one
+    /// brick: a far, coarse level of a thick shape covers what the shape does.
     bool fillInterior = false;
     VoxelState state = VoxelState::Solid;
     bool fitToCube = true;
@@ -379,6 +383,35 @@ uint32_t buildDagFromChunk(
     const float* palette = nullptr,
     int paletteCount = 0,
     int* outDepth = nullptr);
+
+/// A mesh's voxels made without a pool, so on any thread; `commitVoxelBricks`
+/// interns them into one (on the pool's thread).
+class DagBrickSet {
+public:
+    DagBrickSet();
+    ~DagBrickSet();
+    DagBrickSet(DagBrickSet&&) noexcept;
+    DagBrickSet& operator=(DagBrickSet&&) noexcept;
+    DagBrickSet(const DagBrickSet&) = delete;
+    DagBrickSet& operator=(const DagBrickSet&) = delete;
+
+    /// Levels above the bricks: the set spans 4 << depth voxels a side.
+    int depth() const noexcept;
+    bool empty() const noexcept;
+
+    struct Impl;
+    explicit DagBrickSet(std::unique_ptr<Impl> impl) noexcept;
+    Impl* impl() const noexcept { return impl_.get(); }
+
+private:
+    std::unique_ptr<Impl> impl_;
+};
+
+/// Voxelize a mesh into a brick set (no pool: any thread).
+DagBrickSet voxelizeMeshToBricks(const MeshData& mesh, const DagVoxelizeOptions& opts = {});
+
+/// Intern a brick set's bricks and nodes into `pool`; returns its root.
+uint32_t commitVoxelBricks(VoxelDagPool& pool, const DagBrickSet& set);
 
 /// Voxelize an indexed triangle mesh into a deduplicated `VoxelDagPool` subtree.
 uint32_t voxelizeMeshToDag(

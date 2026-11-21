@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <unordered_map>
 #include <vector>
 
@@ -41,9 +42,14 @@ struct SparseBrick {
     std::array<AccumVoxel, 64> v{};
 };
 
+// The bricks a voxelization touches, found through a dense index over the
+// brick grid ((res / 4)^3 slots, at most 64^3), not a hash map: a mesh adds a
+// voxel several times over and each add is one array read.
 class SparseBrickBuilder {
 public:
-    explicit SparseBrickBuilder(int depth) : depth_(depth), res_(4 << depth) {}
+    explicit SparseBrickBuilder(int depth)
+        : depth_(depth), res_(4 << depth), n_(1 << depth),
+          index_(static_cast<size_t>(n_) * n_ * n_, -1) {}
 
     void addVoxel(int gx, int gy, int gz, VoxelState state,
                   float r, float g, float b, float a,
@@ -52,8 +58,7 @@ public:
         if (gx < 0 || gy < 0 || gz < 0 || gx >= res_ || gy >= res_ || gz >= res_) return;
         if (state == VoxelState::Empty) return;
 
-        const uint64_t bkey = packBrickKey(gx >> 2, gy >> 2, gz >> 2);
-        SparseBrick& sb = bricks_[bkey];
+        SparseBrick& sb = brickAt(gx >> 2, gy >> 2, gz >> 2);
         const int bit = (gx & 3) | ((gy & 3) << 2) | ((gz & 3) << 4);
         AccumVoxel& av = sb.v[bit];
         if (state == VoxelState::Solid) {
@@ -75,26 +80,89 @@ public:
 
     bool hasVoxelAt(int gx, int gy, int gz, uint8_t bitMask = 1u) const {
         if (gx < 0 || gy < 0 || gz < 0 || gx >= res_ || gy >= res_ || gz >= res_) return false;
-        const auto it = bricks_.find(packBrickKey(gx >> 2, gy >> 2, gz >> 2));
-        if (it == bricks_.end()) return false;
+        const int32_t slot = index_[slotOf(gx >> 2, gy >> 2, gz >> 2)];
+        if (slot < 0) return false;
         const int bit = (gx & 3) | ((gy & 3) << 2) | ((gz & 3) << 4);
-        return (it->second.v[bit].state & bitMask) != 0u;
+        return (bricks_[static_cast<size_t>(slot)].v[bit].state & bitMask) != 0u;
     }
 
-    std::unordered_map<uint64_t, SparseBrick>& mutableBricks() noexcept { return bricks_; }
     int resolution() const noexcept { return res_; }
     int depth() const noexcept { return depth_; }
+    bool empty() const noexcept { return bricks_.empty(); }
+
+    // Make solid every cell the surface encloses: those no 6-connected path of
+    // empty cells joins to the grid's boundary. They take one colour, the
+    // surface voxels' mean, so the full bricks inside are one brick.
+    void fillInside(float roughness, float emissive) {
+        const size_t R = static_cast<size_t>(res_);
+        std::vector<uint8_t> cell(R * R * R, 0);    // 1: surface, 2: outside
+        double sum[4] = {0.0, 0.0, 0.0, 0.0};
+        double count = 0.0;
+        for (size_t i = 0; i < bricks_.size(); ++i) {
+            const uint64_t key = keys_[i];
+            const size_t bx = static_cast<size_t>((key >> 40u) & 0xFFFFFu);
+            const size_t by = static_cast<size_t>((key >> 20u) & 0xFFFFFu);
+            const size_t bz = static_cast<size_t>(key & 0xFFFFFu);
+            for (int bit = 0; bit < 64; ++bit) {
+                const AccumVoxel& av = bricks_[i].v[bit];
+                if (!(av.state & 1u)) continue;
+                const size_t x = bx * 4 + (bit & 3), y = by * 4 + ((bit >> 2) & 3), z = bz * 4 + (bit >> 4);
+                cell[(z * R + y) * R + x] = 1;
+                const float w = std::max(av.weight, 1.0f);
+                sum[0] += av.r / w; sum[1] += av.g / w; sum[2] += av.b / w; sum[3] += av.a / w;
+                count += 1.0;
+            }
+        }
+        if (count == 0.0) return;
+        std::vector<uint32_t> stack;
+        stack.reserve(R * R * 6);
+        auto push = [&](size_t x, size_t y, size_t z) {
+            const size_t c = (z * R + y) * R + x;
+            if (cell[c] == 0) { cell[c] = 2; stack.push_back(static_cast<uint32_t>(c)); }
+        };
+        for (size_t a = 0; a < R; ++a) {
+            for (size_t b = 0; b < R; ++b) {
+                push(a, b, 0); push(a, b, R - 1);
+                push(a, 0, b); push(a, R - 1, b);
+                push(0, a, b); push(R - 1, a, b);
+            }
+        }
+        while (!stack.empty()) {
+            const size_t c = stack.back();
+            stack.pop_back();
+            const size_t x = c % R, y = (c / R) % R, z = c / (R * R);
+            if (x > 0) push(x - 1, y, z);
+            if (x + 1 < R) push(x + 1, y, z);
+            if (y > 0) push(x, y - 1, z);
+            if (y + 1 < R) push(x, y + 1, z);
+            if (z > 0) push(x, y, z - 1);
+            if (z + 1 < R) push(x, y, z + 1);
+        }
+        const float r = static_cast<float>(sum[0] / count), g = static_cast<float>(sum[1] / count);
+        const float b = static_cast<float>(sum[2] / count), a = static_cast<float>(sum[3] / count);
+        for (size_t z = 0; z < R; ++z) {
+            for (size_t y = 0; y < R; ++y) {
+                for (size_t x = 0; x < R; ++x) {
+                    if (cell[(z * R + y) * R + x] != 0) continue;
+                    addVoxel(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z), VoxelState::Solid,
+                             r, g, b, a, 0.0f, 0.0f, 0.0f, roughness, emissive);
+                }
+            }
+        }
+    }
 
     uint32_t commit(VoxelDagPool& pool) const {
         if (bricks_.empty()) return kDagNullNode;
 
-        // First intern all leaf 4x4x4 bricks keyed by (depth_ - 1) level coordinates
-        // wait: bricks sit at grid resolution / 4 = 2^depth_ along each axis!
+        // Intern the 4^3 bricks (2^depth_ of them along each axis), then the
+        // nodes above them level by level.
         std::unordered_map<uint64_t, uint32_t> curNodes;
         curNodes.reserve(bricks_.size());
 
         std::vector<DagVoxelAttr> solidAttrs;
-        for (const auto& [bkey, sb] : bricks_) {
+        for (size_t i = 0; i < bricks_.size(); ++i) {
+            const uint64_t bkey = keys_[i];
+            const SparseBrick& sb = bricks_[i];
             uint64_t solidBits = 0ull, carveBits = 0ull;
             solidAttrs.clear();
             for (int bit = 0; bit < 64; ++bit) {
@@ -185,9 +253,26 @@ public:
     }
 
 private:
+    size_t slotOf(int bx, int by, int bz) const noexcept {
+        return (static_cast<size_t>(bz) * n_ + by) * n_ + bx;
+    }
+
+    SparseBrick& brickAt(int bx, int by, int bz) {
+        int32_t& slot = index_[slotOf(bx, by, bz)];
+        if (slot < 0) {
+            slot = static_cast<int32_t>(bricks_.size());
+            bricks_.emplace_back();
+            keys_.push_back(packBrickKey(bx, by, bz));
+        }
+        return bricks_[static_cast<size_t>(slot)];
+    }
+
     int depth_;
     int res_;
-    std::unordered_map<uint64_t, SparseBrick> bricks_;
+    int n_;
+    std::vector<int32_t> index_;
+    std::deque<SparseBrick> bricks_;    // never moves an element as it grows
+    std::vector<uint64_t> keys_;
 };
 
 // Conservative triangle vs axis-aligned voxel-cell overlap (Akenine-Möller SAT).
@@ -343,17 +428,39 @@ uint32_t buildDagFromChunk(
     return builder.commit(pool);
 }
 
+struct DagBrickSet::Impl {
+    explicit Impl(int depth) : builder(depth) {}
+    SparseBrickBuilder builder;
+};
+
+DagBrickSet::DagBrickSet() = default;
+DagBrickSet::DagBrickSet(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+DagBrickSet::~DagBrickSet() = default;
+DagBrickSet::DagBrickSet(DagBrickSet&&) noexcept = default;
+DagBrickSet& DagBrickSet::operator=(DagBrickSet&&) noexcept = default;
+
+int DagBrickSet::depth() const noexcept { return impl_ ? impl_->builder.depth() : 0; }
+bool DagBrickSet::empty() const noexcept { return !impl_ || impl_->builder.empty(); }
+
+uint32_t commitVoxelBricks(VoxelDagPool& pool, const DagBrickSet& set) {
+    return set.impl() ? set.impl()->builder.commit(pool) : kDagNullNode;
+}
+
 uint32_t voxelizeMeshToDag(
     VoxelDagPool& pool,
     const MeshData& mesh,
     const DagVoxelizeOptions& opts,
     int* outDepth) {
-    if (mesh.empty() || mesh.triangleCount() == 0) {
-        if (outDepth) *outDepth = roundDepthForResolution(opts.resolution);
-        return kDagNullNode;
-    }
+    const DagBrickSet set = voxelizeMeshToBricks(mesh, opts);
+    if (outDepth) *outDepth = roundDepthForResolution(opts.resolution);
+    return commitVoxelBricks(pool, set);
+}
 
+DagBrickSet voxelizeMeshToBricks(const MeshData& mesh, const DagVoxelizeOptions& opts) {
     const int depth = roundDepthForResolution(opts.resolution);
+    if (mesh.empty() || mesh.triangleCount() == 0) return DagBrickSet{};
+    DagBrickSet set(std::make_unique<DagBrickSet::Impl>(depth));
+    SparseBrickBuilder& builder = set.impl()->builder;
     const int res = 4 << depth;
     float invRes = 1.0f, ox = 0.0f, oy = 0.0f, oz = 0.0f;
     if (opts.unitBounds) {
@@ -377,7 +484,6 @@ uint32_t voxelizeMeshToDag(
     const bool hasColors = mesh.hasColors();
     const float halfSize[3] = {0.5f, 0.5f, 0.5f};
 
-    SparseBrickBuilder builder(depth);
     const size_t triCount = mesh.triangleCount();
     for (size_t t = 0; t < triCount; ++t) {
         const uint32_t i0 = mesh.indices[t * 3 + 0];
@@ -462,8 +568,8 @@ uint32_t voxelizeMeshToDag(
         }
     }
 
-    if (outDepth) *outDepth = depth;
-    return builder.commit(pool);
+    if (opts.fillInterior && opts.state == VoxelState::Solid) builder.fillInside(opts.roughness, opts.emissive);
+    return set;
 }
 
 uint32_t voxelizeSdfToDag(
