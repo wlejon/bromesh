@@ -5,7 +5,9 @@
 #include "bromesh/analysis/bbox.h"
 
 #if BROMESH_HAS_BRASS_JIT
+#include <brass/target/spirv/spirv_binary_reader.hpp>
 #include <brass/target/spirv/spirv_ir.hpp>
+#include <brass/verify/gpu_kernel_prover.hpp>
 #endif
 
 #include <chrono>
@@ -486,5 +488,52 @@ TEST(sdf_jit_custom_expression_gyroid_and_gpu_108) {
     ASSERT(ptx.find(".visible .entry eval_sdf_gpu") != std::string::npos, "CustomExpr PTX entry generated");
     ASSERT(ptx.find("sin.approx.f32") != std::string::npos || ptx.find("cos.approx.f32") != std::string::npos,
            "CustomExpr PTX emits native hardware sin/cos instructions");
+#endif
+}
+
+TEST(sdf_jit_spirv_safety_audit) {
+#if BROMESH_HAS_BRASS_JIT
+    bromesh::SdfGraph g;
+    int s = g.sphere(1.0f);
+    int b = g.box({0.75f, 0.75f, 0.75f});
+    int u = g.opSmoothUnion(s, b, 0.2f);
+    int c = g.cylinder(0.35f, 1.2f);
+    int diff = g.opSubtraction(u, c);
+    int xform = g.translate(diff, {0.1f, -0.2f, 0.05f});
+    int noise = g.noise3D({2.0f, 2.0f, 2.0f}, 0.03f);
+    g.displace(xform, noise);
+
+    std::vector<uint32_t> spv = bromesh::SdfCompiler::instance().compile_spirv(g);
+    ASSERT(!spv.empty() && spv[0] == 0x07230203u, "Generated SPIR-V binary must be valid");
+
+    brass::spirv::Module spv_mod;
+    std::string parse_err;
+    bool parsed = brass::spirv::parse_binary(spv, spv_mod, &parse_err);
+    ASSERT(parsed, "parse_binary must lift SDF SPIR-V shader cleanly");
+
+    std::string struct_err;
+    ASSERT(brass::verify::verify_spirv_structural(spv_mod, &struct_err),
+           "Lifted SDF SPIR-V must pass structural verification");
+
+    auto audit = brass::verify::prove_spirv_shader_safety(spv_mod);
+    ASSERT(audit.structural_ok, "SPIR-V shader audit: structural_ok");
+    ASSERT(audit.dominance_ok, "SPIR-V shader audit: dominance_ok");
+    ASSERT(audit.barriers_uniform, "SPIR-V shader audit: barriers_uniform");
+    ASSERT(audit.shared_bounds_ok, "SPIR-V shader audit: shared_bounds_ok");
+    ASSERT(audit.div_sqrt_ok, "SPIR-V shader audit: div_sqrt_ok");
+    ASSERT(audit.hazards.empty(), "SPIR-V shader audit: zero hazards");
+
+    brass::verify::GpuProverOptions opts;
+    opts.local_size_x = audit.local_size[0];
+    opts.local_size_y = audit.local_size[1];
+    opts.local_size_z = audit.local_size[2];
+    opts.check_global_bounds = false;
+
+    auto mem_res = brass::verify::verify_spirv_memory_safety(spv_mod, opts);
+    ASSERT(!mem_res.is_counterexample() && mem_res.violations.empty(),
+           "SDF SPIR-V shader must have no memory/alignment safety violations");
+
+    auto bar_res = brass::verify::verify_spirv_barrier_uniformity(spv_mod, opts);
+    ASSERT(bar_res.is_uniform(), "SDF SPIR-V shader must satisfy barrier uniformity");
 #endif
 }
