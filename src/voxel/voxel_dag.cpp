@@ -322,7 +322,7 @@ void VoxelDagPool::freeNodeSlot(uint32_t i) {
     key.masks = node.masks;
     key.count = count;
     for (uint32_t k = 0; k < count; ++k) key.childRefs[k] = children_[node.childBase + k];
-    if (auto it = nodeMap_.find(key); it != nodeMap_.end() && it->second == i) nodeMap_.erase(it);
+    if (const uint32_t* at = nodeMap_.find(key); at && *at == i) nodeMap_.erase(key);
     if (freeChildren_.size() < 9) freeChildren_.resize(9);
     freeChildren_[count].push_back(node.childBase);
     node = DagNode{};
@@ -342,14 +342,15 @@ void VoxelDagPool::freeBrickSlot(uint32_t i) {
     key.packedColorOpacity = b.packedColorOpacity;
     key.packedNormalMat = b.packedNormalMat;
     key.flags = b.flags;
-    key.inlineAttrs.assign(attrs_.begin() + b.attrOffset, attrs_.begin() + b.attrOffset + attrCount);
+    key.inlineAttrs.resize(attrCount);
+    for (uint32_t i = 0; i < attrCount; ++i) key.inlineAttrs[i] = attrs_[b.attrOffset + i];
     uint32_t attrH = 0u;
     for (const DagVoxelAttr& a : key.inlineAttrs) {
         attrH = fnvMix(attrH, a.colorOpacity);
         attrH = fnvMix(attrH, a.normalMat);
     }
     key.attrHash = attrH;
-    if (auto it = brickMap_.find(key); it != brickMap_.end() && it->second == i) brickMap_.erase(it);
+    if (const uint32_t* at = brickMap_.find(key); at && *at == i) brickMap_.erase(key);
     if (freeAttrs_.size() < 65) freeAttrs_.resize(65);
     if (attrCount > 0u) freeAttrs_[attrCount].push_back(b.attrOffset);
     b = DagBrick{};
@@ -360,7 +361,8 @@ void VoxelDagPool::freeBrickSlot(uint32_t i) {
 void VoxelDagPool::recountRefs() {
     std::fill(nodeRefs_.begin(), nodeRefs_.end(), 0u);
     std::fill(brickRefs_.begin(), brickRefs_.end(), 0u);
-    for (const DagNode& node : nodes_) {
+    for (size_t ni = 0; ni < nodes_.size(); ++ni) {
+        const DagNode& node = nodes_[ni];
         const uint32_t vm = dag_pack::validMaskOf(node);
         if (vm == 0u) continue;
         const uint32_t lm = dag_pack::leafMaskOf(node);
@@ -415,8 +417,8 @@ size_t VoxelDagPool::collect(const std::vector<uint32_t>& rootNodes) {
     }
 
     // The maps first, by what they point at: what the key held is not rebuilt.
-    std::erase_if(nodeMap_, [&](const auto& kv) { return !liveNode[kv.second]; });
-    std::erase_if(brickMap_, [&](const auto& kv) { return !liveBrick[kv.second]; });
+    nodeMap_.erase_if([&](const auto& kv) { return !liveNode[kv.second]; });
+    brickMap_.erase_if([&](const auto& kv) { return !liveBrick[kv.second]; });
 
     std::vector<uint8_t> wasFree(nodes_.size(), 0u);
     for (uint32_t i : freeNodes_) wasFree[i] = 1u;
@@ -572,10 +574,7 @@ uint32_t VoxelDagPool::internBrick(
     key.attrHash = attrH;
     key.inlineAttrs = storeAttrs;
 
-    auto it = brickMap_.find(key);
-    if (it != brickMap_.end()) {
-        return it->second;
-    }
+    if (const uint32_t* at = brickMap_.find(key)) return *at;
 
     DagBrick brick;
     brick.solidLo = solidLo;
@@ -589,7 +588,7 @@ uint32_t VoxelDagPool::internBrick(
 
     if (!storeAttrs.empty()) {
         brick.attrOffset = allocAttrs(static_cast<uint32_t>(storeAttrs.size()));
-        std::copy(storeAttrs.begin(), storeAttrs.end(), attrs_.begin() + brick.attrOffset);
+        for (size_t i = 0; i < storeAttrs.size(); ++i) attrs_[brick.attrOffset + i] = storeAttrs[i];
     }
 
     const uint32_t idx = allocBrick();
@@ -715,10 +714,7 @@ uint32_t VoxelDagPool::internNode(
     key.count = count;
     for (uint32_t i = 0; i < count; ++i) key.childRefs[i] = packedChildren[i];
 
-    auto it = nodeMap_.find(key);
-    if (it != nodeMap_.end()) {
-        return it->second;
-    }
+    if (const uint32_t* at = nodeMap_.find(key)) return *at;
 
     DagNode node;
     node.masks = masks;
@@ -739,7 +735,7 @@ uint32_t VoxelDagPool::internNode(
             static_cast<float>(maxEmis));
     }
 
-    std::copy(packedChildren, packedChildren + count, children_.begin() + node.childBase);
+    for (uint32_t i = 0; i < count; ++i) children_[node.childBase + i] = packedChildren[i];
     const uint32_t idx = allocNode();
     nodes_[idx] = node;
     nodeMap_.emplace(key, idx);

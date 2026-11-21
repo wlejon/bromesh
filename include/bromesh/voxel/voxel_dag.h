@@ -1,6 +1,8 @@
 #pragma once
 
 #include "bromesh/mesh_data.h"
+#include "bromesh/voxel/incremental_map.h"
+#include "bromesh/voxel/paged_array.h"
 #include "bromesh/voxel/voxel_chunk.h"
 #include <bromath/aabb.h>
 
@@ -269,10 +271,13 @@ public:
     size_t liveNodes() const noexcept { return nodes_.size() - freeNodes_.size(); }
     size_t liveBricks() const noexcept { return bricks_.size() - freeBricks_.size(); }
 
-    const std::vector<DagNode>& nodes() const noexcept { return nodes_; }
-    const std::vector<uint32_t>& children() const noexcept { return children_; }
-    const std::vector<DagBrick>& bricks() const noexcept { return bricks_; }
-    const std::vector<DagVoxelAttr>& attrs() const noexcept { return attrs_; }
+    /// The pool's arrays, paged (PagedArray): growing never moves them, and
+    /// a GPU mirror uploads them by page (their pages are kPageElems long).
+    template <class T> using Paged = PagedArray<T, kPageElems>;
+    const Paged<DagNode>& nodes() const noexcept { return nodes_; }
+    const Paged<uint32_t>& children() const noexcept { return children_; }
+    const Paged<DagBrick>& bricks() const noexcept { return bricks_; }
+    const Paged<DagVoxelAttr>& attrs() const noexcept { return attrs_; }
     const std::vector<DagAnimClip>& animClips() const noexcept { return animClips_; }
     const std::vector<uint32_t>& animFrames() const noexcept { return animFrames_; }
 
@@ -333,15 +338,17 @@ private:
         const uint64_t* keys,
         size_t count);
 
-    std::vector<DagNode> nodes_;
-    std::vector<uint32_t> children_;
-    std::vector<DagBrick> bricks_;
-    std::vector<DagVoxelAttr> attrs_;
+    Paged<DagNode> nodes_;
+    Paged<uint32_t> children_;
+    Paged<DagBrick> bricks_;
+    Paged<DagVoxelAttr> attrs_;
     std::vector<DagAnimClip> animClips_;
     std::vector<uint32_t> animFrames_;
 
-    std::unordered_map<BrickKey, uint32_t, BrickKeyHash> brickMap_;
-    std::unordered_map<NodeKey, uint32_t, NodeKeyHash> nodeMap_;
+    // The hash-consing tables (IncrementalMap: growing them never rehashes
+    // every entry in one call).
+    IncrementalMap<BrickKey, uint32_t, BrickKeyHash> brickMap_;
+    IncrementalMap<NodeKey, uint32_t, NodeKeyHash> nodeMap_;
     std::unordered_map<uint64_t, uint32_t> uniformCarveNodes_;
     uint64_t generation_ = 1;
 

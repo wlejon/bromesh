@@ -75,6 +75,24 @@ std::vector<uint8_t> buildSyntheticVox() {
 
 } // namespace
 
+// The brick table grows (incrementally) through several sizes: every brick
+// interned before and during a growth is still found.
+TEST(voxel_dag_brick_table_grows_without_losing_bricks) {
+    bromesh::VoxelDagPool pool;
+    const bromesh::DagVoxelAttr attr{};
+    const uint32_t n = 200000u;
+    std::vector<uint32_t> ids(n);
+    for (uint32_t i = 0; i < n; ++i) ids[i] = pool.internBrick(i + 1u, i ^ 0x5a5a5a5au, 0u, 0u, {}, &attr);
+    bool same = true, distinct = true;
+    for (uint32_t i = 0; i < n; ++i) {
+        same = same && pool.internBrick(i + 1u, i ^ 0x5a5a5a5au, 0u, 0u, {}, &attr) == ids[i];
+        distinct = distinct && (i == 0 || ids[i] != ids[i - 1]);
+    }
+    ASSERT(same, "each of 200000 bricks interned again finds its first id");
+    ASSERT(distinct, "distinct bricks get distinct ids");
+    ASSERT(pool.bricks().size() == n, "re-interning adds no bricks");
+}
+
 TEST(voxel_dag_dedup_and_pointer_instancing) {
     bromesh::VoxelDagPool pool;
 
