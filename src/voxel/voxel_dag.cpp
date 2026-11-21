@@ -131,7 +131,11 @@ size_t VoxelDagPool::BrickKeyHash::operator()(const BrickKey& k) const noexcept 
     h = fnvMix(h, k.packedNormalMat);
     h = fnvMix(h, k.flags);
     h = fnvMix(h, k.attrHash);
-    return static_cast<size_t>(h);
+    uint64_t x = h;    // FNV's low bits see only the inputs' low bits: spread them
+    x ^= x >> 16u;
+    x *= 0x94D049BB133111EBull;
+    x ^= x >> 31u;
+    return static_cast<size_t>(x);
 }
 
 bool VoxelDagPool::NodeKey::operator==(const NodeKey& o) const noexcept {
@@ -143,10 +147,16 @@ bool VoxelDagPool::NodeKey::operator==(const NodeKey& o) const noexcept {
 }
 
 size_t VoxelDagPool::NodeKeyHash::operator()(const NodeKey& k) const noexcept {
-    uint32_t h = 2166136261u;
-    h = fnvMix(h, k.masks);
-    h = fnvMix(h, k.count);
-    for (uint32_t i = 0; i < k.count; ++i) h = fnvMix(h, k.childRefs[i]);
+    // Every input bit reaches every output bit: the table buckets by the low
+    // bits, and child refs differ anywhere.
+    uint64_t h = 0x9E3779B97F4A7C15ull ^ (static_cast<uint64_t>(k.masks) << 32u | k.count);
+    for (uint32_t i = 0; i < k.count; ++i) {
+        h = (h ^ k.childRefs[i]) * 0xBF58476D1CE4E5B9ull;
+        h ^= h >> 31u;
+    }
+    h ^= h >> 30u;
+    h *= 0x94D049BB133111EBull;
+    h ^= h >> 31u;
     return static_cast<size_t>(h);
 }
 
