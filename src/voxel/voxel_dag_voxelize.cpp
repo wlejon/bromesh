@@ -233,6 +233,30 @@ public:
         return out;
     }
 
+    // The node over eight children (bricks when `childrenAreLeaves`, null
+    // where there is none), interned.
+    static uint32_t internParent(VoxelDagPool& pool, const uint32_t refs[8], bool childrenAreLeaves) {
+        uint8_t leaves[8] = {}, solids[8] = {}, carves[8] = {}, uniCarve[8] = {};
+        for (int o = 0; o < 8; ++o) {
+            const uint32_t cref = refs[o];
+            if (cref == kDagNullNode) continue;
+            if (childrenAreLeaves) {
+                const DagBrick& b = pool.bricks()[cref];
+                leaves[o] = 1u;
+                solids[o] = ((b.solidLo | b.solidHi) != 0u) ? 1u : 0u;
+                carves[o] = ((b.carveLo | b.carveHi) != 0u) ? 1u : 0u;
+                uniCarve[o] = ((b.flags & kBrickFlagUniformCarve) != 0u) ? 1u : 0u;
+            } else {
+                const DagNode& n = pool.nodes()[cref];
+                leaves[o] = 0u;
+                solids[o] = (dag_pack::solidMaskOf(n) != 0u) ? 1u : 0u;
+                carves[o] = (dag_pack::carveMaskOf(n) != 0u) ? 1u : 0u;
+                uniCarve[o] = ((dag_pack::flagsOf(n) & kDagFlagUniformCarve) != 0u) ? 1u : 0u;
+            }
+        }
+        return pool.internNode(refs, leaves, solids, carves, uniCarve);
+    }
+
     // Intern packed bricks (2^depth of them along each axis), then the nodes
     // above them level by level; returns the root.
     static uint32_t commitPacked(VoxelDagPool& pool, const PackedBricks& packed) {
@@ -281,25 +305,7 @@ public:
             std::unordered_map<uint64_t, uint32_t> nextNodes;
             nextNodes.reserve(parents.size());
             for (const auto& [pkey, bucket] : parents) {
-                uint8_t leaves[8] = {}, solids[8] = {}, carves[8] = {}, uniCarve[8] = {};
-                for (int o = 0; o < 8; ++o) {
-                    const uint32_t cref = bucket.refs[o];
-                    if (cref == kDagNullNode) continue;
-                    if (childrenAreLeaves) {
-                        const DagBrick& b = pool.bricks()[cref];
-                        leaves[o] = 1u;
-                        solids[o] = ((b.solidLo | b.solidHi) != 0u) ? 1u : 0u;
-                        carves[o] = ((b.carveLo | b.carveHi) != 0u) ? 1u : 0u;
-                        uniCarve[o] = ((b.flags & kBrickFlagUniformCarve) != 0u) ? 1u : 0u;
-                    } else {
-                        const DagNode& n = pool.nodes()[cref];
-                        leaves[o] = 0u;
-                        solids[o] = (dag_pack::solidMaskOf(n) != 0u) ? 1u : 0u;
-                        carves[o] = (dag_pack::carveMaskOf(n) != 0u) ? 1u : 0u;
-                        uniCarve[o] = ((dag_pack::flagsOf(n) & kDagFlagUniformCarve) != 0u) ? 1u : 0u;
-                    }
-                }
-                const uint32_t nodeIdx = pool.internNode(bucket.refs, leaves, solids, carves, uniCarve);
+                const uint32_t nodeIdx = internParent(pool, bucket.refs, childrenAreLeaves);
                 if (nodeIdx != kDagNullNode) {
                     nextNodes.emplace(pkey, nodeIdx);
                 }
@@ -502,6 +508,137 @@ bool DagBrickSet::empty() const noexcept { return !impl_ || impl_->packed.bricks
 
 uint32_t commitVoxelBricks(VoxelDagPool& pool, const DagBrickSet& set) {
     return set.impl() ? SparseBrickBuilder::commitPacked(pool, set.impl()->packed) : kDagNullNode;
+}
+
+// commitPacked's work cut into steps: the bricks, then each level's nodes,
+// gathered into parents once a level and interned a slice at a time. Holds
+// are kept on the newest level only: a level's nodes, once held, keep the
+// one under them (they reference it), so that one's holds are dropped.
+struct DagBrickCommit::Impl {
+    enum class Phase { Bricks, Gather, Nodes, Done };
+    DagBrickSet set;
+    const PackedBricks* packed = nullptr;
+    Phase phase = Phase::Bricks;
+    size_t next = 0;
+    int level = 0;
+    std::vector<uint32_t> internedAt;
+    std::unordered_map<uint64_t, uint32_t> cur, nxt;
+    std::vector<std::pair<uint64_t, std::array<uint32_t, 8>>> parents;
+    std::vector<uint32_t> heldCur, heldNext;    // holds on `cur` and on `nxt`
+    bool curLeaves = true;
+    uint32_t root = kDagNullNode;
+
+    void dropHolds(VoxelDagPool& pool, std::vector<uint32_t>& held, bool leaves) {
+        for (uint32_t ref : held) pool.release(ref, leaves);
+        held.clear();
+    }
+};
+
+DagBrickCommit::DagBrickCommit(DagBrickSet set) : impl_(std::make_unique<Impl>()) {
+    impl_->set = std::move(set);
+    impl_->packed = impl_->set.impl() ? &impl_->set.impl()->packed : nullptr;
+    if (!impl_->packed || impl_->packed->bricks.empty()) impl_->phase = Impl::Phase::Done;
+    else impl_->internedAt.assign(impl_->packed->bricks.size(), kDagNullNode);
+}
+DagBrickCommit::~DagBrickCommit() = default;
+DagBrickCommit::DagBrickCommit(DagBrickCommit&&) noexcept = default;
+DagBrickCommit& DagBrickCommit::operator=(DagBrickCommit&&) noexcept = default;
+
+bool DagBrickCommit::done() const noexcept { return !impl_ || impl_->phase == Impl::Phase::Done; }
+uint32_t DagBrickCommit::root() const noexcept { return impl_ ? impl_->root : kDagNullNode; }
+int DagBrickCommit::depth() const noexcept { return impl_ && impl_->packed ? impl_->packed->depth : 0; }
+
+bool DagBrickCommit::step(VoxelDagPool& pool, size_t budget) {
+    if (!impl_) return true;
+    Impl& s = *impl_;
+    using Phase = Impl::Phase;
+    size_t left = std::max<size_t>(budget, 1);
+    std::vector<DagVoxelAttr> solidAttrs;
+    while (left > 0 && s.phase != Phase::Done) {
+        if (s.phase == Phase::Bricks) {
+            const auto& bricks = s.packed->bricks;
+            for (; s.next < bricks.size() && left > 0; ++s.next, --left) {
+                const PackedBrick& pb = bricks[s.next];
+                uint32_t idx = kDagNullNode;
+                if (pb.same >= 0) {
+                    idx = s.internedAt[static_cast<size_t>(pb.same)];
+                } else {
+                    solidAttrs.assign(s.packed->attrs.begin() + pb.attrFirst,
+                                      s.packed->attrs.begin() + pb.attrFirst + pb.attrCount);
+                    idx = pool.internBrick(pb.solidLo, pb.solidHi, pb.carveLo, pb.carveHi, solidAttrs);
+                }
+                s.internedAt[s.next] = idx;
+                if (idx != kDagNullNode) {
+                    s.cur.emplace(pb.key, idx);
+                    pool.retain(idx, true);
+                    s.heldCur.push_back(idx);
+                }
+            }
+            if (s.next < bricks.size()) break;
+            s.internedAt = {};
+            s.curLeaves = true;
+            s.level = s.packed->depth - 1;
+            s.phase = s.cur.empty() ? Phase::Done : Phase::Gather;
+        } else if (s.phase == Phase::Gather) {
+            if (s.level < 0) {
+                const auto it = s.cur.find(packBrickKey(0, 0, 0));
+                s.root = it != s.cur.end() ? it->second : kDagNullNode;
+                s.phase = Phase::Done;
+                break;
+            }
+            std::unordered_map<uint64_t, std::array<uint32_t, 8>> byKey;
+            byKey.reserve(s.cur.size());
+            for (const auto& [ckey, child] : s.cur) {
+                const int cx = static_cast<int>((ckey >> 40u) & 0xFFFFFu);
+                const int cy = static_cast<int>((ckey >> 20u) & 0xFFFFFu);
+                const int cz = static_cast<int>(ckey & 0xFFFFFu);
+                const int oct = (cx & 1) | ((cy & 1) << 1) | ((cz & 1) << 2);
+                auto [it, fresh] = byKey.try_emplace(packBrickKey(cx >> 1, cy >> 1, cz >> 1));
+                if (fresh) it->second.fill(kDagNullNode);
+                it->second[oct] = child;
+            }
+            s.parents.assign(byKey.begin(), byKey.end());
+            s.nxt.clear();
+            s.nxt.reserve(s.parents.size());
+            s.next = 0;
+            left -= std::min(left, s.cur.size() / 8);
+            s.phase = Phase::Nodes;
+        } else {
+            const bool childrenAreLeaves = s.level == s.packed->depth - 1;
+            for (; s.next < s.parents.size() && left > 0; ++s.next, --left) {
+                const auto& [pkey, refs] = s.parents[s.next];
+                const uint32_t idx = SparseBrickBuilder::internParent(pool, refs.data(), childrenAreLeaves);
+                if (idx != kDagNullNode) {
+                    s.nxt.emplace(pkey, idx);
+                    pool.retain(idx, false);
+                    s.heldNext.push_back(idx);
+                }
+            }
+            if (s.next < s.parents.size()) break;
+            s.dropHolds(pool, s.heldCur, s.curLeaves);
+            s.heldCur = std::move(s.heldNext);
+            s.heldNext.clear();
+            s.curLeaves = false;
+            s.cur = std::move(s.nxt);
+            s.nxt.clear();
+            s.parents.clear();
+            --s.level;
+            s.phase = Phase::Gather;
+        }
+    }
+    return s.phase == Phase::Done;
+}
+
+void DagBrickCommit::release(VoxelDagPool& pool) {
+    if (!impl_) return;
+    Impl& s = *impl_;
+    s.dropHolds(pool, s.heldNext, false);
+    s.dropHolds(pool, s.heldCur, s.curLeaves);
+    s.cur.clear();
+    s.nxt.clear();
+    s.parents.clear();
+    s.internedAt = {};
+    s.phase = Impl::Phase::Done;
 }
 
 uint32_t voxelizeMeshToDag(

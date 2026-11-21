@@ -357,6 +357,52 @@ TEST(voxel_dag_mesh_fill_interior_and_split_commit) {
     ASSERT(pool.liveBricks() < shellBricks * 2 + 8, "interior bricks dedupe");
 }
 
+TEST(voxel_dag_brick_commit_in_steps) {
+    bromesh::MeshData sph = bromesh::sphere(1.0f, 16, 12);
+    bromesh::DagVoxelizeOptions opts;
+    opts.resolution = 64;
+    opts.fillInterior = true;
+
+    // A commit a few bricks or nodes a step, a sweep between every two
+    // steps: what it has interned survives, and the tree is the one a whole
+    // commit makes (the pool interns the same tree to the same root).
+    bromesh::VoxelDagPool pool;
+    bromesh::DagBrickCommit commit(bromesh::voxelizeMeshToBricks(sph, opts));
+    ASSERT(!commit.done() && commit.depth() == 4, "a commit starts undone");
+    int steps = 0;
+    while (!commit.step(pool, 7)) {
+        pool.sweep();
+        ++steps;
+    }
+    ASSERT(steps > 20, "a small budget takes many steps");
+    pool.sweep();
+    const uint32_t root = commit.root();
+    ASSERT(root != bromesh::kDagNullNode, "the steps end at a root");
+    const size_t bricks = pool.liveBricks(), nodes = pool.liveNodes();
+    const uint32_t whole = bromesh::commitVoxelBricks(pool, bromesh::voxelizeMeshToBricks(sph, opts));
+    ASSERT(whole == root, "stepped and whole commits intern one tree");
+    ASSERT(pool.liveBricks() == bricks && pool.liveNodes() == nodes, "nothing interned twice");
+    ASSERT(pool.queryPoint(root, 0.5f, 0.5f, 0.5f) == bromesh::VoxelState::Solid, "filled at the centre");
+
+    // Held elsewhere, the commit's holds go and the tree stays; released
+    // too, nothing holds it and it is freed.
+    pool.retain(root, false);
+    commit.release(pool);
+    pool.sweep();
+    ASSERT(pool.liveBricks() == bricks, "the root's hold keeps the tree");
+    pool.release(root, false);
+    ASSERT(pool.liveBricks() < bricks / 4, "released, the tree is freed");
+
+    // Given up halfway, a commit's holds drop and what it made goes.
+    bromesh::VoxelDagPool pool2;
+    bromesh::DagBrickCommit half(bromesh::voxelizeMeshToBricks(sph, opts));
+    for (int i = 0; i < 30; ++i) half.step(pool2, 7);
+    ASSERT(!half.done() && pool2.liveBricks() > 0, "half a commit holds its bricks");
+    half.release(pool2);
+    pool2.sweep();
+    ASSERT(pool2.liveBricks() <= 1 && half.done(), "a commit given up frees what it made");
+}
+
 TEST(voxel_dag_mesh_voxelize_chunk_and_vox_loader) {
     bromesh::VoxelDagPool pool;
 

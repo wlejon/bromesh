@@ -413,6 +413,36 @@ DagBrickSet voxelizeMeshToBricks(const MeshData& mesh, const DagVoxelizeOptions&
 /// Intern a brick set's bricks and nodes into `pool`; returns its root.
 uint32_t commitVoxelBricks(VoxelDagPool& pool, const DagBrickSet& set);
 
+/// A brick set interned a slice at a time, so a big one costs no single
+/// frame much: each `step` interns up to `budget` bricks or nodes. What it
+/// has interned it holds (`retain`), so a `sweep` or `collect` between steps
+/// frees none of it; `release` drops those holds, once the root is held
+/// elsewhere, or to give the commit up (what then nothing holds is freed).
+class DagBrickCommit {
+public:
+    explicit DagBrickCommit(DagBrickSet set);
+    ~DagBrickCommit();
+    DagBrickCommit(DagBrickCommit&&) noexcept;
+    DagBrickCommit& operator=(DagBrickCommit&&) noexcept;
+    DagBrickCommit(const DagBrickCommit&) = delete;
+    DagBrickCommit& operator=(const DagBrickCommit&) = delete;
+
+    /// Intern up to `budget` more bricks or nodes; true once the root is made.
+    bool step(VoxelDagPool& pool, size_t budget);
+    bool done() const noexcept;
+    /// The root (kDagNullNode for an empty set), held until `release`.
+    uint32_t root() const noexcept;
+    /// Levels above the bricks, as `DagBrickSet::depth`.
+    int depth() const noexcept;
+    /// Drop every hold the commit keeps; after it, `step` does nothing.
+    void release(VoxelDagPool& pool);
+
+    struct Impl;
+
+private:
+    std::unique_ptr<Impl> impl_;
+};
+
 /// Voxelize an indexed triangle mesh into a deduplicated `VoxelDagPool` subtree.
 uint32_t voxelizeMeshToDag(
     VoxelDagPool& pool,
