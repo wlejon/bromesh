@@ -234,6 +234,11 @@ public:
 
     uint32_t resolveChildRef(uint32_t rawRef, uint32_t animTick) const noexcept;
 
+    /// The box its solid voxels fill within `ref`'s cube (a node, or a brick
+    /// when `isLeaf`), in that cube's [0, 1]^3, to one voxel; false when it
+    /// holds none. An animated subtree is the whole cube (its frames differ).
+    bool solidBounds(uint32_t ref, bool isLeaf, float lo[3], float hi[3]) const noexcept;
+
     /// Hold `ref` (a node, or a brick when `isLeaf`): it and all it reaches
     /// stay until it is released as many times (a region's root, an archetype).
     void retain(uint32_t ref, bool isLeaf);

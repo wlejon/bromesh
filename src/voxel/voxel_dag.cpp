@@ -841,6 +841,81 @@ uint32_t VoxelDagPool::resolveChildRef(uint32_t rawRef, uint32_t animTick) const
     return animFrames_[clip.frameOffset + f];
 }
 
+bool VoxelDagPool::solidBounds(uint32_t ref, bool isLeaf, float lo[3], float hi[3]) const noexcept {
+    for (int k = 0; k < 3; ++k) {
+        lo[k] = 1.0f;
+        hi[k] = 0.0f;
+    }
+    // Grows the box by a cube of `size` at `at`, unless it is already inside.
+    auto inside = [&](const float at[3], float size) {
+        for (int k = 0; k < 3; ++k) {
+            if (at[k] < lo[k] || at[k] + size > hi[k]) return false;
+        }
+        return true;
+    };
+    auto grow = [&](const float a[3], const float b[3]) {
+        for (int k = 0; k < 3; ++k) {
+            lo[k] = std::min(lo[k], a[k]);
+            hi[k] = std::max(hi[k], b[k]);
+        }
+    };
+    auto brick = [&](uint32_t b, const float at[3], float size) {
+        if (b >= bricks_.size()) return;
+        const DagBrick& br = bricks_[b];
+        const uint64_t bits = (static_cast<uint64_t>(br.solidHi) << 32u) | br.solidLo;
+        if (bits == 0u) return;
+        int mn[3] = {4, 4, 4}, mx[3] = {-1, -1, -1};
+        for (int i = 0; i < 64; ++i) {
+            if (((bits >> i) & 1u) == 0u) continue;
+            const int v[3] = {i & 3, (i >> 2) & 3, (i >> 4) & 3};
+            for (int k = 0; k < 3; ++k) {
+                mn[k] = std::min(mn[k], v[k]);
+                mx[k] = std::max(mx[k], v[k] + 1);
+            }
+        }
+        const float q = size * 0.25f;
+        const float a[3] = {at[0] + mn[0] * q, at[1] + mn[1] * q, at[2] + mn[2] * q};
+        const float c[3] = {at[0] + mx[0] * q, at[1] + mx[1] * q, at[2] + mx[2] * q};
+        grow(a, c);
+    };
+    auto node = [&](auto&& self, uint32_t n, const float at[3], float size) -> void {
+        if (n >= nodes_.size()) return;
+        const DagNode& nd = nodes_[n];
+        const uint32_t solid = dag_pack::solidMaskOf(nd);
+        const uint32_t leaf = dag_pack::leafMaskOf(nd);
+        const uint32_t valid = dag_pack::validMaskOf(nd);
+        const float half = size * 0.5f;
+        uint32_t slot = 0u;
+        for (uint32_t o = 0u; o < 8u; ++o) {
+            if ((valid & (1u << o)) == 0u) continue;
+            const uint32_t c = children_[nd.childBase + slot++];
+            if ((solid & (1u << o)) == 0u || c == kDagNullNode) continue;
+            const float sub[3] = {at[0] + ((o & 1u) ? half : 0.0f), at[1] + ((o & 2u) ? half : 0.0f),
+                                  at[2] + ((o & 4u) ? half : 0.0f)};
+            if (inside(sub, half)) continue;
+            if ((c & kDagAnimBit) != 0u) {
+                const float e[3] = {sub[0] + half, sub[1] + half, sub[2] + half};
+                grow(sub, e);
+            } else if (leaf & (1u << o)) {
+                brick(c, sub, half);
+            } else {
+                self(self, c, sub, half);
+            }
+        }
+    };
+    const float origin[3] = {0.0f, 0.0f, 0.0f};
+    if (ref == kDagNullNode) return false;
+    if ((ref & kDagAnimBit) != 0u) {
+        const float one[3] = {1.0f, 1.0f, 1.0f};
+        grow(origin, one);
+    } else if (isLeaf) {
+        brick(ref, origin, 1.0f);
+    } else {
+        node(node, ref, origin, 1.0f);
+    }
+    return lo[0] <= hi[0] && lo[1] <= hi[1] && lo[2] <= hi[2];
+}
+
 uint32_t VoxelDagPool::setRecursive(
     uint32_t curNode,
     int curDepth,
