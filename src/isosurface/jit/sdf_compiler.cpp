@@ -448,7 +448,7 @@ brass::cache::NativeModuleCache& bromesh_native_cache() {
 }
 
 brass::cache::CacheKey build_sdf_cache_key(const SdfGraph& graph, int root, const KernelOptions& opts, uint32_t lanes) {
-    brass::cache::KeyBuilder kb("bromesh.sdf/2");
+    brass::cache::KeyBuilder kb("bromesh.sdf/3");
     kb.add_brass_codegen();
     kb.add_u64("simd_lanes", static_cast<uint64_t>(lanes));
     append_sdf_graph_to_key(kb, graph, root);
@@ -506,28 +506,55 @@ void build_sdf_bundle_module(Module& mod, const SdfGraph& graph, int root) {
         kbGrid.builder().build_ret_void();
     }
 
-    // 2. Span Evaluation Function (bit-exact global X indexing for macro-block pruning)
+    // 2. Span Evaluation Function (bit-exact global X indexing matching eval_grid_simd)
     Function* fnSpan = mod.create_function("eval_span", Type::void_type(), {
         Type::ptr(), Type::f32(), Type::f32(), Type::f32(), Type::f32(), Type::i64(), Type::i64()
     });
     {
         SdfKernelBuilder kbSpan(mod, fnSpan);
-        BasicBlock* entrySpan = kbSpan.builder().append_block("entry");
-        Value* outRow = kbSpan.builder().add_block_param(entrySpan, Type::ptr());
-        Value* oxSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
-        Value* pySpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
-        Value* pzSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
-        Value* sxSpan = kbSpan.builder().add_block_param(entrySpan, Type::f32());
-        Value* xStart = kbSpan.builder().add_block_param(entrySpan, Type::i64());
-        Value* xEnd = kbSpan.builder().add_block_param(entrySpan, Type::i64());
+        Builder& b = kbSpan.builder();
+        BasicBlock* entrySpan = b.append_block("entry");
+        Value* outRow = b.add_block_param(entrySpan, Type::ptr());
+        Value* oxSpan = b.add_block_param(entrySpan, Type::f32());
+        Value* pySpan = b.add_block_param(entrySpan, Type::f32());
+        Value* pzSpan = b.add_block_param(entrySpan, Type::f32());
+        Value* sxSpan = b.add_block_param(entrySpan, Type::f32());
+        Value* xStart = b.add_block_param(entrySpan, Type::i64());
+        Value* xEnd = b.add_block_param(entrySpan, Type::i64());
 
-        kbSpan.position_at_end(entrySpan);
-        kbSpan.for_range(xStart, xEnd, kbSpan.const_i64(1), [&](Value* x) {
-            Value* px = kbSpan.fma(kbSpan.to_f32(x), sxSpan, oxSpan);
-            Value* dist = lowerToMir(kbSpan, graph, root, px, pySpan, pzSpan, false);
-            kbSpan.store_f32_indexed(outRow, x, dist, 4, 0);
+        b.position_at_end(entrySpan);
+        const uint32_t lanes = mir_detail::detectHostSimdLanes();
+        mir_detail::MirLaneEmitter emSimd(kbSpan, lanes, false);
+        mir_detail::MirLaneEmitter emScalar(kbSpan, 1, false);
+
+        Value* oneI32 = kbSpan.const_i32(1);
+        Value* lanesI32 = kbSpan.const_i32(static_cast<int32_t>(lanes));
+        Value* xStart32 = b.build_trunc_i32(xStart);
+        Value* xEnd32 = b.build_trunc_i32(xEnd);
+        Value* count = b.build_sub(xEnd32, xStart32);
+        Value* vecCount = (lanes > 1) ? b.build_mul(b.build_sdiv(count, lanesI32), lanesI32) : kbSpan.const_i32(0);
+        Value* vecEnd = b.build_add(xStart32, vecCount);
+
+        if (lanes > 1) {
+            Value* laneRamp = mir_detail::buildLaneRampF32(emSimd);
+            Value* vOx = emSimd.broadcastF32(oxSpan);
+            Value* vSx = emSimd.broadcastF32(sxSpan);
+            Value* vPy = emSimd.broadcastF32(pySpan);
+            Value* vPz = emSimd.broadcastF32(pzSpan);
+            kbSpan.for_range(xStart32, vecEnd, lanesI32, [&](Value* ix) {
+                Value* ixVec = b.build_vadd(emSimd.broadcastF32(kbSpan.to_f32(ix)), laneRamp);
+                Value* pxVec = emSimd.fma(ixVec, vSx, vOx);
+                Value* distVec = mir_detail::emitSdfGraphSingleSource(emSimd, graph, root, pxVec, vPy, vPz);
+                emSimd.storeLaneF32(outRow, ix, distVec);
+            });
+        }
+
+        kbSpan.for_range(vecEnd, xEnd32, oneI32, [&](Value* ix) {
+            Value* px = b.build_fma(kbSpan.to_f32(ix), sxSpan, oxSpan);
+            Value* dist = mir_detail::emitSdfGraphSingleSource(emScalar, graph, root, px, pySpan, pzSpan);
+            emScalar.storeLaneF32(outRow, ix, dist);
         });
-        kbSpan.builder().build_ret_void();
+        b.build_ret_void();
     }
 
     // 3. Point Evaluation Function
@@ -820,7 +847,7 @@ SDFVolume JitSdfCompiler::evaluateVolume(const SdfGraph& graph, int dimX, int di
         auto evalSliceRange = [&](int64_t zStart, int64_t zEnd) {
             if (!usePrunedEval) {
                 for (int64_t z = zStart; z < zEnd; ++z) {
-                    const float sliceZ = bounds.min.z + static_cast<float>(z) * vol.cellSize[2];
+                    const float sliceZ = std::fma(static_cast<float>(z), vol.cellSize[2], bounds.min.z);
                     float* sliceOut = vol.field.data() + static_cast<size_t>(z) * static_cast<size_t>(dimY) * static_cast<size_t>(dimX);
                     if (kernel.simdGridFn) {
                         kernel.simdGridFn(
@@ -838,7 +865,7 @@ SDFVolume JitSdfCompiler::evaluateVolume(const SdfGraph& graph, int dimX, int di
             for (int64_t z = zStart; z < zEnd; ++z) {
                 int bz0 = (z > 0) ? static_cast<int>((z - 1) >> 3) : 0;
                 int bz1 = std::min(static_cast<int>(z >> 3), blocksZ - 1);
-                float pz = bounds.min.z + static_cast<float>(z) * vol.cellSize[2];
+                float pz = std::fma(static_cast<float>(z), vol.cellSize[2], bounds.min.z);
 
                 for (int y = 0; y < dimY; ++y) {
                     int by0 = (y > 0) ? ((y - 1) >> 3) : 0;
