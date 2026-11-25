@@ -415,6 +415,10 @@ endif()
 if(TARGET brass)
     target_link_libraries(bromesh PUBLIC brass)
     target_compile_definitions(bromesh PUBLIC BROMESH_HAS_BRASS_JIT=1)
+    target_sources(bromesh PRIVATE
+        src/isosurface/jit/mir_sdf_lowering.cpp
+        src/isosurface/jit/mir_mesh_kernels.cpp
+    )
 endif()
 
 # Standalone Bronze JavaScript API

@@ -43,6 +43,12 @@ target_compile_definitions(bromesh_test PRIVATE
 
 add_test(NAME bromesh_test COMMAND bromesh_test)
 
+if(TARGET brass)
+    add_executable(test_mir_mesh_kernels test_mir_mesh_kernels.cpp)
+    target_link_libraries(test_mir_mesh_kernels PRIVATE bromesh)
+    add_test(NAME test_mir_mesh_kernels COMMAND test_mir_mesh_kernels)
+endif()
+
 if(BROMESH_ENABLE_API AND TARGET bromesh_api)
     add_executable(test_mesh_api test_mesh_api.cpp test_mesh_api_restored.cpp test_mesh_api_validation.cpp
                    test_mesh_api_gate.cpp)
