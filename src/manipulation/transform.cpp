@@ -1,4 +1,5 @@
 #include "bromesh/manipulation/transform.h"
+#include "bromesh/isosurface/jit/mir_mesh_kernels.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,22 +14,83 @@ void transformMesh(MeshData& mesh, const float* m) {
     const bool hasNormals = mesh.hasNormals();
     const bool hasTangents = mesh.hasTangents();
 
-    // Compute inverse-transpose of upper 3x3 for normal transformation.
-    // For a general 3x3 A, inv(A)^T = adj(A)^T / det(A).
-    // We only need the direction so we can skip dividing by det (and re-normalize).
-    float n00 = m[5]*m[10] - m[6]*m[9];
-    float n01 = m[6]*m[8]  - m[4]*m[10];
-    float n02 = m[4]*m[9]  - m[5]*m[8];
-    float n10 = m[2]*m[9]  - m[1]*m[10];
-    float n11 = m[0]*m[10] - m[2]*m[8];
-    float n12 = m[1]*m[8]  - m[0]*m[9];
-    float n20 = m[1]*m[6]  - m[2]*m[5];
-    float n21 = m[2]*m[4]  - m[0]*m[6];
-    float n22 = m[0]*m[5]  - m[1]*m[4];
+    const float det3x3 =
+        m[0] * (m[5] * m[10] - m[6] * m[9]) -
+        m[4] * (m[1] * m[10] - m[2] * m[9]) +
+        m[8] * (m[1] * m[6] - m[2] * m[5]);
+    const bool flipHandedness = (det3x3 < 0.0f);
 
-    float det3x3 = m[0]*n00 + m[4]*n10 + m[8]*n20;
-    bool flipHandedness = (det3x3 < 0.0f);
+    float mats[25];
+    std::memcpy(mats, m, 16u * sizeof(float));
+    computeNormalMatrix3x3(m, mats + 16);
 
+#if BROMESH_HAS_BRASS_JIT
+    if (vCount >= 64 && std::fabs(det3x3) > 1e-12f) {
+        static const MirVertexTransformKernel kVertKernel = compileMirVertexTransformKernel();
+        if (kVertKernel.cpuValid) {
+            const int32_t stride = static_cast<int32_t>(((vCount + 7u) / 8u) * 8u);
+            std::vector<float> inSoa(static_cast<size_t>(stride) * 6u, 0.0f);
+            std::vector<float> outSoa(static_cast<size_t>(stride) * 6u, 0.0f);
+
+            float* ipx = inSoa.data() + 0 * stride;
+            float* ipy = inSoa.data() + 1 * stride;
+            float* ipz = inSoa.data() + 2 * stride;
+            float* inx = inSoa.data() + 3 * stride;
+            float* iny = inSoa.data() + 4 * stride;
+            float* inz = inSoa.data() + 5 * stride;
+            for (size_t v = 0; v < vCount; ++v) {
+                ipx[v] = mesh.positions[v * 3 + 0];
+                ipy[v] = mesh.positions[v * 3 + 1];
+                ipz[v] = mesh.positions[v * 3 + 2];
+                inx[v] = hasNormals ? mesh.normals[v * 3 + 0] : 0.0f;
+                iny[v] = hasNormals ? mesh.normals[v * 3 + 1] : 1.0f;
+                inz[v] = hasNormals ? mesh.normals[v * 3 + 2] : 0.0f;
+            }
+
+            if (kVertKernel.executeCpuSimdSoa(inSoa.data(), outSoa.data(), mats,
+                                               static_cast<int32_t>(vCount), stride)) {
+                const float* opx = outSoa.data() + 0 * stride;
+                const float* opy = outSoa.data() + 1 * stride;
+                const float* opz = outSoa.data() + 2 * stride;
+                const float* onx = outSoa.data() + 3 * stride;
+                const float* ony = outSoa.data() + 4 * stride;
+                const float* onz = outSoa.data() + 5 * stride;
+
+                for (size_t v = 0; v < vCount; ++v) {
+                    mesh.positions[v * 3 + 0] = opx[v];
+                    mesh.positions[v * 3 + 1] = opy[v];
+                    mesh.positions[v * 3 + 2] = opz[v];
+                    if (hasNormals) {
+                        mesh.normals[v * 3 + 0] = onx[v];
+                        mesh.normals[v * 3 + 1] = ony[v];
+                        mesh.normals[v * 3 + 2] = onz[v];
+                    }
+                    if (hasTangents) {
+                        float tx = mesh.tangents[v * 4 + 0];
+                        float ty = mesh.tangents[v * 4 + 1];
+                        float tz = mesh.tangents[v * 4 + 2];
+                        float tw = mesh.tangents[v * 4 + 3];
+
+                        float ttx = m[0] * tx + m[4] * ty + m[8] * tz;
+                        float tty = m[1] * tx + m[5] * ty + m[9] * tz;
+                        float ttz = m[2] * tx + m[6] * ty + m[10] * tz;
+
+                        float len = std::sqrt(ttx * ttx + tty * tty + ttz * ttz);
+                        if (len > 1e-8f) {
+                            mesh.tangents[v * 4 + 0] = ttx / len;
+                            mesh.tangents[v * 4 + 1] = tty / len;
+                            mesh.tangents[v * 4 + 2] = ttz / len;
+                        }
+                        mesh.tangents[v * 4 + 3] = flipHandedness ? -tw : tw;
+                    }
+                }
+                return;
+            }
+        }
+    }
+#endif
+
+    const float* nmat = mats + 16;
     for (size_t v = 0; v < vCount; ++v) {
         float x = mesh.positions[v*3+0];
         float y = mesh.positions[v*3+1];
@@ -44,9 +106,9 @@ void transformMesh(MeshData& mesh, const float* m) {
             float ny = mesh.normals[v*3+1];
             float nz = mesh.normals[v*3+2];
 
-            float tnx = n00*nx + n10*ny + n20*nz;
-            float tny = n01*nx + n11*ny + n21*nz;
-            float tnz = n02*nx + n12*ny + n22*nz;
+            float tnx = nmat[0]*nx + nmat[3]*ny + nmat[6]*nz;
+            float tny = nmat[1]*nx + nmat[4]*ny + nmat[7]*nz;
+            float tnz = nmat[2]*nx + nmat[5]*ny + nmat[8]*nz;
 
             float len = std::sqrt(tnx*tnx + tny*tny + tnz*tnz);
             if (len > 1e-8f) {

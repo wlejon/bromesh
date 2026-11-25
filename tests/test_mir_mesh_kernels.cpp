@@ -1,4 +1,8 @@
 #include "bromesh/isosurface/jit/mir_mesh_kernels.h"
+#include "bromesh/isosurface/jit/sdf_compiler.h"
+#include "bromesh/isosurface/jit/jit_mesher.h"
+#include "bromesh/manipulation/normals.h"
+#include "bromesh/manipulation/transform.h"
 #include "bromesh/primitives/primitives.h"
 
 #if BROMESH_HAS_BRASS_JIT
@@ -8,6 +12,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -226,12 +231,134 @@ void testVertexTransformAndNormalKernel() {
     }
 }
 
+void testTransformMeshSimdWiring() {
+    bromesh::MeshData base = bromesh::sphere(1.0f, 16, 12);
+    bromesh::generateTangents(base);
+    CHECK(base.vertexCount() >= 64 && base.hasNormals() && base.hasTangents(),
+          "base sphere for transformMesh test has >= 64 vertices, normals, and tangents");
+
+    const float posMat[16] = {
+        1.2f,  0.3f, 0.0f, 0.0f,
+       -0.2f,  0.9f, 0.1f, 0.0f,
+        0.0f, -0.1f, 1.4f, 0.0f,
+        0.5f, -0.3f, 1.1f, 1.0f
+    };
+    const float negMat[16] = {
+       -1.1f,  0.2f, 0.0f, 0.0f,
+        0.1f,  0.8f, 0.0f, 0.0f,
+        0.0f,  0.0f, 1.3f, 0.0f,
+       -0.4f,  0.7f, 0.2f, 1.0f
+    };
+
+    auto verifyTransformCase = [&](const bromesh::MeshData& src, const float m[16], const char* label) {
+        bromesh::MeshData actual = src;
+        bromesh::transformMesh(actual, m);
+
+        bromesh::MeshData ref;
+        bromesh::transformMeshReference(src, ref, m);
+
+        const float pDiff = maxAbsDiff(actual.positions, ref.positions);
+        CHECK(pDiff < 1e-5f, label);
+        if (src.hasNormals()) {
+            const float nDiff = maxAbsDiff(actual.normals, ref.normals);
+            CHECK(nDiff < 1e-5f, label);
+        } else {
+            CHECK(actual.normals.empty(), "transformMesh must not allocate normals when absent");
+        }
+        if (src.hasTangents()) {
+            const float det =
+                m[0] * (m[5] * m[10] - m[6] * m[9]) -
+                m[4] * (m[1] * m[10] - m[2] * m[9]) +
+                m[8] * (m[1] * m[6] - m[2] * m[5]);
+            const float wantW = (det < 0.0f ? -1.0f : 1.0f) * src.tangents[3];
+            CHECK(std::fabs(actual.tangents[3] - wantW) < 1e-5f,
+                  "transformMesh tangent handedness must track det < 0");
+        }
+    };
+
+    verifyTransformCase(base, posMat, "transformMesh positive-det matches ref");
+    verifyTransformCase(base, negMat, "transformMesh negative-det mirror matches ref");
+
+    bromesh::MeshData noNormals = base;
+    noNormals.normals.clear();
+    noNormals.tangents.clear();
+    verifyTransformCase(noNormals, posMat, "transformMesh without normals matches ref");
+}
+
+void testSdfCompilerSimdMslBundlesAndMesher() {
+    bromesh::SdfGraph g;
+    const int sph = g.sphere(0.9f);
+    const int bx = g.translate(g.box({0.55f, 0.55f, 0.55f}), {0.65f, 0.0f, 0.0f});
+    g.setRoot(g.opSmoothUnion(sph, bx, 0.2f));
+
+    auto& comp = bromesh::JitSdfCompiler::instance();
+    const bromesh::CompiledSdfKernel ck = comp.compile(g);
+    CHECK(ck.isJit, "JitSdfCompiler::compile must produce valid JIT kernels");
+    CHECK(ck.simdGridFn != nullptr, "JitSdfCompiler::compile must expose eval_grid_simd");
+
+    const bromath::AABB3 bounds{{-2.0f, -2.0f, -2.0f}, {2.0f, 2.0f, 2.0f}};
+    const int dim = 24;
+    const bromesh::SDFVolume unprunedVol = comp.evaluateVolume(g, dim, dim, dim, bounds, -1, true, 0.0f, false);
+    const bromesh::SDFVolume prunedVol = comp.evaluateVolume(g, dim, dim, dim, bounds, -1, true, 0.0f, true);
+    std::vector<float> refField;
+    bromesh::evaluateSdfGridReference(g, dim, dim, dim, bounds, refField);
+
+    const float unprunedDiff = maxAbsDiff(unprunedVol.field, refField);
+    CHECK(unprunedDiff < 1e-5f, "evaluateVolume (unpruned SIMD) must match scalar ref");
+
+    const bromesh::MeshData mcField = bromesh::marchingCubesFromField(
+        g, unprunedVol.field.data(), dim, dim, dim, bounds, 0.0f, true, true, nullptr);
+    const bromesh::MeshData mcSdf = bromesh::marchingCubesFromSDF(
+        g, dim, dim, dim, bounds, 0.0f, true, true, false);
+    CHECK(!mcField.empty() && mcField.positions.size() == mcSdf.positions.size(),
+          "marchingCubesFromField matches marchingCubesFromSDF vertex count");
+    CHECK(maxAbsDiff(mcField.positions, mcSdf.positions) < 1e-5f,
+          "marchingCubesFromField matches marchingCubesFromSDF positions");
+    CHECK(!prunedVol.field.empty(), "evaluateVolume (pruned) succeeds");
+
+    const bromesh::MeshData snField = bromesh::surfaceNetsFromField(
+        g, unprunedVol.field.data(), dim, dim, dim, bounds, 0.0f, nullptr);
+    const bromesh::MeshData snSdf = bromesh::surfaceNetsFromSDF(
+        g, dim, dim, dim, bounds, 0.0f, false);
+    CHECK(!snField.empty() && snField.positions.size() == snSdf.positions.size(),
+          "surfaceNetsFromField matches surfaceNetsFromSDF vertex count");
+    CHECK(maxAbsDiff(snField.positions, snSdf.positions) < 1e-5f,
+          "surfaceNetsFromField matches surfaceNetsFromSDF positions");
+
+    // Multi-target SPIR-V + MSL + bundle round-trip
+    const auto spv1 = comp.compile_spirv(g);
+    const auto spv2 = comp.compile_spirv(g);
+    CHECK(!spv1.empty() && spv1 == spv2, "compile_spirv hit matches initial compilation");
+
+    const std::string msl = comp.compile_msl(g);
+    CHECK(!msl.empty() && msl.find("#include <metal_stdlib>") != std::string::npos &&
+              msl.find("eval_sdf_gpu") != std::string::npos,
+          "compile_msl emits valid Metal compute shader");
+
+    const std::filesystem::path bundlePath =
+        std::filesystem::temp_directory_path() / "bromesh_test_sdf_bundle.bacb";
+    std::filesystem::remove(bundlePath);
+    std::string bundleErr;
+    CHECK(comp.export_kernel_bundle(bundlePath.string(), &bundleErr),
+          "export_kernel_bundle must succeed");
+    CHECK(std::filesystem::exists(bundlePath) && std::filesystem::file_size(bundlePath) > 0,
+          "exported bundle file must be non-empty");
+    comp.clearCache();
+    CHECK(comp.import_kernel_bundle(bundlePath.string(), &bundleErr),
+          "import_kernel_bundle must succeed");
+    const auto spvImported = comp.compile_spirv(g);
+    CHECK(spvImported == spv1, "re-imported SPIR-V from bundle matches original");
+    std::filesystem::remove(bundlePath);
+}
+
 } // namespace
 
 int main() {
     testGridSdfCsgKernel();
     testGridSdfNoiseAndTrigKernel();
     testVertexTransformAndNormalKernel();
+    testTransformMeshSimdWiring();
+    testSdfCompilerSimdMslBundlesAndMesher();
     std::printf("mir_mesh_kernels tests: %d/%d passed\n", gChecksPassed, gChecksRun);
     return (gChecksPassed == gChecksRun) ? 0 : 1;
 }

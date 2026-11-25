@@ -81,6 +81,80 @@ static void computeAnalyticalNormals(MeshData& mesh, const CompiledSdfKernel& ke
 #endif
 }
 
+MeshData marchingCubesFromField(
+    const SdfGraph& graph,
+    const float* field,
+    int dimX, int dimY, int dimZ,
+    const bromath::AABB3& bounds,
+    float isoLevel,
+    bool closeBoundary,
+    bool computeGradients,
+    const uint8_t* blockMask,
+    int rootNode
+) {
+    if (!field || dimX <= 1 || dimY <= 1 || dimZ <= 1) {
+        return MeshData();
+    }
+    MeshData mesh = marchingCubes(field, dimX, dimY, dimZ, isoLevel, 1.0f, closeBoundary, blockMask);
+    if (mesh.empty()) {
+        return mesh;
+    }
+
+    const float cellSize[3] = {
+        (bounds.max.x - bounds.min.x) / static_cast<float>(dimX - 1),
+        (bounds.max.y - bounds.min.y) / static_cast<float>(dimY - 1),
+        (bounds.max.z - bounds.min.z) / static_cast<float>(dimZ - 1),
+    };
+    const size_t numVerts = mesh.positions.size() / 3;
+    for (size_t i = 0; i < numVerts; ++i) {
+        mesh.positions[3 * i + 0] = bounds.min.x + mesh.positions[3 * i + 0] * cellSize[0];
+        mesh.positions[3 * i + 1] = bounds.min.y + mesh.positions[3 * i + 1] * cellSize[1];
+        mesh.positions[3 * i + 2] = bounds.min.z + mesh.positions[3 * i + 2] * cellSize[2];
+    }
+
+    if (computeGradients) {
+        CompiledSdfKernel kernel = JitSdfCompiler::instance().compile(graph, rootNode);
+        computeAnalyticalNormals(mesh, kernel, cellSize);
+    } else {
+        computeNormals(mesh);
+    }
+    return mesh;
+}
+
+MeshData surfaceNetsFromField(
+    const SdfGraph& graph,
+    const float* field,
+    int dimX, int dimY, int dimZ,
+    const bromath::AABB3& bounds,
+    float isoLevel,
+    const uint8_t* blockMask,
+    int rootNode
+) {
+    if (!field || dimX <= 1 || dimY <= 1 || dimZ <= 1) {
+        return MeshData();
+    }
+    MeshData mesh = surfaceNets(field, dimX, dimY, dimZ, isoLevel, 1.0f, blockMask);
+    if (mesh.empty()) {
+        return mesh;
+    }
+
+    const float cellSize[3] = {
+        (bounds.max.x - bounds.min.x) / static_cast<float>(dimX - 1),
+        (bounds.max.y - bounds.min.y) / static_cast<float>(dimY - 1),
+        (bounds.max.z - bounds.min.z) / static_cast<float>(dimZ - 1),
+    };
+    const size_t numVerts = mesh.positions.size() / 3;
+    for (size_t i = 0; i < numVerts; ++i) {
+        mesh.positions[3 * i + 0] = bounds.min.x + mesh.positions[3 * i + 0] * cellSize[0];
+        mesh.positions[3 * i + 1] = bounds.min.y + mesh.positions[3 * i + 1] * cellSize[1];
+        mesh.positions[3 * i + 2] = bounds.min.z + mesh.positions[3 * i + 2] * cellSize[2];
+    }
+
+    CompiledSdfKernel kernel = JitSdfCompiler::instance().compile(graph, rootNode);
+    computeAnalyticalNormals(mesh, kernel, cellSize);
+    return mesh;
+}
+
 MeshData marchingCubesFromSDF(
     const SdfGraph& graph,
     int dimX, int dimY, int dimZ,
@@ -100,27 +174,8 @@ MeshData marchingCubesFromSDF(
                                    ? vol.activeBlockMask.data()
                                    : nullptr;
 
-    MeshData mesh = marchingCubes(vol.field.data(), dimX, dimY, dimZ, isoLevel, 1.0f, closeBoundary, blockMask);
-    if (mesh.empty()) {
-        return mesh;
-    }
-
-    // Transform vertices from grid-index coordinate frame to world-space bounds
-    const size_t numVerts = mesh.positions.size() / 3;
-    for (size_t i = 0; i < numVerts; ++i) {
-        mesh.positions[3 * i + 0] = bounds.min.x + mesh.positions[3 * i + 0] * vol.cellSize[0];
-        mesh.positions[3 * i + 1] = bounds.min.y + mesh.positions[3 * i + 1] * vol.cellSize[1];
-        mesh.positions[3 * i + 2] = bounds.min.z + mesh.positions[3 * i + 2] * vol.cellSize[2];
-    }
-
-    if (computeGradients) {
-        CompiledSdfKernel kernel = JitSdfCompiler::instance().compile(graph);
-        computeAnalyticalNormals(mesh, kernel, vol.cellSize);
-    } else {
-        computeNormals(mesh);
-    }
-
-    return mesh;
+    return marchingCubesFromField(
+        graph, vol.field.data(), dimX, dimY, dimZ, bounds, isoLevel, closeBoundary, computeGradients, blockMask, -1);
 }
 
 MeshData surfaceNetsFromSDF(
@@ -140,23 +195,8 @@ MeshData surfaceNetsFromSDF(
                                    ? vol.activeBlockMask.data()
                                    : nullptr;
 
-    MeshData mesh = surfaceNets(vol.field.data(), dimX, dimY, dimZ, isoLevel, 1.0f, blockMask);
-    if (mesh.empty()) {
-        return mesh;
-    }
-
-    // Transform vertices from grid-index coordinate frame to world-space bounds
-    const size_t numVerts = mesh.positions.size() / 3;
-    for (size_t i = 0; i < numVerts; ++i) {
-        mesh.positions[3 * i + 0] = bounds.min.x + mesh.positions[3 * i + 0] * vol.cellSize[0];
-        mesh.positions[3 * i + 1] = bounds.min.y + mesh.positions[3 * i + 1] * vol.cellSize[1];
-        mesh.positions[3 * i + 2] = bounds.min.z + mesh.positions[3 * i + 2] * vol.cellSize[2];
-    }
-
-    CompiledSdfKernel kernel = JitSdfCompiler::instance().compile(graph);
-    computeAnalyticalNormals(mesh, kernel, vol.cellSize);
-
-    return mesh;
+    return surfaceNetsFromField(
+        graph, vol.field.data(), dimX, dimY, dimZ, bounds, isoLevel, blockMask, -1);
 }
 
 } // namespace bromesh

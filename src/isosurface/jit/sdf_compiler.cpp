@@ -1,4 +1,5 @@
 #include "sdf_compiler_internal.h"
+#include "mir_lane_emitter.h"
 
 #if BROMESH_HAS_BRASS_JIT
 #include <brass/cache/artifact_cache.hpp>
@@ -203,7 +204,7 @@ Value* lowerToMir(SdfKernelBuilder& kb, const SdfGraph& graph, int nodeId,
     return kb.const_f32(1e9f);
 }
 
-static Function* buildGpuSdfKernel(Module& mod, const SdfGraph& graph, int rootNode) {
+Function* buildGpuSdfKernel(Module& mod, const SdfGraph& graph, int rootNode) {
     int root = rootNode >= 0 ? rootNode : graph.root();
     Function* fn = mod.create_function("eval_sdf_gpu", Type::void_type(), {
         Type::ptr(), // float* out_grid
@@ -377,8 +378,13 @@ JitSdfCompiler& JitSdfCompiler::instance() {
 }
 
 void JitSdfCompiler::clearCache() {
-    std::lock_guard<std::mutex> lock(m_cacheMutex);
-    m_cache.clear();
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        m_cache.clear();
+    }
+#if BROMESH_HAS_BRASS_JIT
+    clearGpuSdfCompilerCaches();
+#endif
 }
 
 #if BROMESH_HAS_BRASS_JIT
@@ -388,21 +394,21 @@ std::filesystem::path bromesh_cache_directory() {
     return brass::cache::default_cache_dir("bromesh", "kernels", "BROMESH_CACHE_DIR");
 }
 
-brass::cache::NativeModuleCache& bromesh_native_cache() {
-    static constexpr uint64_t kMaxBytes = 64ULL * 1024 * 1024;
-    static auto* store = new brass::cache::ArtifactCache(bromesh_cache_directory(), kMaxBytes);
-    static auto* cache = new brass::cache::NativeModuleCache(*store);
-    return *cache;
-}
-
 uint32_t f32_bits(float v) noexcept {
     uint32_t u = 0;
     std::memcpy(&u, &v, sizeof(u));
     return u;
 }
 
-brass::cache::CacheKey build_sdf_cache_key(const SdfGraph& graph, int root, const KernelOptions& opts) {
-    brass::cache::KeyBuilder kb("bromesh.sdf/1");
+} // namespace
+
+brass::cache::ArtifactCache& bromesh_artifact_cache() {
+    static constexpr uint64_t kMaxBytes = 64ULL * 1024 * 1024;
+    static auto* store = new brass::cache::ArtifactCache(bromesh_cache_directory(), kMaxBytes);
+    return *store;
+}
+
+void append_sdf_graph_to_key(brass::cache::KeyBuilder& kb, const SdfGraph& graph, int root) {
     kb.add_u64("root", static_cast<uint64_t>(static_cast<int64_t>(root)));
     kb.add_u64("node_count", static_cast<uint64_t>(graph.size()));
     for (const auto& node : graph.nodes()) {
@@ -432,6 +438,20 @@ brass::cache::CacheKey build_sdf_cache_key(const SdfGraph& graph, int root, cons
             kb.add_u64("inst_imm", f32_bits(inst.imm));
         }
     }
+}
+
+namespace {
+
+brass::cache::NativeModuleCache& bromesh_native_cache() {
+    static auto* cache = new brass::cache::NativeModuleCache(bromesh_artifact_cache());
+    return *cache;
+}
+
+brass::cache::CacheKey build_sdf_cache_key(const SdfGraph& graph, int root, const KernelOptions& opts, uint32_t lanes) {
+    brass::cache::KeyBuilder kb("bromesh.sdf/2");
+    kb.add_brass_codegen();
+    kb.add_u64("simd_lanes", static_cast<uint64_t>(lanes));
+    append_sdf_graph_to_key(kb, graph, root);
     kb.add_u64("opt_level", static_cast<uint64_t>(opts.opt_level));
     kb.add_bool("enable_optimizations", opts.enable_optimizations);
     kb.add_bool("enable_sroa", opts.enable_sroa);
@@ -531,6 +551,10 @@ void build_sdf_bundle_module(Module& mod, const SdfGraph& graph, int root) {
 
     // 5. Interval / Lipschitz Macro-Block Bounds Function (#106)
     (void)buildSdfBlockBoundsFunction(mod, graph, root);
+
+    // 6. Single-source SIMD grid evaluation kernel (AVX2 f32x8 / SSE+NEON f32x4)
+    (void)mir_detail::buildSdfGridSimdFunction(
+        mod, graph, root, mir_detail::detectHostSimdLanes(), "eval_grid_simd");
 }
 
 brass::cache::NativeOptions sdf_native_options() {
@@ -581,9 +605,13 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
             opts.enable_superopt = true;
             opts.enable_avx2 = true;
             opts.enable_fma = true;
+            opts.enable_vectorize = true;
+            opts.enable_slp = true;
+            opts.enable_fp_reassociation = true;
             opts.enable_parallel = false;
 
-            const brass::cache::CacheKey client_key = build_sdf_cache_key(graph, root, opts);
+            const uint32_t simdLanes = mir_detail::detectHostSimdLanes();
+            const brass::cache::CacheKey client_key = build_sdf_cache_key(graph, root, opts, simdLanes);
             const brass::cache::NativeOptions native_opts = sdf_native_options();
             std::string cache_err;
             std::shared_ptr<const brass::cache::NativeModule> native_mod =
@@ -602,6 +630,7 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
             bool loaded_from_cache = false;
             if (native_mod) {
                 void* p_grid = native_mod->symbol("eval_grid");
+                void* p_simd_grid = native_mod->symbol("eval_grid_simd");
                 void* p_span = native_mod->symbol("eval_span");
                 void* p_point = native_mod->symbol("eval_point");
                 void* p_grad = native_mod->symbol("eval_point_and_grad");
@@ -609,6 +638,11 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
                 if (p_grid && p_span && p_point && p_grad && p_bounds) {
                     kernel.gridKernel = KernelFunction::from_owner("eval_grid", p_grid, 0, native_mod);
                     kernel.gridFn = kernel.gridKernel.as<SdfGridEvalFn>();
+                    if (p_simd_grid) {
+                        kernel.simdGridKernel =
+                            KernelFunction::from_owner("eval_grid_simd", p_simd_grid, 0, native_mod);
+                        kernel.simdGridFn = kernel.simdGridKernel.as<SdfGridSimdEvalFn>();
+                    }
                     kernel.spanKernel = KernelFunction::from_owner("eval_span", p_span, 0, native_mod);
                     kernel.spanFn = kernel.spanKernel.as<SdfSpanEvalFn>();
                     kernel.pointKernel = KernelFunction::from_owner("eval_point", p_point, 0, native_mod);
@@ -629,6 +663,13 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
                     KernelJit jitGrid(opts);
                     kernel.gridKernel = jitGrid.compile(*fnGrid);
                     if (kernel.gridKernel.is_valid()) kernel.gridFn = kernel.gridKernel.as<SdfGridEvalFn>();
+                }
+                if (Function* fnSimdGrid = mod.get_function("eval_grid_simd")) {
+                    KernelJit jitSimdGrid(opts);
+                    kernel.simdGridKernel = jitSimdGrid.compile(*fnSimdGrid);
+                    if (kernel.simdGridKernel.is_valid()) {
+                        kernel.simdGridFn = kernel.simdGridKernel.as<SdfGridSimdEvalFn>();
+                    }
                 }
                 if (Function* fnSpan = mod.get_function("eval_span")) {
                     KernelJit jitSpan(opts);
@@ -667,33 +708,6 @@ CompiledSdfKernel JitSdfCompiler::compile(const SdfGraph& graph, int rootNode) {
         m_cache[hash] = kernel;
     }
     return kernel;
-}
-
-std::vector<uint32_t> JitSdfCompiler::compile_spirv(const SdfGraph& graph, int rootNode) {
-#if BROMESH_HAS_BRASS_JIT
-    uint64_t hash = graph.computeHash();
-    Module mod("sdf_spirv_" + std::to_string(hash));
-    Function* fn = buildGpuSdfKernel(mod, graph, rootNode);
-    auto kernel = brass::target::SpirvTarget::compile(*fn);
-    return kernel.words;
-#else
-    (void)graph;
-    (void)rootNode;
-    return {};
-#endif
-}
-
-std::string JitSdfCompiler::compile_ptx(const SdfGraph& graph, int rootNode) {
-#if BROMESH_HAS_BRASS_JIT
-    uint64_t hash = graph.computeHash();
-    Module mod("sdf_ptx_" + std::to_string(hash));
-    Function* fn = buildGpuSdfKernel(mod, graph, rootNode);
-    return brass::target::PtxTarget::emit_function(*fn);
-#else
-    (void)graph;
-    (void)rootNode;
-    return {};
-#endif
 }
 
 SDFVolume JitSdfCompiler::evaluateVolume(const SdfGraph& graph, int dimX, int dimY, int dimZ,
@@ -802,17 +816,21 @@ SDFVolume JitSdfCompiler::evaluateVolume(const SdfGraph& graph, int dimX, int di
         vol.activeBlockCount = totalBlocks;
     }
 
-    if (kernel.gridFn) {
+    if (kernel.gridFn || kernel.simdGridFn) {
         auto evalSliceRange = [&](int64_t zStart, int64_t zEnd) {
             if (!usePrunedEval) {
                 for (int64_t z = zStart; z < zEnd; ++z) {
-                    float sliceBoundsMin[3] = {
-                        bounds.min.x,
-                        bounds.min.y,
-                        bounds.min.z + static_cast<float>(z) * vol.cellSize[2]
-                    };
+                    const float sliceZ = bounds.min.z + static_cast<float>(z) * vol.cellSize[2];
                     float* sliceOut = vol.field.data() + static_cast<size_t>(z) * static_cast<size_t>(dimY) * static_cast<size_t>(dimX);
-                    kernel.gridFn(sliceOut, sliceBoundsMin, vol.cellSize, dimX, dimY, 1);
+                    if (kernel.simdGridFn) {
+                        kernel.simdGridFn(
+                            sliceOut, dimX, dimY, 1,
+                            bounds.min.x, bounds.min.y, sliceZ,
+                            vol.cellSize[0], vol.cellSize[1], vol.cellSize[2]);
+                    } else {
+                        float sliceBoundsMin[3] = {bounds.min.x, bounds.min.y, sliceZ};
+                        kernel.gridFn(sliceOut, sliceBoundsMin, vol.cellSize, dimX, dimY, 1);
+                    }
                 }
                 return;
             }

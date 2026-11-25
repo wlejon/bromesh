@@ -2,6 +2,13 @@
 
 #include "bromesh/isosurface/jit/sdf_compiler.h"
 
+#if BROMESH_HAS_BRASS_JIT
+namespace brass::cache {
+class ArtifactCache;
+class KeyBuilder;
+} // namespace brass::cache
+#endif
+
 namespace bromesh {
 
 #if BROMESH_HAS_BRASS_JIT
@@ -43,6 +50,10 @@ MirInterval lowerCustomExprIntervalToMir(brass::codegen::SdfKernelBuilder& kb, c
                                          MirInterval bx, MirInterval by, MirInterval bz);
 
 brass::Function* buildSdfBlockBoundsFunction(brass::Module& mod, const SdfGraph& graph, int rootNode);
+brass::Function* buildGpuSdfKernel(brass::Module& mod, const SdfGraph& graph, int rootNode);
+brass::cache::ArtifactCache& bromesh_artifact_cache();
+void append_sdf_graph_to_key(brass::cache::KeyBuilder& kb, const SdfGraph& graph, int root);
+void clearGpuSdfCompilerCaches();
 #endif
 
 float evalScalarNode(const SdfGraph& graph, int nodeId, float px, float py, float pz);

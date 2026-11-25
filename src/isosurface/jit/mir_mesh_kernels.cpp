@@ -187,7 +187,7 @@ using mir_detail::MirLaneEmitter;
 using mir_detail::buildLaneRampF32;
 using mir_detail::emitSdfGraphSingleSource;
 
-uint32_t detectHostSimdLanes() {
+uint32_t detectHostSimdLanesImpl() {
     if (Target::host().is_x64()) {
         return Target::host_has_avx() ? 8u : 4u;
     }
@@ -215,70 +215,7 @@ KernelOptions makeSimdJitOptions(uint32_t lanes) {
 }
 
 Function* buildGridSdfCpuSimdFunction(Module& mod, const SdfGraph& graph, int root, uint32_t lanes) {
-    Function* fn = mod.create_function("eval_sdf_grid_simd", Type::void_type(), {
-        Type::ptr(), Type::i32(), Type::i32(), Type::i32(),
-        Type::f32(), Type::f32(), Type::f32(),
-        Type::f32(), Type::f32(), Type::f32()
-    });
-    SdfKernelBuilder kb(mod, fn);
-    Builder& b = kb.builder();
-    BasicBlock* entry = b.append_block("entry");
-    Value* outField = b.add_block_param(entry, Type::ptr());
-    Value* dimX = b.add_block_param(entry, Type::i32());
-    Value* dimY = b.add_block_param(entry, Type::i32());
-    Value* dimZ = b.add_block_param(entry, Type::i32());
-    Value* minX = b.add_block_param(entry, Type::f32());
-    Value* minY = b.add_block_param(entry, Type::f32());
-    Value* minZ = b.add_block_param(entry, Type::f32());
-    Value* stepX = b.add_block_param(entry, Type::f32());
-    Value* stepY = b.add_block_param(entry, Type::f32());
-    Value* stepZ = b.add_block_param(entry, Type::f32());
-
-    kb.position_at_end(entry);
-    MirLaneEmitter emSimd(kb, lanes, false);
-    MirLaneEmitter emScalar(kb, 1, false);
-
-    Value* zero = kb.const_i32(0);
-    Value* one = kb.const_i32(1);
-    Value* lanesI32 = kb.const_i32(static_cast<int32_t>(lanes));
-    Value* vecLimit = (lanes > 1)
-                          ? b.build_sub(dimX, kb.const_i32(static_cast<int32_t>(lanes - 1)))
-                          : zero;
-    Value* laneRamp = (lanes > 1) ? buildLaneRampF32(emSimd) : nullptr;
-    Value* vMinX = (lanes > 1) ? emSimd.broadcastF32(minX) : nullptr;
-    Value* vStepX = (lanes > 1) ? emSimd.broadcastF32(stepX) : nullptr;
-
-    kb.for_range(zero, dimZ, one, [&](Value* iz) {
-        Value* pzScalar = b.build_fma(kb.to_f32(iz), stepZ, minZ);
-        Value* pzVec = (lanes > 1) ? emSimd.broadcastF32(pzScalar) : nullptr;
-        Value* rowZ = b.build_mul(iz, dimY);
-
-        kb.for_range(zero, dimY, one, [&](Value* iy) {
-            Value* pyScalar = b.build_fma(kb.to_f32(iy), stepY, minY);
-            Value* pyVec = (lanes > 1) ? emSimd.broadcastF32(pyScalar) : nullptr;
-            Value* rowBase = b.build_mul(b.build_add(rowZ, iy), dimX);
-
-            if (lanes > 1) {
-                kb.for_range(zero, vecLimit, lanesI32, [&](Value* ix) {
-                    Value* ixVec = b.build_vadd(emSimd.broadcastF32(kb.to_f32(ix)), laneRamp);
-                    Value* pxVec = emSimd.fma(ixVec, vStepX, vMinX);
-                    Value* sdfVec = emitSdfGraphSingleSource(emSimd, graph, root, pxVec, pyVec, pzVec);
-                    emSimd.storeLaneF32(outField, b.build_add(rowBase, ix), sdfVec);
-                });
-            }
-
-            Value* remStart = (lanes > 1) ? b.build_mul(b.build_sdiv(dimX, lanesI32), lanesI32) : zero;
-            kb.for_range(remStart, dimX, one, [&](Value* ix) {
-                Value* px = b.build_fma(kb.to_f32(ix), stepX, minX);
-                Value* sdfVal = emitSdfGraphSingleSource(emScalar, graph, root, px, pyScalar, pzScalar);
-                emScalar.storeLaneF32(outField, b.build_add(rowBase, ix), sdfVal);
-            });
-        });
-    });
-
-    b.build_ret_void();
-    fn->rebuild_cfg_predecessors();
-    return fn;
+    return mir_detail::buildSdfGridSimdFunction(mod, graph, root, lanes, "eval_sdf_grid_simd");
 }
 
 Function* buildGridSdfGpuFunction(Module& mod, const SdfGraph& graph, int root) {
@@ -479,13 +416,90 @@ void lowerPortableGpuTargets(Module& mod, Function& fn, MirGpuArtifacts& out,
 }
 
 } // namespace
+
+namespace mir_detail {
+
+uint32_t detectHostSimdLanes() {
+    return detectHostSimdLanesImpl();
+}
+
+Function* buildSdfGridSimdFunction(Module& mod, const SdfGraph& graph, int rootNode,
+                                   uint32_t lanes, const char* fnName) {
+    const int root = (rootNode >= 0) ? rootNode : graph.root();
+    Function* fn = mod.create_function(fnName ? fnName : "eval_sdf_grid_simd", Type::void_type(), {
+        Type::ptr(), Type::i32(), Type::i32(), Type::i32(),
+        Type::f32(), Type::f32(), Type::f32(),
+        Type::f32(), Type::f32(), Type::f32()
+    });
+    SdfKernelBuilder kb(mod, fn);
+    Builder& b = kb.builder();
+    BasicBlock* entry = b.append_block("entry");
+    Value* outField = b.add_block_param(entry, Type::ptr());
+    Value* dimX = b.add_block_param(entry, Type::i32());
+    Value* dimY = b.add_block_param(entry, Type::i32());
+    Value* dimZ = b.add_block_param(entry, Type::i32());
+    Value* minX = b.add_block_param(entry, Type::f32());
+    Value* minY = b.add_block_param(entry, Type::f32());
+    Value* minZ = b.add_block_param(entry, Type::f32());
+    Value* stepX = b.add_block_param(entry, Type::f32());
+    Value* stepY = b.add_block_param(entry, Type::f32());
+    Value* stepZ = b.add_block_param(entry, Type::f32());
+
+    kb.position_at_end(entry);
+    MirLaneEmitter emSimd(kb, lanes, false);
+    MirLaneEmitter emScalar(kb, 1, false);
+
+    Value* zero = kb.const_i32(0);
+    Value* one = kb.const_i32(1);
+    Value* lanesI32 = kb.const_i32(static_cast<int32_t>(lanes));
+    Value* vecLimit = (lanes > 1)
+                          ? b.build_sub(dimX, kb.const_i32(static_cast<int32_t>(lanes - 1)))
+                          : zero;
+    Value* laneRamp = (lanes > 1) ? buildLaneRampF32(emSimd) : nullptr;
+    Value* vMinX = (lanes > 1) ? emSimd.broadcastF32(minX) : nullptr;
+    Value* vStepX = (lanes > 1) ? emSimd.broadcastF32(stepX) : nullptr;
+
+    kb.for_range(zero, dimZ, one, [&](Value* iz) {
+        Value* pzScalar = b.build_fma(kb.to_f32(iz), stepZ, minZ);
+        Value* pzVec = (lanes > 1) ? emSimd.broadcastF32(pzScalar) : nullptr;
+        Value* rowZ = b.build_mul(iz, dimY);
+
+        kb.for_range(zero, dimY, one, [&](Value* iy) {
+            Value* pyScalar = b.build_fma(kb.to_f32(iy), stepY, minY);
+            Value* pyVec = (lanes > 1) ? emSimd.broadcastF32(pyScalar) : nullptr;
+            Value* rowBase = b.build_mul(b.build_add(rowZ, iy), dimX);
+
+            if (lanes > 1) {
+                kb.for_range(zero, vecLimit, lanesI32, [&](Value* ix) {
+                    Value* ixVec = b.build_vadd(emSimd.broadcastF32(kb.to_f32(ix)), laneRamp);
+                    Value* pxVec = emSimd.fma(ixVec, vStepX, vMinX);
+                    Value* sdfVec = emitSdfGraphSingleSource(emSimd, graph, root, pxVec, pyVec, pzVec);
+                    emSimd.storeLaneF32(outField, b.build_add(rowBase, ix), sdfVec);
+                });
+            }
+
+            Value* remStart = (lanes > 1) ? b.build_mul(b.build_sdiv(dimX, lanesI32), lanesI32) : zero;
+            kb.for_range(remStart, dimX, one, [&](Value* ix) {
+                Value* px = b.build_fma(kb.to_f32(ix), stepX, minX);
+                Value* sdfVal = emitSdfGraphSingleSource(emScalar, graph, root, px, pyScalar, pzScalar);
+                emScalar.storeLaneF32(outField, b.build_add(rowBase, ix), sdfVal);
+            });
+        });
+    });
+
+    b.build_ret_void();
+    fn->rebuild_cfg_predecessors();
+    return fn;
+}
+
+} // namespace mir_detail
 #endif // BROMESH_HAS_BRASS_JIT
 
 MirSdfGridKernel compileMirSdfGridKernel(const SdfGraph& graph, int rootNode) {
     MirSdfGridKernel result;
 #if BROMESH_HAS_BRASS_JIT
     const int root = (rootNode >= 0) ? rootNode : graph.root();
-    const uint32_t lanes = detectHostSimdLanes();
+    const uint32_t lanes = mir_detail::detectHostSimdLanes();
     result.simdLanes = lanes;
 
     if (Target::host().is_x64() || Target::host().is_aarch64()) {
@@ -518,7 +532,7 @@ MirSdfGridKernel compileMirSdfGridKernel(const SdfGraph& graph, int rootNode) {
 MirVertexTransformKernel compileMirVertexTransformKernel() {
     MirVertexTransformKernel result;
 #if BROMESH_HAS_BRASS_JIT
-    const uint32_t lanes = detectHostSimdLanes();
+    const uint32_t lanes = mir_detail::detectHostSimdLanes();
     result.simdLanes = lanes;
 
     if (Target::host().is_x64() || Target::host().is_aarch64()) {

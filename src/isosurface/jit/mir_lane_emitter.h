@@ -79,5 +79,10 @@ brass::Value* buildLaneRampF32(MirLaneEmitter& em);
 brass::Value* emitSdfGraphSingleSource(MirLaneEmitter& em, const SdfGraph& graph, int nodeId,
                                        brass::Value* px, brass::Value* py, brass::Value* pz);
 
+uint32_t detectHostSimdLanes();
+
+brass::Function* buildSdfGridSimdFunction(brass::Module& mod, const SdfGraph& graph, int rootNode,
+                                          uint32_t lanes, const char* fnName = "eval_sdf_grid_simd");
+
 } // namespace bromesh::mir_detail
 #endif

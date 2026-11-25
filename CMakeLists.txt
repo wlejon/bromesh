@@ -207,6 +207,7 @@ add_library(bromesh STATIC
     src/isosurface/transvoxel.cpp
     src/isosurface/jit/sdf_node.cpp
     src/isosurface/jit/sdf_compiler.cpp
+    src/isosurface/jit/sdf_compiler_gpu.cpp
     src/isosurface/jit/sdf_autodiff.cpp
     src/isosurface/jit/sdf_interval.cpp
     src/isosurface/jit/sdf_custom_expr.cpp

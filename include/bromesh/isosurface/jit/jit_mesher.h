@@ -3,8 +3,33 @@
 #include "bromesh/mesh_data.h"
 #include "bromesh/isosurface/jit/sdf_node.h"
 #include <bromath/aabb.h>
+#include <cstdint>
 
 namespace bromesh {
+
+/// Extract an isosurface triangle mesh from an SDF graph and pre-evaluated distance field.
+MeshData marchingCubesFromField(
+    const SdfGraph& graph,
+    const float* field,
+    int dimX, int dimY, int dimZ,
+    const bromath::AABB3& bounds,
+    float isoLevel = 0.0f,
+    bool closeBoundary = true,
+    bool computeGradients = true,
+    const uint8_t* blockMask = nullptr,
+    int rootNode = -1
+);
+
+/// Extract an isosurface triangle mesh via Surface Nets from an SDF graph and pre-evaluated field.
+MeshData surfaceNetsFromField(
+    const SdfGraph& graph,
+    const float* field,
+    int dimX, int dimY, int dimZ,
+    const bromath::AABB3& bounds,
+    float isoLevel = 0.0f,
+    const uint8_t* blockMask = nullptr,
+    int rootNode = -1
+);
 
 /// Extract an isosurface triangle mesh from an SDF graph using Marching Cubes.
 ///

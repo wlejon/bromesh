@@ -22,6 +22,7 @@
 namespace bromesh {
 
 typedef void (*SdfGridEvalFn)(float* out_field, const float* bounds_min, const float* cell_size, int32_t dim_x, int32_t dim_y, int32_t dim_z);
+typedef void (*SdfGridSimdEvalFn)(float* out_field, int32_t dim_x, int32_t dim_y, int32_t dim_z, float min_x, float min_y, float min_z, float step_x, float step_y, float step_z);
 typedef void (*SdfSpanEvalFn)(float* out_row, float ox, float py, float pz, float sx, int64_t x_start, int64_t x_end);
 typedef float (*SdfPointEvalFn)(float x, float y, float z);
 typedef float (*SdfGradEvalFn)(float x, float y, float z, float* out_gx, float* out_gy, float* out_gz);
@@ -51,12 +52,14 @@ SdfGraph pruneCsgGraphForBlock(const SdfGraph& graph, const bromath::AABB3& bloc
 struct CompiledSdfKernel {
 #if BROMESH_HAS_BRASS_JIT
     brass::codegen::KernelFunction gridKernel;
+    brass::codegen::KernelFunction simdGridKernel;
     brass::codegen::KernelFunction spanKernel;
     brass::codegen::KernelFunction pointKernel;
     brass::codegen::KernelFunction gradKernel;
     brass::codegen::KernelFunction blockBoundsKernel;
 #endif
     SdfGridEvalFn gridFn = nullptr;
+    SdfGridSimdEvalFn simdGridFn = nullptr;
     SdfSpanEvalFn spanFn = nullptr;
     SdfPointEvalFn pointFn = nullptr;
     SdfGradEvalFn gradFn = nullptr;
@@ -82,6 +85,7 @@ public:
 
     std::vector<uint32_t> compile_spirv(const SdfGraph& graph, int rootNode = -1);
     std::string compile_ptx(const SdfGraph& graph, int rootNode = -1);
+    std::string compile_msl(const SdfGraph& graph, int rootNode = -1);
 
     std::vector<uint32_t> compileSpirv(const SdfGraph& graph, int rootNode = -1) {
         return compile_spirv(graph, rootNode);
@@ -89,6 +93,12 @@ public:
     std::string compilePtx(const SdfGraph& graph, int rootNode = -1) {
         return compile_ptx(graph, rootNode);
     }
+    std::string compileMsl(const SdfGraph& graph, int rootNode = -1) {
+        return compile_msl(graph, rootNode);
+    }
+
+    bool export_kernel_bundle(const std::string& bundlePath, std::string* err = nullptr);
+    bool import_kernel_bundle(const std::string& bundlePath, std::string* err = nullptr);
 
     SDFVolume evaluateVolume(const SdfGraph& graph, int dimX, int dimY, int dimZ,
                              const bromath::AABB3& bounds, int rootNode = -1, bool parallel = true,
